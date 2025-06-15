@@ -1,7 +1,5 @@
 
 /**
- *  Hubitat Flair Vents Driver
- *  Version 0.21
  *
  *  Copyright 2024 Jaime Botero. All Rights Reserved
  *
@@ -75,7 +73,7 @@ metadata {
         attribute 'room-cooling-rate', 'number'
         attribute 'room-heating-rate', 'number'
 
-        command 'setRoomActive', [[name: 'active*', type: 'ENUM', description: 'Set room active/away', constraints: ['true', 'false']]]
+        command 'setRoomActive', ['string']
     }
 
     preferences {
@@ -153,14 +151,4 @@ def getDeviceState(String attr) {
 def setRoomActive(isActive) {
   logDebug("setRoomActive: ${isActive}")
   parent.patchRoom(device, isActive)
-}
-
-def updateParentPollingInterval(Integer intervalMinutes) {
-  logDebug("Parent requesting polling interval change to ${intervalMinutes} minutes")
-  
-  // Update the internal setting without user intervention
-  device.updateSetting('devicePoll', intervalMinutes)
-  
-  // Reschedule with new interval
-  setRefreshSchedule()
 }
