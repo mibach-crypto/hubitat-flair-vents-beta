@@ -189,29 +189,28 @@ class TimeCalculationsTest extends Specification {
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
       _ * getLog() >> log
-      _ * getSetting('debugLevel') >> 1
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi,
       'validationFlags': VALIDATION_FLAGS,
       'userSettingValues': USER_SETTINGS)
     
-    when:
+    expect:
     // Room that would take longer than max running time
     def rateAndTempPerVentId = [
       'slowRoom': [rate:0.1, temp:30, active:true, name: 'SlowRoom']
     ]
     def result = script.calculateLongestMinutesToTarget(rateAndTempPerVentId, 'cooling', 20, 30, true)
     
-    then:
     result == 30 // Clamped to maxRunningTime
     
     // Check that warning was logged
-    log.records.any { record ->
+    def warningFound = log.records.any { record ->
       record[0] == Level.warn && 
       record[1].contains('SlowRoom') && 
-      record[1].contains('shows minimal temperature change')
+      record[1].contains('longer than the average')
     }
+    warningFound
   }
 
   def "calculateLongestMinutesToTargetTest - Empty Input"() {

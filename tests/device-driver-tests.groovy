@@ -24,41 +24,49 @@ class DeviceDriverTest extends Specification {
           ]
 
   def "Device Driver - Load Successfully"() {
+    setup:
+    DeviceExecutor executorApi = Mock(DeviceExecutor) {
+      _ * getState() >> [:]
+    }
+    def sandbox = new HubitatDeviceSandbox(DRIVER_FILE)
+    
     when:
-    // Just validate the file exists and can be read
-    def driverFile = DRIVER_FILE
-    def driverText = driverFile.text
+    def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
     
     then:
     // Should load without throwing exceptions
-    driverFile.exists()
-    driverText != null
-    driverText.length() > 0
-    driverText.contains('metadata')
-    driverText.contains('definition')
+    script != null
+    noExceptionThrown()
   }
 
   def "Device Driver - Has Required Methods"() {
     setup:
-    def driverText = DRIVER_FILE.text
+    DeviceExecutor executorApi = Mock(DeviceExecutor)
+    def sandbox = new HubitatDeviceSandbox(DRIVER_FILE)
+    def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
     
     expect:
-    // Check that required methods exist in the source code
-    driverText.contains('def installed()')
-    driverText.contains('def updated()')
-    driverText.contains('def refresh()')
-    driverText.contains('void setLevel(level')
-    driverText.contains('def setRoomActive(isActive)')
+    // Check that required methods exist
+    script.metaClass.respondsTo(script, 'installed')
+    script.metaClass.respondsTo(script, 'updated')
+    script.metaClass.respondsTo(script, 'refresh')
+    script.metaClass.respondsTo(script, 'setLevel', Number)
+    script.metaClass.respondsTo(script, 'setRoomActive', Boolean)
   }
 
   def "Device Driver - State Management"() {
     setup:
-    def driverText = DRIVER_FILE.text
+    DeviceExecutor executorApi = Mock(DeviceExecutor) {
+      _ * getState() >> [:]
+    }
+    def sandbox = new HubitatDeviceSandbox(DRIVER_FILE)
+    def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
     
-    expect:
-    // Check that state management methods exist
-    driverText.contains('def setDeviceState(String attr, value)')
-    driverText.contains('def getDeviceState(String attr)')
-    driverText.contains('state[attr] = value')
+    when:
+    script.setDeviceState('test-attr', 'test-value')
+    def result = script.getDeviceState('test-attr')
+    
+    then:
+    result == 'test-value'
   }
 }
