@@ -2,3 +2,5 @@
 .clinerules
 build
 bin
+.idea/
+.vscode/
