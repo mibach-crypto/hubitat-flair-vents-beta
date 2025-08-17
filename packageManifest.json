@@ -1,9 +1,9 @@
 {
   "packageName": "Flair Vents",
   "author": "Jaime Botero",
-  "version": "0.16",
-  "betaVersion": "0.19",
-  "dateReleased": "2025-06-15",
+  "version": "0.232",
+  "betaVersion": "0.232",
+  "dateReleased": "2025-08-17",
   "minimumHEVersion": "0.0.1",
   "documentationLink": "https://github.com/ljbotero/hubitat-flair-vents/blob/main/README.md",
   "communityLink": "https://community.hubitat.com/t/new-control-flair-vents-with-hubitat-free-open-source-app-and-driver/132728",
@@ -13,7 +13,7 @@
       "name": "Flair Vents",
       "namespace": "",
       "location": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/src/hubitat-flair-vents-app.groovy",
-      "betaLocation": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/refs/heads/Beta/src/hubitat-flair-vents-app.groovy",
+      "betaLocation": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/src/hubitat-flair-vents-app.groovy",
       "required": true,
       "oauth": false,
       "primary": false
@@ -25,16 +25,16 @@
       "name": "Flair vents",
       "namespace": "bot.flair",
       "location": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/src/hubitat-flair-vents-driver.groovy",
-      "betaLocation": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/refs/heads/Beta/src/hubitat-flair-vents-driver.groovy",
+      "betaLocation": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/src/hubitat-flair-vents-driver.groovy",
       "required": true
     },
     {
       "id": "f13f6c09-59f6-4f68-9219-21b9fc9170b9",
       "name": "Flair pucks",
       "namespace": "bot.flair",
-      "location": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/refs/heads/Beta/src/hubitat-flair-vents-pucks-driver.groovy",
-      "betaLocation": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/refs/heads/Beta/src/hubitat-flair-vents-pucks-driver.groovy",
-      "required": true
+      "location": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/src/hubitat-flair-vents-pucks-driver.groovy",
+      "betaLocation": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/src/hubitat-flair-vents-pucks-driver.groovy",
+      "required": false
     }
   ]
 }
