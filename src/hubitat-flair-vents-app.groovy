@@ -191,6 +191,7 @@ def mainPage() {
                     'with the chosen thermostat, excluding Flair vents. This ensures the combined airflow does not drop ' +
                     'below a specified percent to prevent HVAC issues.</small>'
           input name: 'thermostat1CloseInactiveRooms', type: 'bool', title: 'Close vents on inactive rooms', defaultValue: true, submitOnChange: true
+          input name: 'fanOnlyOpenAllVents', type: 'bool', title: 'Fan-only → open all vents 100 %', defaultValue: true, submitOnChange: true
 
           if (settings.thermostat1AdditionalStandardVents < 0) {
             app.updateSetting('thermostat1AdditionalStandardVents', 0)
@@ -2323,7 +2324,11 @@ def thermostat1ChangeStateHandler(evt) {
         runInMillis(TEMP_READINGS_DELAY_MS, 'finalizeRoomStates', [data: params])
         atomicState.remove('thermostat1State')
       }
-      
+      if (settings.fanOnlyOpenAllVents && isFanActive(evt.value) && atomicState.ventsByRoomId) {
+        log 'Fan-only mode detected - opening all vents to 100%', 2
+        openAllVents(atomicState.ventsByRoomId, MAX_PERCENTAGE_OPEN as int)
+      }
+
       // Update polling to idle interval when HVAC is idle
       updateDevicePollingInterval(POLLING_INTERVAL_IDLE)
       break
@@ -2371,6 +2376,39 @@ def evaluateRebalancingVents() {
   }
 }
 
+// Retrieve the average hourly efficiency rate for a room and HVAC mode
+def getAverageHourlyRate(String roomId, String hvacMode, Integer hour) {
+  def rates = atomicState?.hourlyRates?.get(roomId)?.get(hvacMode)?.get(hour)
+  if (!rates || rates.size() == 0) { return 0.0 }
+  BigDecimal sum = 0.0
+  rates.each { sum += it as BigDecimal }
+  cleanDecimalForJson(sum / rates.size())
+}
+
+// Append a new efficiency rate to the rolling 10-day hourly history
+def appendHourlyRate(String roomId, String hvacMode, Integer hour, BigDecimal rate) {
+  def hourlyRates = atomicState.hourlyRates ?: [:]
+  def roomRates = hourlyRates[roomId] ?: [:]
+  def modeRates = roomRates[hvacMode] ?: [:]
+  def list = modeRates[hour] ?: []
+  list << rate
+  if (list.size() > 10) { list = list[-10..-1] }
+  modeRates[hour] = list
+  roomRates[hvacMode] = modeRates
+  hourlyRates[roomId] = roomRates
+  atomicState.hourlyRates = hourlyRates
+}
+
+private boolean isFanActive(String opState = null) {
+  opState = opState ?: settings.thermostat1?.currentValue('thermostatOperatingState')
+  if (opState == 'fan only') { return true }
+  if (opState == 'idle') {
+    def fanMode = settings.thermostat1?.currentValue('thermostatFanMode')
+    return fanMode in ['on', 'circulate']
+  }
+  return false
+}
+
 def finalizeRoomStates(data) {
   // Check for required parameters
   if (!data.ventIdsByRoomId || !data.startedCycle || !data.finishedRunning) {
@@ -2394,7 +2432,8 @@ def finalizeRoomStates(data) {
   if (totalCycleMinutes >= MIN_MINUTES_TO_SETPOINT) {
     // Track room rates that have been calculated
     Map<String, BigDecimal> roomRates = [:]
-    
+    Integer hour = new Date(data.startedCycle).format('H', location?.timeZone ?: TimeZone.getTimeZone('UTC')) as Integer
+
     data.ventIdsByRoomId.each { roomId, ventIds ->
       for (ventId in ventIds) {
         def vent = getChildDevice(ventId)
@@ -2453,9 +2492,10 @@ def finalizeRoomStates(data) {
         def cleanedRate = cleanDecimalForJson(rate)
         sendEvent(vent, [name: ratePropName, value: cleanedRate])
         log "Updating ${roomName}'s ${ratePropName} to ${roundBigDecimal(cleanedRate)}", 3
-        
+
         // Store the calculated rate for this room
         roomRates[roomName] = cleanedRate
+        appendHourlyRate(roomId, data.hvacMode, hour, cleanedRate)
         
         // Track maximum rates for baseline calculations
         if (cleanedRate > 0) {
@@ -2503,7 +2543,23 @@ def initializeRoomStates(String hvacMode) {
   if (!settings.dabEnabled) { return }
   log "Initializing room states - hvac mode: ${hvacMode}", 3
   if (!atomicState.ventsByRoomId) { return }
-  
+  if (settings.fanOnlyOpenAllVents && isFanActive()) {
+    log 'Fan-only mode active - skipping DAB initialization', 2
+    return
+  }
+
+  Integer currentHour = new Date().format('H', location?.timeZone ?: TimeZone.getTimeZone('UTC')) as Integer
+  atomicState.ventsByRoomId.each { roomId, ventIds ->
+    def avgRate = getAverageHourlyRate(roomId, hvacMode, currentHour)
+    ventIds.each { ventId ->
+      def vent = getChildDevice(ventId)
+      if (vent) {
+        def attr = hvacMode == COOLING ? 'room-cooling-rate' : 'room-heating-rate'
+        sendEvent(vent, [name: attr, value: avgRate])
+      }
+    }
+  }
+
   BigDecimal setpoint = getThermostatSetpoint(hvacMode)
   if (!setpoint) { return }
   atomicStateUpdate('thermostat1State', 'startedCycle', now())
