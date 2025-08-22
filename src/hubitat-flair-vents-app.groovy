@@ -1,6 +1,6 @@
 /**
  *  Hubitat Flair Vents Integration
- *  Version 0.233
+ *  Version 0.235
  *
  *  Copyright 2024 Jaime Botero. All Rights Reserved
  *
@@ -20,6 +20,7 @@
 
 import groovy.transform.Field
 import groovy.json.JsonOutput
+import java.net.URLEncoder
 
 // ------------------------------
 // Constants and Configuration
@@ -139,6 +140,7 @@ definition(
 preferences {
   page(name: 'mainPage')
   page(name: 'efficiencyDataPage')
+  page(name: 'dabChartPage')
 }
 
 def mainPage() {
@@ -206,19 +208,25 @@ def mainPage() {
           
           // Efficiency Data Management Link
           section {
-            href name: 'efficiencyDataLink', title: '🔄 Backup & Restore Efficiency Data', 
-                 description: 'Save your learned room efficiency data to restore after app updates', 
+            href name: 'efficiencyDataLink', title: '🔄 Backup & Restore Efficiency Data',
+                 description: 'Save your learned room efficiency data to restore after app updates',
                  page: 'efficiencyDataPage'
-            
+
             // Show current status summary
             def vents = getChildDevices().findAll { it.hasAttribute('percent-open') }
             if (vents.size() > 0) {
-              def roomsWithData = vents.findAll { 
-                (it.currentValue('room-cooling-rate') ?: 0) > 0 || 
-                (it.currentValue('room-heating-rate') ?: 0) > 0 
+              def roomsWithData = vents.findAll {
+                (it.currentValue('room-cooling-rate') ?: 0) > 0 ||
+                (it.currentValue('room-heating-rate') ?: 0) > 0
               }
               paragraph "<small><b>Current Status:</b> ${roomsWithData.size()} of ${vents.size()} rooms have learned efficiency data</small>"
             }
+          }
+          // Hourly DAB Chart Link
+          section {
+            href name: 'dabChartLink', title: '📊 View Hourly DAB Rates',
+                 description: 'Visualize 24-hour average airflow rates for each room',
+                 page: 'dabChartPage'
           }
         }
         // Only show vents in DAB section, not pucks
@@ -3225,6 +3233,47 @@ def efficiencyDataPage() {
       href name: 'backToMain', title: '← Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
     }
   }
+}
+
+def dabChartPage() {
+  dynamicPage(name: 'dabChartPage', title: '📊 Hourly DAB Rates', install: false, uninstall: false) {
+    section {
+      paragraph buildDabChart()
+    }
+    section {
+      href name: 'backToMain', title: '← Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+    }
+  }
+}
+
+String buildDabChart() {
+  def vents = getChildDevices().findAll { it.hasAttribute('percent-open') }
+  if (!vents || vents.size() == 0) {
+    return '<p>No vent data available.</p>'
+  }
+  String hvacMode = getThermostat1Mode() ?: COOLING
+  def labels = (0..23).collect { it.toString() }
+  def datasets = vents.collect { vent ->
+    def roomId = vent.getId()
+    def roomName = vent.currentValue('room-name') ?: vent.getLabel()
+    def data = (0..23).collect { hr ->
+      getAverageHourlyRate(roomId, hvacMode, hr) ?: 0.0
+    }
+    [label: roomName, data: data]
+  }
+  def config = [
+    type: 'line',
+    data: [labels: labels, datasets: datasets],
+    options: [
+      plugins: [legend: [position: 'bottom']],
+      scales: [
+        x: [title: [display: true, text: 'Hour']],
+        y: [title: [display: true, text: 'Avg Rate'], beginAtZero: true]
+      ]
+    ]
+  ]
+  def encoded = URLEncoder.encode(JsonOutput.toJson(config), 'UTF-8')
+  "<img src='https://quickchart.io/chart?c=${encoded}' style='max-width:100%'>"
 }
 
 // ------------------------------
