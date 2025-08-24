@@ -1,6 +1,6 @@
 /**
  *  Hubitat Flair Vents Integration
- *  Version 0.235
+ *  Version 0.236
  *
  *  Copyright 2024 Jaime Botero. All Rights Reserved
  *
