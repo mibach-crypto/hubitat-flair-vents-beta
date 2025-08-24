@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.236] - 2025-08-23
+
+### Fixed
+- Ensure vent commands are sent even when the requested percentage matches the cached state, preventing vents from remaining out of sync
+
+## [0.235] - 2025-08-22
+
+### Added
+- Chart page displaying hourly Dynamic Airflow Balancing (DAB) rates for each room
+
 ## [0.234] - 2025-07-06
 
 ### Fixed

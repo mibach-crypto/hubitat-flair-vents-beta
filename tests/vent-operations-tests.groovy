@@ -45,7 +45,7 @@ class VentOperationsTest extends Specification {
     script.patchVent(mockDevice, 75)
     
     then:
-    // Should not throw exception for valid percentage (same as current - early return)
+    // Should not throw exception for valid percentage (even when same as current)
     noExceptionThrown()
   }
 
@@ -73,7 +73,7 @@ class VentOperationsTest extends Specification {
     script.patchVent(mockDevice, 150)
 
     then:
-    // Should not throw exception and should handle invalid percentage (same as current - early return)
+    // Should not throw exception and should handle invalid percentage
     noExceptionThrown()
   }
 
@@ -101,7 +101,7 @@ class VentOperationsTest extends Specification {
     script.patchVent(mockDevice, -25)
 
     then:
-    // Should not throw exception and should handle invalid percentage (same as current - early return)
+    // Should not throw exception and should handle invalid negative percentage
     noExceptionThrown()
   }
 
@@ -188,7 +188,7 @@ class VentOperationsTest extends Specification {
     script.patchRoom(mockDevice, 'true')
     
     then:
-    // Should complete without error when room ID is missing (early return)
+    // Should complete without error when room ID is missing
     noExceptionThrown()
   }
 

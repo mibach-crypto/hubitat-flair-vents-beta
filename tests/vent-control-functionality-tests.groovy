@@ -60,19 +60,13 @@ class VentControlFunctionalitySpec extends Specification {
         when: "user sets vent to target level"
         app.patchVent(ventDevice, targetLevel)
 
-        then: "appropriate action should be taken"
-        if (targetLevel == currentLevel) {
-            // Same level - should skip API call
-            app.patchAsyncCalled == false
-        } else {
-            // Different level - should make API call
-            app.patchAsyncCalled == true
-        }
+        then: "API call should always be made to ensure device sync"
+        app.patchAsyncCalled == true
 
         where:
         currentLevel | targetLevel
         0           | 0           // Same level - no change
-        50          | 50          // Same level - no change  
+        50          | 50          // Same level - no change
         25          | 75          // Different level - should update
         100         | 0           // Different level - should update
         0           | 100         // Different level - should update
@@ -350,12 +344,8 @@ class TestFlairApp {
         }
 
         def currentLevel = device.currentValue('percent-open')
-        
-        // Skip if same level
         if (currentLevel == percentOpen) {
-            logDebug("Vent already at ${percentOpen}%, skipping API call")
-            patchAsyncCalled = false
-            return
+            logDebug("Vent already at ${percentOpen}%, re-sending API call to ensure sync")
         }
 
         // Clamp values
