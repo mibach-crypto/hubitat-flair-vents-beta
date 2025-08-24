@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.236] - 2025-08-23
+
+### Changed
+- Bumped version number to 0.236
+- Resolved merge conflict in application code
+
 ## [0.235] - 2025-08-22
 
 ### Added
