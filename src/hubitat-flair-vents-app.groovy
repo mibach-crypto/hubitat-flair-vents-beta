@@ -145,6 +145,7 @@ preferences {
   page(name: 'mainPage')
   page(name: 'efficiencyDataPage')
   page(name: 'dabChartPage')
+  page(name: 'dabActivityLogPage')
 }
 
 def mainPage() {
@@ -231,6 +232,12 @@ def mainPage() {
             href name: 'dabChartLink', title: '📊 View Hourly DAB Rates',
                  description: 'Visualize 24-hour average airflow rates for each room',
                  page: 'dabChartPage'
+          }
+          // DAB Activity Log Link
+          section {
+            href name: 'dabActivityLogLink', title: '📘 View DAB Activity Log',
+                 description: 'See recent HVAC mode transitions',
+                 page: 'dabActivityLogPage'
           }
         }
         // Only show vents in DAB section, not pucks
@@ -2360,7 +2367,9 @@ def thermostat1ChangeStateHandler(evt) {
 // Periodically evaluate duct temperatures to determine HVAC state
 // without relying on an external thermostat.
 def updateHvacStateFromDuctTemps() {
+  String previousMode = atomicState.thermostat1State?.mode ?: 'idle'
   String hvacMode = calculateHvacMode()
+  appendDabActivityLog("Start: ${previousMode} → ${hvacMode ?: 'idle'}")
   if (hvacMode) {
     if (!atomicState.thermostat1State || atomicState.thermostat1State?.mode != hvacMode) {
       atomicStateUpdate('thermostat1State', 'mode', hvacMode)
@@ -2391,6 +2400,8 @@ def updateHvacStateFromDuctTemps() {
       updateDevicePollingInterval(POLLING_INTERVAL_IDLE)
     }
   }
+  String currentMode = atomicState.thermostat1State?.mode ?: 'idle'
+  appendDabActivityLog("End: ${previousMode} → ${currentMode}")
 }
 
 def reBalanceVents() {
@@ -2455,6 +2466,14 @@ def appendHourlyRate(String roomId, String hvacMode, Integer hour, BigDecimal ra
   roomRates[hvacMode] = modeRates
   hourlyRates[roomId] = roomRates
   atomicState.hourlyRates = hourlyRates
+}
+
+def appendDabActivityLog(String message) {
+  def list = atomicState.dabActivityLog ?: []
+  String ts = new Date().format('yyyy-MM-dd HH:mm:ss', location?.timeZone ?: TimeZone.getTimeZone('UTC'))
+  list << "${ts} - ${message}"
+  if (list.size() > 100) { list = list[-100..-1] }
+  atomicState.dabActivityLog = list
 }
 
 private boolean isFanActive(String opState = null) {
@@ -3279,6 +3298,22 @@ def efficiencyDataPage() {
       '''
     }
     
+    section {
+      href name: 'backToMain', title: '← Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+    }
+  }
+}
+
+def dabActivityLogPage() {
+  dynamicPage(name: 'dabActivityLogPage', title: '📘 DAB Activity Log', install: false, uninstall: false) {
+    section {
+      def entries = atomicState.dabActivityLog ?: []
+      if (entries) {
+        entries.reverse().each { paragraph "<code>${it}</code>" }
+      } else {
+        paragraph 'No activity yet.'
+      }
+    }
     section {
       href name: 'backToMain', title: '← Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
     }
