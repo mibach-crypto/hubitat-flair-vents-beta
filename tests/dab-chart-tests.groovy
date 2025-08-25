@@ -5,6 +5,8 @@ import me.biocomp.hubitat_ci.api.app_api.AppExecutor
 import me.biocomp.hubitat_ci.app.HubitatAppSandbox
 import me.biocomp.hubitat_ci.validation.Flags
 import spock.lang.Specification
+import groovy.json.JsonSlurper
+import java.net.URLDecoder
 
 class DabChartTests extends Specification {
 
@@ -29,18 +31,27 @@ class DabChartTests extends Specification {
 
     def vent = new Expando(
       hasAttribute: { String attr -> attr == 'percent-open' },
-      getId: { '1' },
+      getId: { 'device-1' },
       getLabel: { 'Room1' },
-      currentValue: { String attr -> attr == 'room-name' ? 'Room1' : null }
+      currentValue: { String attr ->
+        if (attr == 'room-name') return 'Room1'
+        if (attr == 'room-id') return 'room-1'
+        return null
+      }
     )
     script.metaClass.getChildDevices = { -> [vent] }
     script.metaClass.getThermostat1Mode = { -> 'cooling' }
-    script.appendHourlyRate('1', 'cooling', 0, 1.0)
+    script.appendHourlyRate('room-1', 'cooling', 0, 1.0)
 
     when:
     def html = script.buildDabChart()
 
     then:
     html.contains('quickchart.io')
+
+    and: "dataset uses room-id for hourly rates"
+    def encoded = html.split('chart\?c=')[1].split("'")[0]
+    def config = new JsonSlurper().parseText(URLDecoder.decode(encoded, 'UTF-8'))
+    config.data.datasets[0].data[0] == 1.0d
   }
 }

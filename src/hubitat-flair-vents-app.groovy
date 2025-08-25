@@ -3254,7 +3254,8 @@ String buildDabChart() {
   String hvacMode = getThermostat1Mode() ?: COOLING
   def labels = (0..23).collect { it.toString() }
   def datasets = vents.collect { vent ->
-    def roomId = vent.getId()
+    // Use the Flair room ID if available to match stored hourly rate data
+    def roomId = vent.currentValue('room-id') ?: vent.getId()
     def roomName = vent.currentValue('room-name') ?: vent.getLabel()
     def data = (0..23).collect { hr ->
       getAverageHourlyRate(roomId, hvacMode, hr) ?: 0.0
