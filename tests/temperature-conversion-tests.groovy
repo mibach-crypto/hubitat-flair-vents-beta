@@ -58,7 +58,7 @@ class TemperatureConversionTest extends Specification {
     Math.abs(script.convertFahrenheitToCentigrade(-459.67) - (-273.15)) < 0.01 // Absolute zero
   }
 
-  def "calculateHvacModeTest - Basic Cases"() {
+  def "calculateHvacMode from duct temps"() {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [:]
@@ -66,33 +66,29 @@ class TemperatureConversionTest extends Specification {
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
     script.atomicState = [:]
+    def heatVent = [currentValue: { attr ->
+      attr == 'duct-temperature-c' ? 35 : (attr == 'room-current-temperature-c' ? 20 : null)
+    }] as Expando
+    def coolVent = [currentValue: { attr ->
+      attr == 'duct-temperature-c' ? 10 : (attr == 'room-current-temperature-c' ? 25 : null)
+    }] as Expando
+    def idleVent = [currentValue: { attr ->
+      attr == 'duct-temperature-c' ? 21 : (attr == 'room-current-temperature-c' ? 20 : null)
+    }] as Expando
 
-    expect:
-    script.calculateHvacMode(80.0, 80.0, 70.0) == 'cooling'
-    script.calculateHvacMode(70.0, 80.0, 70.0) == 'heating'
-    script.calculateHvacMode(81.0, 80.0, 70.0) == 'cooling'
-    script.calculateHvacMode(69.0, 80.0, 70.0) == 'heating'
-  }
+    when:
+    script.metaClass.getChildDevices = { -> [heatVent] }
+    then:
+    script.calculateHvacMode() == 'heating'
 
-  def "calculateHvacModeTest - Edge Cases"() {
-    setup:
-    AppExecutor executorApi = Mock(AppExecutor) {
-      _ * getState() >> [:]
-    }
-    def sandbox = new HubitatAppSandbox(APP_FILE)
-    def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
-    script.atomicState = [:]
+    when:
+    script.metaClass.getChildDevices = { -> [coolVent] }
+    then:
+    script.calculateHvacMode() == 'cooling'
 
-    expect:
-    // Equal distances - actual behavior chooses heating, not cooling
-    script.calculateHvacMode(75.0, 80.0, 70.0) == 'heating'
-    
-    // Very close temperatures - when distances are equal, it defaults to heating
-    script.calculateHvacMode(75.0, 75.1, 74.9) == 'heating'
-    script.calculateHvacMode(75.0, 74.9, 75.1) == 'heating' // Equal distances = heating
-    
-    // Extreme temperatures - when distances are equal, defaults to heating
-    script.calculateHvacMode(0.0, 100.0, -100.0) == 'heating' // 100 vs 100, chooses heating
-    script.calculateHvacMode(50.0, 0.0, 100.0) == 'heating'   // 50 vs 50, equal distances default to heating
+    when:
+    script.metaClass.getChildDevices = { -> [idleVent] }
+    then:
+    script.calculateHvacMode() == null
   }
 }

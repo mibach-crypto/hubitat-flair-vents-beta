@@ -1,6 +1,6 @@
 /**
  *  Hubitat Flair Vents Integration
- *  Version 0.236
+ *  Version 0.237
  *
  *  Copyright 2024 Jaime Botero. All Rights Reserved
  *
@@ -100,6 +100,10 @@ import java.net.URLEncoder
 
 // Thermostat hysteresis to prevent cycling (in °C).
 @Field static final BigDecimal THERMOSTAT_HYSTERESIS = 0.6  // ~1°F
+
+// Minimum average difference between duct and room temperature (in °C)
+// required to determine that the HVAC system is actively heating or cooling.
+@Field static final BigDecimal DUCT_TEMP_DIFF_THRESHOLD = 1.0
 
 // Polling intervals based on HVAC state (in minutes).
 @Field static final Integer POLLING_INTERVAL_ACTIVE = 3     // When HVAC is running
@@ -364,23 +368,10 @@ def initialize() {
     }
   }
   
-  if (settings.thermostat1) {
-    subscribe(settings.thermostat1, 'thermostatOperatingState', thermostat1ChangeStateHandler)
-    subscribe(settings.thermostat1, 'temperature', thermostat1ChangeTemp)
-    def temp = settings.thermostat1?.currentValue('temperature') ?: 0
-    def coolingSetpoint = settings.thermostat1?.currentValue('coolingSetpoint') ?: 0
-    def heatingSetpoint = settings.thermostat1?.currentValue('heatingSetpoint') ?: 0
-    String hvacMode = calculateHvacMode(temp, coolingSetpoint, heatingSetpoint)
-    runInMillis(INITIALIZATION_DELAY_MS, 'initializeRoomStates', [data: hvacMode])
-    
-    // Set initial polling based on current thermostat state
-    def currentThermostatState = settings.thermostat1?.currentValue('thermostatOperatingState')
-    def initialInterval = (currentThermostatState in ['cooling', 'heating']) ? 
-        POLLING_INTERVAL_ACTIVE : POLLING_INTERVAL_IDLE
-    
-    log "Setting initial polling interval to ${initialInterval} minutes based on thermostat state: ${currentThermostatState}", 3
-    updateDevicePollingInterval(initialInterval)
-  }
+  // Schedule periodic HVAC state detection based on duct temperatures
+  runEvery1Minute('updateHvacStateFromDuctTemps')
+  // Determine initial HVAC state and polling interval
+  updateHvacStateFromDuctTemps()
   // Schedule periodic cleanup of instance caches and pending requests
   runEvery5Minutes('cleanupPendingRequests')
   runEvery10Minutes('clearRoomCache')
@@ -528,8 +519,31 @@ def hasRoomReachedSetpoint(String hvacMode, BigDecimal setpoint, BigDecimal curr
   (hvacMode == HEATING && currentTemp >= setpoint + offset)
 }
 
+// Determine HVAC mode purely from vent duct temperatures. Returns
+// 'heating', 'cooling', or null if HVAC is idle.
+def calculateHvacMode() {
+  def vents = getChildDevices()?.findAll {
+    it.currentValue('duct-temperature-c') != null &&
+    it.currentValue('room-current-temperature-c') != null
+  }
+  if (!vents || vents.isEmpty()) { return null }
+
+  BigDecimal avgDiff = 0.0
+  vents.each { v ->
+    BigDecimal duct = v.currentValue('duct-temperature-c') as BigDecimal
+    BigDecimal room = v.currentValue('room-current-temperature-c') as BigDecimal
+    avgDiff += (duct - room)
+  }
+  avgDiff = avgDiff / vents.size()
+  if (avgDiff > DUCT_TEMP_DIFF_THRESHOLD) { return HEATING }
+  if (avgDiff < -DUCT_TEMP_DIFF_THRESHOLD) { return COOLING }
+  null
+}
+
+// Backwards-compatible signature; ignores parameters and delegates to
+// the duct temperature based calculation.
 def calculateHvacMode(BigDecimal temp, BigDecimal coolingSetpoint, BigDecimal heatingSetpoint) {
-  Math.abs(temp - coolingSetpoint) < Math.abs(temp - heatingSetpoint) ? COOLING : HEATING
+  calculateHvacMode()
 }
 
 void removeChildren() {
@@ -2340,6 +2354,42 @@ def thermostat1ChangeStateHandler(evt) {
       // Update polling to idle interval when HVAC is idle
       updateDevicePollingInterval(POLLING_INTERVAL_IDLE)
       break
+  }
+}
+
+// Periodically evaluate duct temperatures to determine HVAC state
+// without relying on an external thermostat.
+def updateHvacStateFromDuctTemps() {
+  String hvacMode = calculateHvacMode()
+  if (hvacMode) {
+    if (!atomicState.thermostat1State || atomicState.thermostat1State?.mode != hvacMode) {
+      atomicStateUpdate('thermostat1State', 'mode', hvacMode)
+      atomicStateUpdate('thermostat1State', 'startedRunning', now())
+      unschedule(initializeRoomStates)
+      runInMillis(POST_STATE_CHANGE_DELAY_MS, 'initializeRoomStates', [data: hvacMode])
+      recordStartingTemperatures()
+      runEvery5Minutes('evaluateRebalancingVents')
+      runEvery30Minutes('reBalanceVents')
+      updateDevicePollingInterval(POLLING_INTERVAL_ACTIVE)
+    }
+  } else {
+    if (atomicState.thermostat1State) {
+      unschedule(initializeRoomStates)
+      unschedule(finalizeRoomStates)
+      unschedule(evaluateRebalancingVents)
+      unschedule(reBalanceVents)
+      atomicStateUpdate('thermostat1State', 'finishedRunning', now())
+      def params = [
+        ventIdsByRoomId: atomicState.ventsByRoomId,
+        startedCycle: atomicState.thermostat1State?.startedCycle,
+        startedRunning: atomicState.thermostat1State?.startedRunning,
+        finishedRunning: atomicState.thermostat1State?.finishedRunning,
+        hvacMode: atomicState.thermostat1State?.mode
+      ]
+      runInMillis(TEMP_READINGS_DELAY_MS, 'finalizeRoomStates', [data: params])
+      atomicState.remove('thermostat1State')
+      updateDevicePollingInterval(POLLING_INTERVAL_IDLE)
+    }
   }
 }
 
