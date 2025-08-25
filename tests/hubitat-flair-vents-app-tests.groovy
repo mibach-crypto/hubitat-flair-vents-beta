@@ -28,20 +28,34 @@ class Test extends Specification {
         String arg1, String arg2, AbstractMap arg3 -> '' }
   }
 
-  def "calculateHvacModeTest"() {
+  def "duct temperature hvac mode detection"() {
     setup:
     AppExecutor executorApi = Mock {
-      _   * getState() >> [:]
+      _ * getState() >> [:]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
+    def heatingVent = [currentValue: { attr ->
+      attr == 'duct-temperature-c' ? 40 : (attr == 'room-current-temperature-c' ? 20 : null)
+    }] as Expando
+    def coolingVent = [currentValue: { attr ->
+      attr == 'duct-temperature-c' ? 5 : (attr == 'room-current-temperature-c' ? 20 : null)
+    }] as Expando
 
-    expect:
-    script.calculateHvacMode(80.0, 80.0, 70.0) == 'cooling'
-    script.calculateHvacMode(70.0, 80.0, 70.0) == 'heating'
+    when:
+    script.metaClass.getChildDevices = { -> [heatingVent] }
+    then:
+    script.calculateHvacMode() == 'heating'
 
-    script.calculateHvacMode(81.0, 80.0, 70.0) == 'cooling'
-    script.calculateHvacMode(69.0, 80.0, 70.0) == 'heating'
+    when:
+    script.metaClass.getChildDevices = { -> [coolingVent] }
+    then:
+    script.calculateHvacMode() == 'cooling'
+
+    when:
+    script.metaClass.getChildDevices = { -> [] }
+    then:
+    script.calculateHvacMode() == null
   }
 
 

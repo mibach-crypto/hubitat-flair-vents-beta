@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.237] - 2025-08-24
+
+### Added
+- HVAC state detection using vent duct temperatures, removing reliance on external thermostats for DAB
+
 ## [0.236] - 2025-08-23
 
 ### Changed
