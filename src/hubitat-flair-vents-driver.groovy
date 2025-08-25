@@ -76,6 +76,7 @@ metadata {
         attribute 'room-heating-rate', 'number'
 
         command 'setRoomActive', [[name: 'active*', type: 'ENUM', description: 'Set room active/away', constraints: ['true', 'false']]]
+        command 'setRoomSetPoint', [[name: 'temperature*', type: 'NUMBER', description: 'Set room temperature setpoint']]
     }
 
     preferences {
@@ -153,6 +154,11 @@ def getDeviceState(String attr) {
 def setRoomActive(isActive) {
   logDebug("setRoomActive: ${isActive}")
   parent.patchRoom(device, isActive)
+}
+
+def setRoomSetPoint(temp) {
+  logDebug("setRoomSetPoint: ${temp}")
+  parent.patchRoomSetPoint(device, temp)
 }
 
 def updateParentPollingInterval(Integer intervalMinutes) {
