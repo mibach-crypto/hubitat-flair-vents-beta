@@ -2277,6 +2277,25 @@ def handleRoomPatch(resp, data) {
   traitExtract(data.device, resp.getJson(), 'active', 'room-active')
 }
 
+def patchRoomSetPoint(device, temp) {
+  def roomId = device.currentValue('room-id')
+  if (!roomId || temp == null) { return }
+  BigDecimal tempC = temp
+  if (getTemperatureScale() == 'F') {
+    tempC = convertFahrenheitToCentigrade(tempC)
+  }
+  log "Setting set-point to ${tempC}°C for '${device.currentValue('room-name')}'", 3
+  def uri = "${BASE_URL}/api/rooms/${roomId}"
+  def body = [ data: [ type: 'rooms', attributes: [ 'set-point-c': tempC ] ] ]
+  patchDataAsync(uri, 'handleRoomSetPointPatch', body, [device: device])
+}
+
+def handleRoomSetPointPatch(resp, data) {
+  decrementActiveRequests()
+  if (!isValidResponse(resp) || !data) { return }
+  traitExtract(data.device, resp.getJson(), 'set-point-c', 'room-set-point-c')
+}
+
 def thermostat1ChangeTemp(evt) {
   log "Thermostat changed temp to: ${evt.value}", 2
   def temp = settings?.thermostat1?.currentValue('temperature')
