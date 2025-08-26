@@ -243,7 +243,7 @@ def mainPage() {
         // Only show vents in DAB section, not pucks
         def vents = getChildDevices().findAll { it.hasAttribute('percent-open') }
         for (child in vents) {
-          input name: "ventThermostat${child.getId()}", type: 'capability.temperatureMeasurement', title: "Choose Thermostat for ${child.getLabel()} (Optional)", multiple: false, required: false
+          input name: "vent${child.getId()}Thermostat", type: 'capability.temperatureMeasurement', title: "Choose Thermostat for ${child.getLabel()} (Optional)", multiple: false, required: false
         }
       }
 
@@ -401,7 +401,7 @@ private openAllVents(Map ventIdsByRoomId, int percentOpen) {
 private BigDecimal getRoomTemp(def vent) {
   def ventId = vent.getId()
   def roomName = vent.currentValue('room-name') ?: 'Unknown'
-  def tempDevice = settings."ventThermostat${ventId}"
+  def tempDevice = settings."vent${ventId}Thermostat"
   
   if (tempDevice) {
     def temp = tempDevice.currentValue('temperature')
@@ -2764,7 +2764,7 @@ def getAttribsPerVentId(ventsByRoomId, String hvacMode) {
         
         // Log rooms with zero efficiency for debugging
         if (rate == 0) {
-          def tempSource = settings."ventThermostat${ventId}" ? "Puck ${settings."ventThermostat${ventId}".getLabel()}" : "Room API"
+          def tempSource = settings."vent${ventId}Thermostat" ? "Puck ${settings."vent${ventId}Thermostat".getLabel()}" : "Room API"
           log "Room '${roomName}' has zero ${hvacMode} efficiency rate, temp=${roomTemp}°C from ${tempSource}", 2
         }
         
