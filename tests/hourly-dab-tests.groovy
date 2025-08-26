@@ -31,7 +31,7 @@ class HourlyDabTests extends Specification {
     (1..11).each { script.appendHourlyRate('room1', 'cooling', 0, it) }
 
     then:
-    script.atomicState.hourlyRates.room1.cooling[0].size() == 10
+    script.atomicState.hourlyRates.room1.cooling['0'].size() == 10
     script.getAverageHourlyRate('room1', 'cooling', 0) == 6.5
   }
 }
