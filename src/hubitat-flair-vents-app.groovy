@@ -3380,6 +3380,12 @@ String buildDabChart() {
     }
     [label: roomName, data: data]
   }
+  // If all datasets are empty, show a friendly message instead of a blank chart
+  boolean hasData = datasets.any { ds -> ds.data.any { it != 0 } }
+  if (!hasData) {
+    return '<p>No DAB rate history available for the selected mode.</p>'
+  }
+
   def config = [
     type: 'line',
     data: [labels: labels, datasets: datasets],
@@ -3391,8 +3397,11 @@ String buildDabChart() {
       ]
     ]
   ]
-  def encoded = URLEncoder.encode(JsonOutput.toJson(config), 'UTF-8')
-  "<img src='https://quickchart.io/chart?c=${encoded}' style='max-width:100%'>"
+
+  // Encode the chart config using Base64 to avoid URL length/encoding issues
+  def configJson = JsonOutput.toJson(config)
+  def encoded = configJson.bytes.encodeBase64().toString()
+  "<img src='https://quickchart.io/chart?b64=${encoded}' style='max-width:100%'>"
 }
 
 // ------------------------------
