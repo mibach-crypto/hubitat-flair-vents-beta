@@ -2065,8 +2065,8 @@ def handleRemoteSensorGet(resp, data) {
 
 def updateByRoomIdState(details) {
   if (!details?.data?.relationships?.vents?.data) { return }
-  def roomId = details.data.id
-  if (!atomicState.ventsByRoomId?."${roomId}") {
+  def roomId = details.data.id?.toString()
+  if (!atomicState.ventsByRoomId?.get(roomId)) {
     def ventIds = details.data.relationships.vents.data.collect { it.id }
     atomicStateUpdate('ventsByRoomId', roomId, ventIds)
   }
@@ -2466,6 +2466,7 @@ def evaluateRebalancingVents() {
 
 // Retrieve the average hourly efficiency rate for a room and HVAC mode
 def getAverageHourlyRate(String roomId, String hvacMode, Integer hour) {
+  roomId = roomId?.toString()
   def rates = atomicState?.hourlyRates?.get(roomId)?.get(hvacMode)?.get(hour)
   if (!rates || rates.size() == 0) { return 0.0 }
   BigDecimal sum = 0.0
@@ -2475,6 +2476,7 @@ def getAverageHourlyRate(String roomId, String hvacMode, Integer hour) {
 
 // Append a new efficiency rate to the rolling 10-day hourly history
 def appendHourlyRate(String roomId, String hvacMode, Integer hour, BigDecimal rate) {
+  roomId = roomId?.toString()
   def hourlyRates = atomicState.hourlyRates ?: [:]
   def roomRates = hourlyRates[roomId] ?: [:]
   def modeRates = roomRates[hvacMode] ?: [:]
@@ -2485,6 +2487,7 @@ def appendHourlyRate(String roomId, String hvacMode, Integer hour, BigDecimal ra
   roomRates[hvacMode] = modeRates
   hourlyRates[roomId] = roomRates
   atomicState.hourlyRates = hourlyRates
+  atomicState.lastHvacMode = hvacMode
 }
 
 def appendDabActivityLog(String message) {
@@ -3342,6 +3345,8 @@ def dabActivityLogPage() {
 def dabChartPage() {
   dynamicPage(name: 'dabChartPage', title: '📊 Hourly DAB Rates', install: false, uninstall: false) {
     section {
+      input name: 'chartHvacMode', type: 'enum', title: 'HVAC Mode', required: false, submitOnChange: true,
+            options: [(COOLING): 'Cooling', (HEATING): 'Heating', 'both': 'Both']
       paragraph buildDabChart()
     }
     section {
@@ -3355,14 +3360,25 @@ String buildDabChart() {
   if (!vents || vents.size() == 0) {
     return '<p>No vent data available.</p>'
   }
-  String hvacMode = getThermostat1Mode() ?: COOLING
+  String hvacMode = settings?.chartHvacMode ?: getThermostat1Mode() ?: atomicState?.lastHvacMode
+  if (!hvacMode || hvacMode in ['auto', 'manual']) {
+    hvacMode = atomicState?.lastHvacMode
+  }
+  hvacMode = hvacMode ?: COOLING
   def labels = (0..23).collect { it.toString() }
   def datasets = vents.collect { vent ->
     // Use the Flair room ID if available to match stored hourly rate data
     def roomId = vent.currentValue('room-id') ?: vent.getId()
     def roomName = vent.currentValue('room-name') ?: vent.getLabel()
     def data = (0..23).collect { hr ->
-      getAverageHourlyRate(roomId, hvacMode, hr) ?: 0.0
+      if (hvacMode == 'both') {
+        def cooling = atomicState?.hourlyRates?.get(roomId)?.get(COOLING)?.get(hr) ?: []
+        def heating = atomicState?.hourlyRates?.get(roomId)?.get(HEATING)?.get(hr) ?: []
+        def combined = (cooling + heating).collect { it as BigDecimal }
+        combined ? cleanDecimalForJson(combined.sum() / combined.size()) : 0.0
+      } else {
+        getAverageHourlyRate(roomId, hvacMode, hr) ?: 0.0
+      }
     }
     [label: roomName, data: data]
   }
