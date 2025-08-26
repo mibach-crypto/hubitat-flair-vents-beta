@@ -376,7 +376,13 @@ def initialize() {
   }
   
   // HVAC state will be updated after each vent refresh; compute initial state now
-  updateHvacStateFromDuctTemps()
+  if (settings?.dabEnabled) {
+    updateHvacStateFromDuctTemps()
+    unschedule(updateHvacStateFromDuctTemps)
+    runEvery1Minute('updateHvacStateFromDuctTemps')
+  } else {
+    unschedule(updateHvacStateFromDuctTemps)
+  }
   // Schedule periodic cleanup of instance caches and pending requests
   runEvery5Minutes('cleanupPendingRequests')
   runEvery10Minutes('clearRoomCache')
@@ -432,13 +438,22 @@ private atomicStateUpdate(String stateKey, String key, value) {
 }
 
 def getThermostatSetpoint(String hvacMode) {
-  BigDecimal setpoint = hvacMode == COOLING ?
-      ((settings?.thermostat1?.currentValue('coolingSetpoint') ?: 0) - SETPOINT_OFFSET) :
-      ((settings?.thermostat1?.currentValue('heatingSetpoint') ?: 0) + SETPOINT_OFFSET)
-  setpoint = setpoint ?: settings?.thermostat1?.currentValue('thermostatSetpoint')
-  if (!setpoint) {
+  def thermostat = settings?.thermostat1
+  BigDecimal setpoint
+
+  if (hvacMode == COOLING) {
+    setpoint = thermostat?.currentValue('coolingSetpoint')
+    if (setpoint != null) { setpoint -= SETPOINT_OFFSET }
+  } else {
+    setpoint = thermostat?.currentValue('heatingSetpoint')
+    if (setpoint != null) { setpoint += SETPOINT_OFFSET }
+  }
+  if (setpoint == null) {
+    setpoint = thermostat?.currentValue('thermostatSetpoint')
+  }
+  if (setpoint == null) {
     logError 'Thermostat has no setpoint property, please choose a valid thermostat'
-    return setpoint
+    return null
   }
   if (settings.thermostat1TempUnit == '2') {
     setpoint = convertFahrenheitToCentigrade(setpoint)
@@ -529,17 +544,26 @@ def hasRoomReachedSetpoint(String hvacMode, BigDecimal setpoint, BigDecimal curr
 def calculateHvacMode() {
   def vents = getChildDevices()?.findAll {
     it.currentValue('duct-temperature-c') != null &&
-    it.currentValue('room-current-temperature-c') != null
+    (it.currentValue('room-current-temperature-c') != null ||
+     it.currentValue('current-temperature-c') != null ||
+     it.currentValue('temperature') != null) &&
+    (it.currentValue('percent-open') == null ||
+     (it.currentValue('percent-open') as BigDecimal) > 0)
   }
   if (!vents || vents.isEmpty()) { return null }
 
   BigDecimal avgDiff = 0.0
   vents.each { v ->
     BigDecimal duct = v.currentValue('duct-temperature-c') as BigDecimal
-    BigDecimal room = v.currentValue('room-current-temperature-c') as BigDecimal
-    avgDiff += (duct - room)
+    BigDecimal room = (v.currentValue('room-current-temperature-c') ?:
+                       v.currentValue('current-temperature-c') ?:
+                       v.currentValue('temperature')) as BigDecimal
+    BigDecimal diff = duct - room
+    log "Vent ${v?.displayName ?: v?.id}: duct=${duct}°C room=${room}°C diff=${diff}°C", 4
+    avgDiff += diff
   }
   avgDiff = avgDiff / vents.size()
+  log "Average duct-room temp diff=${avgDiff}°C", 4
   if (avgDiff > DUCT_TEMP_DIFF_THRESHOLD) { return HEATING }
   if (avgDiff < -DUCT_TEMP_DIFF_THRESHOLD) { return COOLING }
   null
@@ -2386,6 +2410,7 @@ def thermostat1ChangeStateHandler(evt) {
 // Periodically evaluate duct temperatures to determine HVAC state
 // without relying on an external thermostat.
 def updateHvacStateFromDuctTemps() {
+  if (!settings?.dabEnabled) { return }
   String previousMode = atomicState.thermostat1State?.mode ?: 'idle'
   String hvacMode = calculateHvacMode()
   appendDabActivityLog("Start: ${previousMode} → ${hvacMode ?: 'idle'}")

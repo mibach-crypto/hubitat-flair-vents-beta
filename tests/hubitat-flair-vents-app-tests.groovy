@@ -58,6 +58,54 @@ class Test extends Specification {
     script.calculateHvacMode() == null
   }
 
+  def "hvac mode detection filters closed vents and uses fallback temps"() {
+    setup:
+    AppExecutor executorApi = Mock {
+      _ * getState() >> [:]
+    }
+    def sandbox = new HubitatAppSandbox(APP_FILE)
+    def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
+    def openHeatingVent = [currentValue: { attr ->
+      switch (attr) {
+        case 'duct-temperature-c': return 40
+        case 'room-current-temperature-c': return 20
+        case 'percent-open': return 50
+        default: return null
+      }
+    }] as Expando
+    def closedCoolingVent = [currentValue: { attr ->
+      switch (attr) {
+        case 'duct-temperature-c': return 5
+        case 'room-current-temperature-c': return 25
+        case 'percent-open': return 0
+        default: return null
+      }
+    }] as Expando
+    def fallbackCoolingVent = [currentValue: { attr ->
+      switch (attr) {
+        case 'duct-temperature-c': return 5
+        case 'current-temperature-c': return 25
+        case 'percent-open': return 50
+        default: return null
+      }
+    }] as Expando
+
+    when:
+    script.metaClass.getChildDevices = { -> [closedCoolingVent, openHeatingVent] }
+    then:
+    script.calculateHvacMode() == 'heating'
+
+    when:
+    script.metaClass.getChildDevices = { -> [fallbackCoolingVent] }
+    then:
+    script.calculateHvacMode() == 'cooling'
+
+    when:
+    script.metaClass.getChildDevices = { -> [closedCoolingVent] }
+    then:
+    script.calculateHvacMode() == null
+  }
+
 
   def "hasRoomReachedSetpointTest"() {
     setup:
