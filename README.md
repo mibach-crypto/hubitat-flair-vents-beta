@@ -41,6 +41,30 @@ Control and automation are at your fingertips. Each Flair vent appears as an ind
 
 ## Development & Testing
 
+### Prerequisites
+
+Gradle builds use a Java toolchain pinned to **JDK 11**. Install a Java 11
+runtime before running any Gradle tasks.
+
+Sample installation commands:
+
+```bash
+# SDKMAN!
+sdk install java 11.0.20-tem
+
+# Debian/Ubuntu
+sudo apt-get install openjdk-11-jdk
+
+# macOS (Homebrew)
+brew install openjdk@11
+```
+
+Running `gradle test` without JDK 11 results in:
+
+```
+> Cannot find a Java installation matching {languageVersion=11}
+```
+
 ### Running Tests
 
 This project includes a comprehensive test suite covering all critical algorithms:
