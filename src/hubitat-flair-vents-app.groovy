@@ -2355,8 +2355,8 @@ def handleRemoteSensorGet(resp, data) {
 
 def updateByRoomIdState(details) {
   if (!details?.data?.relationships?.vents?.data) { return }
-  def roomId = details.data.id
-  if (!atomicState.ventsByRoomId?."${roomId}") {
+  def roomId = details.data.id?.toString()
+  if (!atomicState.ventsByRoomId?.get(roomId)) {
     def ventIds = details.data.relationships.vents.data.collect { it.id }
     atomicStateUpdate('ventsByRoomId', roomId, ventIds)
   }
@@ -2764,8 +2764,8 @@ def evaluateRebalancingVents() {
 
 // Retrieve the average hourly efficiency rate for a room and HVAC mode
 def getAverageHourlyRate(String roomId, String hvacMode, Integer hour) {
-  String hourKey = hour?.toString()
-  def rates = atomicState?.hourlyRates?.get(roomId)?.get(hvacMode)?.get(hourKey)
+  roomId = roomId?.toString()
+  def rates = atomicState?.hourlyRates?.get(roomId)?.get(hvacMode)?.get(hour)
   if (!rates || rates.size() == 0) { return 0.0 }
   BigDecimal sum = 0.0
   rates.each { sum += it as BigDecimal }
@@ -2781,7 +2781,7 @@ def getAverageHourlyRate(String roomId, String hvacMode, Integer hour) {
 
 // Append a new efficiency rate with timestamped history and purge by retention period
 def appendHourlyRate(String roomId, String hvacMode, Integer hour, BigDecimal rate) {
-  String hourKey = hour?.toString()
+  roomId = roomId?.toString()
   def hourlyRates = atomicState.hourlyRates ?: [:]
   def roomRates = hourlyRates[roomId] ?: [:]
   def modeRates = roomRates[hvacMode] ?: [:]
@@ -3916,10 +3916,9 @@ String buildDabChart() {
     def roomId = vent.currentValue('room-id') ?: vent.getId()
     def roomName = vent.currentValue('room-name') ?: vent.getLabel()
     def data = (0..23).collect { hr ->
-      String hourKey = hr.toString()
       if (hvacMode == 'both') {
-        def cooling = atomicState?.hourlyRates?.get(roomId)?.get(COOLING)?.get(hourKey) ?: []
-        def heating = atomicState?.hourlyRates?.get(roomId)?.get(HEATING)?.get(hourKey) ?: []
+        def cooling = atomicState?.hourlyRates?.get(roomId)?.get(COOLING)?.get(hr) ?: []
+        def heating = atomicState?.hourlyRates?.get(roomId)?.get(HEATING)?.get(hr) ?: []
         def combined = (cooling + heating).collect { it as BigDecimal }
         combined ? cleanDecimalForJson(combined.sum() / combined.size()) : 0.0
       } else {

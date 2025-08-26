@@ -123,7 +123,7 @@ class DabChartTests extends Specification {
     config.data.datasets[0].data[0] == 2.0d
   }
 
-  def "chart reads hourly rates with string hour keys"() {
+  def "numeric room ids are handled correctly"() {
     setup:
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
@@ -139,14 +139,13 @@ class DabChartTests extends Specification {
       getLabel: { 'Room1' },
       currentValue: { String attr ->
         if (attr == 'room-name') return 'Room1'
-        if (attr == 'room-id') return 'room-1'
+        if (attr == 'room-id') return '123'
         return null
       }
     )
     script.metaClass.getChildDevices = { -> [vent] }
     script.metaClass.getThermostat1Mode = { -> 'cooling' }
-
-    script.atomicState.hourlyRates = ['room-1': ['cooling': ['0': [4.0d]]]]
+    script.appendHourlyRate(123, 'cooling', 0, 4.0)
 
     when:
     def html = script.buildDabChart()
