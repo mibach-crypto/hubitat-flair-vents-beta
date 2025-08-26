@@ -2248,12 +2248,14 @@ def handleVentPatch(resp, data) {
   def respJson = resp.getJson()
   traitExtract(device, [data: respJson.data], 'percent-open', 'percent-open', '%')
   traitExtract(device, [data: respJson.data], 'percent-open', 'level', '%')
-  
+
   // Update local state ONLY after successful API response
   if (data.targetOpen != null) {
     try {
       safeSendEvent(device, [name: 'percent-open', value: data.targetOpen])
       safeSendEvent(device, [name: 'level', value: data.targetOpen])
+      def roomName = device.currentValue('room-name') ?: 'Unknown'
+      appendDabActivityLog("${roomName} ${device.getDeviceNetworkId()} ${data.targetOpen}%")
       log "Updated ${device.getLabel()} to ${data.targetOpen}%", 3
     } catch (Exception e) {
       log "Error updating device state: ${e.message}", 2
