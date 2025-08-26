@@ -50,7 +50,7 @@ class DabChartTests extends Specification {
     html.contains('quickchart.io')
 
     and: "dataset uses room-id for hourly rates"
-    def encoded = html.split('chart\?c=')[1].split("'")[0]
+    def encoded = html.substring(html.indexOf('chart?c=') + 8).split("'")[0]
     def config = new JsonSlurper().parseText(URLDecoder.decode(encoded, 'UTF-8'))
     config.data.datasets[0].data[0] == 1.0d
   }
@@ -83,7 +83,7 @@ class DabChartTests extends Specification {
     def html = script.buildDabChart()
 
     then:
-    def encoded = html.split('chart\?c=')[1].split("'")[0]
+    def encoded = html.substring(html.indexOf('chart?c=') + 8).split("'")[0]
     def config = new JsonSlurper().parseText(URLDecoder.decode(encoded, 'UTF-8'))
     config.data.datasets[0].data[0] == 2.0d
   }
@@ -118,7 +118,7 @@ class DabChartTests extends Specification {
     def html = script.buildDabChart()
 
     then:
-    def encoded = html.split('chart\?c=')[1].split("'")[0]
+    def encoded = html.substring(html.indexOf('chart?c=') + 8).split("'")[0]
     def config = new JsonSlurper().parseText(URLDecoder.decode(encoded, 'UTF-8'))
     config.data.datasets[0].data[0] == 2.0d
   }

@@ -99,9 +99,8 @@ class ThermostatSetpointTest extends Specification {
 
     expect:
     def setpoint = script.getThermostatSetpoint('cooling')
-    // When coolingSetpoint is null, it becomes (0 - 0.7) then converts F to C
-    // (-0.7-32)*5/9 = -18.166...
-    Math.abs(setpoint - (-18.17)) < 1.0
+    // Falls back to thermostatSetpoint without offset: (72-32)*5/9 ≈ 22.2°C
+    Math.abs(setpoint - 22.2) < 0.1
   }
 
   def "getThermostatSetpointTest - No Setpoint Available"() {
@@ -122,9 +121,8 @@ class ThermostatSetpointTest extends Specification {
 
     expect:
     def setpoint = script.getThermostatSetpoint('cooling')
-    // When all setpoints are null, it eventually returns null and logs error
-    setpoint != null  // It actually converts the result so we get a non-null value
-    // Note: The log message appears to not be captured in this test scenario
+    setpoint == null
+    log.errorMessages.any { it.contains('Thermostat has no setpoint property') }
   }
 
   def "getThermostatSetpointTest - Temperature Unit Conversion"() {
