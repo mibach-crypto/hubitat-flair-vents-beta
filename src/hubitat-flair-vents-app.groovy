@@ -2764,8 +2764,8 @@ def evaluateRebalancingVents() {
 
 // Retrieve the average hourly efficiency rate for a room and HVAC mode
 def getAverageHourlyRate(String roomId, String hvacMode, Integer hour) {
-  roomId = roomId?.toString()
-  def rates = atomicState?.hourlyRates?.get(roomId)?.get(hvacMode)?.get(hour)
+  def modeRates = atomicState?.hourlyRates?.get(roomId)?.get(hvacMode)
+  def rates = modeRates ? (modeRates["${hour}"] ?: modeRates[hour]) : null
   if (!rates || rates.size() == 0) { return 0.0 }
   BigDecimal sum = 0.0
   rates.each { sum += it as BigDecimal }
@@ -2785,6 +2785,7 @@ def appendHourlyRate(String roomId, String hvacMode, Integer hour, BigDecimal ra
   def hourlyRates = atomicState.hourlyRates ?: [:]
   def roomRates = hourlyRates[roomId] ?: [:]
   def modeRates = roomRates[hvacMode] ?: [:]
+  String hourKey = "${hour}"
   def list = modeRates[hourKey] ?: []
   list << rate
   if (list.size() > 10) { list = list[-10..-1] }
@@ -3917,8 +3918,10 @@ String buildDabChart() {
     def roomName = vent.currentValue('room-name') ?: vent.getLabel()
     def data = (0..23).collect { hr ->
       if (hvacMode == 'both') {
-        def cooling = atomicState?.hourlyRates?.get(roomId)?.get(COOLING)?.get(hr) ?: []
-        def heating = atomicState?.hourlyRates?.get(roomId)?.get(HEATING)?.get(hr) ?: []
+        def coolingMode = atomicState?.hourlyRates?.get(roomId)?.get(COOLING)
+        def heatingMode = atomicState?.hourlyRates?.get(roomId)?.get(HEATING)
+        def cooling = coolingMode ? (coolingMode["${hr}"] ?: coolingMode[hr]) : []
+        def heating = heatingMode ? (heatingMode["${hr}"] ?: heatingMode[hr]) : []
         def combined = (cooling + heating).collect { it as BigDecimal }
         combined ? cleanDecimalForJson(combined.sum() / combined.size()) : 0.0
       } else {
