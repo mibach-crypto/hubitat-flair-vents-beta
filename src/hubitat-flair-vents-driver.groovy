@@ -128,6 +128,8 @@ def refresh() {
 
 def settingsRefresh() {
   parent.getDeviceData(device)
+  // Invoke HVAC state update after refreshing vent data
+  parent.updateHvacStateFromDuctTemps()
 }
 
 void setLevel(level, duration=null) {
