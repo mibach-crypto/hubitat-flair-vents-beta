@@ -368,9 +368,7 @@ def initialize() {
     }
   }
   
-  // Schedule periodic HVAC state detection based on duct temperatures
-  runEvery1Minute('updateHvacStateFromDuctTemps')
-  // Determine initial HVAC state and polling interval
+  // HVAC state will be updated after each vent refresh; compute initial state now
   updateHvacStateFromDuctTemps()
   // Schedule periodic cleanup of instance caches and pending requests
   runEvery5Minutes('cleanupPendingRequests')
