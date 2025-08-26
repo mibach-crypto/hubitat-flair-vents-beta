@@ -2485,6 +2485,7 @@ def appendHourlyRate(String roomId, String hvacMode, Integer hour, BigDecimal ra
   roomRates[hvacMode] = modeRates
   hourlyRates[roomId] = roomRates
   atomicState.hourlyRates = hourlyRates
+  atomicState.lastHvacMode = hvacMode
 }
 
 def appendDabActivityLog(String message) {
@@ -3342,6 +3343,8 @@ def dabActivityLogPage() {
 def dabChartPage() {
   dynamicPage(name: 'dabChartPage', title: '📊 Hourly DAB Rates', install: false, uninstall: false) {
     section {
+      input name: 'chartHvacMode', type: 'enum', title: 'HVAC Mode', required: false, submitOnChange: true,
+            options: [(COOLING): 'Cooling', (HEATING): 'Heating', 'both': 'Both']
       paragraph buildDabChart()
     }
     section {
@@ -3355,17 +3358,34 @@ String buildDabChart() {
   if (!vents || vents.size() == 0) {
     return '<p>No vent data available.</p>'
   }
-  String hvacMode = getThermostat1Mode() ?: COOLING
+  String hvacMode = settings?.chartHvacMode ?: getThermostat1Mode() ?: atomicState?.lastHvacMode
+  if (!hvacMode || hvacMode in ['auto', 'manual']) {
+    hvacMode = atomicState?.lastHvacMode
+  }
+  hvacMode = hvacMode ?: COOLING
   def labels = (0..23).collect { it.toString() }
   def datasets = vents.collect { vent ->
     // Use the Flair room ID if available to match stored hourly rate data
     def roomId = vent.currentValue('room-id') ?: vent.getId()
     def roomName = vent.currentValue('room-name') ?: vent.getLabel()
     def data = (0..23).collect { hr ->
-      getAverageHourlyRate(roomId, hvacMode, hr) ?: 0.0
+      if (hvacMode == 'both') {
+        def cooling = atomicState?.hourlyRates?.get(roomId)?.get(COOLING)?.get(hr) ?: []
+        def heating = atomicState?.hourlyRates?.get(roomId)?.get(HEATING)?.get(hr) ?: []
+        def combined = (cooling + heating).collect { it as BigDecimal }
+        combined ? cleanDecimalForJson(combined.sum() / combined.size()) : 0.0
+      } else {
+        getAverageHourlyRate(roomId, hvacMode, hr) ?: 0.0
+      }
     }
     [label: roomName, data: data]
   }
+  // If all datasets are empty, show a friendly message instead of a blank chart
+  boolean hasData = datasets.any { ds -> ds.data.any { it != 0 } }
+  if (!hasData) {
+    return '<p>No DAB rate history available for the selected mode.</p>'
+  }
+
   def config = [
     type: 'line',
     data: [labels: labels, datasets: datasets],
@@ -3377,8 +3397,11 @@ String buildDabChart() {
       ]
     ]
   ]
-  def encoded = URLEncoder.encode(JsonOutput.toJson(config), 'UTF-8')
-  "<img src='https://quickchart.io/chart?c=${encoded}' style='max-width:100%'>"
+
+  // Encode the chart config using Base64 to avoid URL length/encoding issues
+  def configJson = JsonOutput.toJson(config)
+  def encoded = configJson.bytes.encodeBase64().toString()
+  "<img src='https://quickchart.io/chart?b64=${encoded}' style='max-width:100%'>"
 }
 
 // ------------------------------
