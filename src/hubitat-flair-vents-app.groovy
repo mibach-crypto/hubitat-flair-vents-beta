@@ -2481,7 +2481,7 @@ def evaluateRebalancingVents() {
         }
         log "Rebalancing Vents - '${vent.currentValue('room-name')}' is at ${roomTemp}° (target: ${setPoint})", 3
         reBalanceVents()
-        break
+        return // Exit after first rebalancing to avoid multiple adjustments per evaluation
       } catch (err) {
         logError err
       }
