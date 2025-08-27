@@ -2945,7 +2945,7 @@ def calculateRoomChangeRate(BigDecimal lastStartTemp, BigDecimal currentTemp, Bi
   
   BigDecimal rate = diffTemps / totalMinutes
   BigDecimal pOpen = percentOpen / 100
-  BigDecimal maxRate = Math.max(rate.doubleValue(), currentRate.doubleValue())
+  BigDecimal maxRate = rate.max(currentRate)
   BigDecimal approxRate = maxRate != 0 ? (rate / maxRate) / pOpen : 0
   if (approxRate > MAX_TEMP_CHANGE_RATE) {
     log "Change rate (${roundBigDecimal(approxRate)}) is greater than ${MAX_TEMP_CHANGE_RATE}, therefore it is being excluded", 3
