@@ -84,12 +84,22 @@ metadata {
             description: 'Change polling frequency of settings (minutes); 0 to disable polling',
             defaultValue:3, required: true, displayDuringSetup: true
         input name: 'debugOutput', type: 'bool', title: 'Enable Debug Logging?', defaultValue: false
+        input name: 'verboseLogging', type: 'bool', title: 'Enable verbose logging?', defaultValue: false
     }
 }
+private void log(int level, String module, String msg, String correlationId = null) {
+  if (!settings?.debugOutput) { return }
 
-private logDebug(msg) {
-  if (settings?.debugOutput) {
-    log.debug "${device.label}: $msg"
+  String prefix = correlationId ? "[${module}|${correlationId}]" : "[${module}]"
+  log.debug "${device.label}: ${prefix} ${msg}"
+
+  if (settings?.verboseLogging) {
+    def tz = location?.timeZone ?: TimeZone.getTimeZone('UTC')
+    def entry = [ts: new Date().format("yyyy-MM-dd'T'HH:mm:ssZ", tz),
+                 level: level, module: module, cid: correlationId, msg: msg]
+    def logs = state.recentLogs ?: []
+    logs << entry
+    state.recentLogs = logs.size() > 50 ? logs[-50..-1] : logs
   }
 }
 
@@ -102,26 +112,26 @@ def setRefreshSchedule() {
 }
 
 def installed() {
-  logDebug('installed')
+  log(1, 'Driver', 'installed', device.id)
   initialize()
 }
 
 def updated() {
-  logDebug('updated')
+  log(1, 'Driver', 'updated', device.id)
   initialize()
 }
 
 def uninstalled() {
-  logDebug('uninstalled')
+  log(1, 'Driver', 'uninstalled', device.id)
 }
 
 def initialize() {
-  logDebug('initialize')
+  log(1, 'Driver', 'initialize', device.id)
   refresh()
 }
 
 def refresh() {
-  logDebug('refresh')
+  log(1, 'Driver', 'refresh', device.id)
   settingsRefresh()
   setRefreshSchedule()
 }
@@ -133,7 +143,7 @@ def settingsRefresh() {
 }
 
 void setLevel(level, duration=null) {
-  logDebug("setLevel to ${level}")
+  log(1, 'Driver', "setLevel to ${level}", device.id)
   parent.patchVent(device, level)
 }
 
@@ -142,7 +152,7 @@ def getLastEventTime() {
 }
 
 def setDeviceState(String attr, value) {
-  logDebug("updating state -- ${attr}: ${value}")
+  log(1, 'Driver', "updating state -- ${attr}: ${value}", device.id)
   state[attr] = value
 }
 
@@ -154,18 +164,18 @@ def getDeviceState(String attr) {
 }
 
 def setRoomActive(isActive) {
-  logDebug("setRoomActive: ${isActive}")
+  log(1, 'Driver', "setRoomActive: ${isActive}", device.id)
   parent.patchRoom(device, isActive)
 }
 
 def setRoomSetPoint(temp) {
-  logDebug("setRoomSetPoint: ${temp}")
+  log(1, 'Driver', "setRoomSetPoint: ${temp}", device.id)
   parent.patchRoomSetPoint(device, temp)
 }
 
 def updateParentPollingInterval(Integer intervalMinutes) {
-  logDebug("Parent requesting polling interval change to ${intervalMinutes} minutes")
-  
+  log(1, 'Driver', "Parent requesting polling interval change to ${intervalMinutes} minutes", device.id)
+
   // Update the internal setting without user intervention
   device.updateSetting('devicePoll', intervalMinutes)
   
