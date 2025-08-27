@@ -20,6 +20,7 @@
 
 import groovy.transform.Field
 import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
 import java.net.URLEncoder
 
 // ------------------------------
@@ -34,6 +35,9 @@ import java.net.URLEncoder
 @Field static final Long DEVICE_CACHE_DURATION_MS = 30000 // 30 second cache duration for device readings
 @Field static final Integer MAX_CACHE_SIZE = 50 // Maximum cache entries per instance
 @Field static final Integer DEFAULT_HISTORY_RETENTION_DAYS = 10 // Default days to retain DAB history
+@Field static final String DAB_HISTORY_FILE = 'data/dab-history.json'
+@Field static final Long DAB_HISTORY_MAX_FILE_SIZE = 1024 * 1000  // 1 MB
+@Field static final Integer DAB_HISTORY_MAX_ARCHIVES = 5
 
 // Content-Type header for API requests.
 @Field static final String CONTENT_TYPE = 'application/json'
@@ -2784,6 +2788,7 @@ def appendHourlyRate(String roomId, String hvacMode, Integer hour, BigDecimal ra
   history[roomId] = roomHistory
   atomicState?.dabHistory = history
   atomicState?.lastHvacMode = hvacMode
+  archiveDabHistoryEntry([type: 'hourlyRate', roomId: roomId, hvacMode: hvacMode, hour: hour, rate: rate, date: dateStr])
 }
 
 def appendDabActivityLog(String message) {
@@ -2792,6 +2797,61 @@ def appendDabActivityLog(String message) {
   list << "${ts} - ${message}"
   if (list.size() > 100) { list = list[-100..-1] }
   atomicState?.dabActivityLog = list
+  archiveDabHistoryEntry([type: 'activity', message: message, timestamp: ts])
+}
+
+private void archiveDabHistoryEntry(Map entry) {
+  try {
+    File file = new File(DAB_HISTORY_FILE)
+    File dir = file.parentFile
+    if (!dir.exists()) { dir.mkdirs() }
+    List history = []
+    if (file.exists()) {
+      try {
+        history = new JsonSlurper().parseText(file.text) as List
+      } catch (ignored) {
+        history = []
+      }
+    } else {
+      file.text = '[]'
+    }
+    history << entry
+    file.text = JsonOutput.prettyPrint(JsonOutput.toJson(history))
+    rotateDabHistoryFileIfNeeded(file)
+  } catch (Exception e) {
+    logWarn "Failed to archive DAB history: ${e.message}"
+  }
+}
+
+private void rotateDabHistoryFileIfNeeded(File file) {
+  if (file.length() > DAB_HISTORY_MAX_FILE_SIZE) {
+    String ts = new Date().format('yyyyMMddHHmmss', location?.timeZone ?: TimeZone.getTimeZone('UTC'))
+    File dir = file.parentFile
+    File archive = new File(dir, "dab-history-${ts}.json")
+    file.renameTo(archive)
+    file.text = '[]'
+    def archives = dir.listFiles()?.findAll { it.name.startsWith('dab-history-') && it.name.endsWith('.json') }?.sort { it.lastModified() } ?: []
+    while (archives.size() > DAB_HISTORY_MAX_ARCHIVES) {
+      archives[0].delete()
+      archives = archives.drop(1)
+    }
+  }
+}
+
+def readDabHistoryArchive() {
+  File file = new File(DAB_HISTORY_FILE)
+  File dir = file.parentFile
+  if (!dir.exists()) { return [] }
+  def slurper = new JsonSlurper()
+  def files = dir.listFiles()?.findAll { it.name.startsWith('dab-history') && it.name.endsWith('.json') }?.sort { it.name }
+  def data = []
+  files.each { f ->
+    try {
+      def content = slurper.parseText(f.text)
+      if (content instanceof List) { data.addAll(content) }
+    } catch (ignored) { }
+  }
+  data
 }
 
 private boolean isFanActive(String opState = null) {

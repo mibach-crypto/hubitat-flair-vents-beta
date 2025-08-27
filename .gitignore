@@ -7,3 +7,4 @@ memory-bank
 .idea/
 .vscode/
 .hubitat/
+data/*.json
