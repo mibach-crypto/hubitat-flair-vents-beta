@@ -40,6 +40,14 @@ Control and automation are at your fingertips. Each Flair vent appears as an ind
 - Set the **vent opening level** with `setLevel` (0 for closed, 100 for fully open).
 - Manage **room activity** using the `setRoomActive` command to strategically manage airflow based on room usage.
 
+### Exporting DAB History
+The app keeps a log of Dynamic Airflow Balancing activity in `dabHistory`.
+To export this data for analysis:
+
+1. Open the app's main page and locate the **Dynamic Airflow Balancing** section.
+2. Select either JSON or CSV, then click **Export DAB History**.
+3. Copy the contents of the displayed text area and save it wherever you like.
+
 ## Development & Testing
 
 ### Prerequisites

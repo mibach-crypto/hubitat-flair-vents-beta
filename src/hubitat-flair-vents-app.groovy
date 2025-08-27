@@ -246,6 +246,21 @@ def mainPage() {
                  description: 'See recent HVAC mode transitions',
                  page: 'dabActivityLogPage'
           }
+          // DAB History Export
+          section {
+            input name: 'dabHistoryFormat', type: 'enum', title: 'Export Format',
+                  options: ['json': 'JSON', 'csv': 'CSV'], defaultValue: 'json',
+                  submitOnChange: true
+            input name: 'exportDabHistory', type: 'button',
+                  title: 'Export DAB History', submitOnChange: true
+            if (state.dabHistoryExportStatus) {
+              paragraph state.dabHistoryExportStatus
+            }
+            if (state.dabHistoryExportData) {
+              paragraph "<textarea rows='8' cols='80' readonly>" +
+                        "${state.dabHistoryExportData}" + "</textarea>"
+            }
+          }
         }
         // Only show vents in DAB section, not pucks
         def vents = getChildDevices().findAll { it.hasAttribute('percent-open') }
@@ -1277,6 +1292,9 @@ def appButtonHandler(String btn) {
       break
     case 'exportEfficiencyData':
       handleExportEfficiencyData()
+      break
+    case 'exportDabHistory':
+      handleExportDabHistory()
       break
     case 'importEfficiencyData':
       handleImportEfficiencyData()
@@ -3031,6 +3049,28 @@ def handleExportEfficiencyData() {
   }
 }
 
+def handleExportDabHistory() {
+  try {
+    log "Starting DAB history export", 2
+    def format = settings?.dabHistoryFormat ?: 'json'
+    def data = exportDabHistory(format)
+    if (data) {
+      state.dabHistoryExportStatus = "\u2713 DAB history exported as ${format.toUpperCase()}. Copy the data below:"
+      state.dabHistoryExportData = data
+      log "DAB history export successful", 2
+    } else {
+      state.dabHistoryExportStatus = '\u2717 No DAB history available.'
+      state.dabHistoryExportData = null
+      log "No DAB history to export", 2
+    }
+  } catch (Exception e) {
+    def errorMsg = "Export failed: ${e.message}"
+    logError errorMsg
+    state.dabHistoryExportStatus = "\u2717 ${errorMsg}"
+    state.dabHistoryExportData = null
+  }
+}
+
 def handleImportEfficiencyData() {
   try {
     log "Starting efficiency data import", 2
@@ -3117,6 +3157,42 @@ def exportEfficiencyData() {
   }
   
   return data
+}
+
+// Export DAB history from atomicState to JSON or CSV
+def exportDabHistory(String format = 'json') {
+  def history = atomicState?.dabHistory ?: []
+
+  // Normalize history to list of maps
+  def records = []
+  if (history instanceof Map) {
+    history.each { k, v ->
+      if (v instanceof Map) {
+        records << (v + [id: k])
+      } else {
+        records << [id: k, value: v]
+      }
+    }
+  } else if (history instanceof List) {
+    records = history
+  }
+
+  if (format == 'csv') {
+    if (!records) { return '' }
+    def headers = records[0].keySet() as List
+    def lines = []
+    lines << headers.join(',')
+    records.each { rec ->
+      lines << headers.collect { h ->
+        def val = rec[h]
+        val = val != null ? val.toString().replaceAll('"', '""') : ''
+        '"' + val + '"'
+      }.join(',')
+    }
+    return lines.join('\n')
+  }
+
+  return JsonOutput.toJson(records)
 }
 
 def generateEfficiencyJSON(data) {
