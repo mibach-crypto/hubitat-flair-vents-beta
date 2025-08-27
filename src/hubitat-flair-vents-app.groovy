@@ -2778,10 +2778,10 @@ def adjustVentOpeningsToEnsureMinimumAirflowTarget(rateAndTempPerVentId, String 
 def getAttribsPerVentId(ventsByRoomId, String hvacMode) {
   def rateAndTemp = [:]
   ventsByRoomId.each { roomId, ventIds ->
-    ventIds.each { ventId ->
+    for (ventId in ventIds) {
       try {
         def vent = getChildDevice(ventId)
-        if (!vent) { return }
+        if (!vent) { continue }
         def rate = hvacMode == COOLING ? (vent.currentValue('room-cooling-rate') ?: 0) : (vent.currentValue('room-heating-rate') ?: 0)
         rate = rate ?: 0
         def isActive = vent.currentValue('room-active') == 'true'
