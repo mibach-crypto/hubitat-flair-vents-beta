@@ -435,11 +435,13 @@ def getStructureId() {
 
 def updated() {
   log.debug 'Hubitat Flair App updating'
+  initializeDabHistory()
   initialize()
 }
 
 def installed() {
   log.debug 'Hubitat Flair App installed'
+  initializeDabHistory()
   initialize()
 }
 
@@ -831,6 +833,10 @@ def cleanupExistingDecimalPrecision() {
   } catch (Exception e) {
     log(2, 'App', "Error during decimal precision cleanup: ${e.message}")
   }
+}
+
+def initializeDabHistory() {
+  atomicState.dabHistory = [:]
 }
 
 // ------------------------------
@@ -2758,7 +2764,7 @@ def evaluateRebalancingVents() {
 
 // Retrieve all stored rates for a specific room, HVAC mode, and hour
 def getHourlyRates(String roomId, String hvacMode, Integer hour) {
-  def history = atomicState?.dabHistory?.get(roomId)?.get(hvacMode) ?: []
+  def history = atomicState?.hourlyRates?.get(roomId)?.get(hvacMode) ?: []
   Integer retention = (settings?.dabHistoryRetentionDays ?: DEFAULT_HISTORY_RETENTION_DAYS) as Integer
   String cutoff = (new Date() - retention).format('yyyy-MM-dd', location?.timeZone ?: TimeZone.getTimeZone('UTC'))
   history.findAll { it.hour == hour && it.date >= cutoff }*.rate.collect { it as BigDecimal }
@@ -2773,7 +2779,7 @@ def getAverageHourlyRate(String roomId, String hvacMode, Integer hour) {
 
 // Append a new efficiency rate with timestamped history and purge by retention period
 def appendHourlyRate(String roomId, String hvacMode, Integer hour, BigDecimal rate) {
-  def history = atomicState?.dabHistory ?: [:]
+  def history = atomicState?.hourlyRates ?: [:]
   def roomHistory = history[roomId] ?: [:]
   def modeHistory = roomHistory[hvacMode] ?: []
 
@@ -2786,9 +2792,29 @@ def appendHourlyRate(String roomId, String hvacMode, Integer hour, BigDecimal ra
 
   roomHistory[hvacMode] = modeHistory
   history[roomId] = roomHistory
-  atomicState?.dabHistory = history
+  atomicState?.hourlyRates = history
   atomicState?.lastHvacMode = hvacMode
   archiveDabHistoryEntry([type: 'hourlyRate', roomId: roomId, hvacMode: hvacMode, hour: hour, rate: rate, date: dateStr])
+}
+
+// Append detailed DAB history keyed by date/hour and room ID
+def appendDabHistory(String roomId, String hvacMode, Integer hour, BigDecimal rate) {
+  def history = atomicState?.dabHistory ?: [:]
+  def tz = location?.timeZone ?: TimeZone.getTimeZone('UTC')
+  String dateStr = new Date().format('yyyy-MM-dd', tz)
+  def dayHistory = history[dateStr] ?: [:]
+  def hourHistory = dayHistory[hour] ?: [:]
+  def roomEntries = hourHistory[roomId] ?: []
+  String timestamp = new Date().format('HH:mm:ss', tz)
+  roomEntries << [timestamp: timestamp, hvacMode: hvacMode, rate: rate]
+  hourHistory[roomId] = roomEntries
+  dayHistory[hour] = hourHistory
+
+  Integer retention = (settings?.dabHistoryRetentionDays ?: DEFAULT_HISTORY_RETENTION_DAYS) as Integer
+  String cutoff = (new Date() - retention).format('yyyy-MM-dd', tz)
+  history[dateStr] = dayHistory
+  history = history.findAll { k, v -> k >= cutoff }
+  atomicState?.dabHistory = history
 }
 
 def appendDabActivityLog(String message) {
@@ -2951,6 +2977,7 @@ def finalizeRoomStates(data) {
         // Store the calculated rate for this room
         roomRates[roomName] = cleanedRate
         appendHourlyRate(roomId, data.hvacMode, hour, cleanedRate)
+        appendDabHistory(roomId, data.hvacMode, hour, cleanedRate)
         
         // Track maximum rates for baseline calculations
         if (cleanedRate > 0) {
@@ -3959,7 +3986,7 @@ String buildDabRatesTable() {
 }
 
 String buildDabProgressTable() {
-  def history = atomicState?.dabHistory ?: [:]
+  def history = atomicState?.hourlyRates ?: [:]
   String roomId = settings?.progressRoom
   if (!roomId) { return '<p>Select a room to view progress.</p>' }
 
