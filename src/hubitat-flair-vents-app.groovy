@@ -2500,7 +2500,7 @@ def getAverageHourlyRate(String roomId, String hvacMode, Integer hour) {
 
 // Append a new efficiency rate to the rolling 10-day hourly history
 def appendHourlyRate(String roomId, String hvacMode, Integer hour, BigDecimal rate) {
-  def hourlyRates = atomicState.hourlyRates ?: [:]
+  def hourlyRates = atomicState?.hourlyRates ?: [:]
   def roomRates = hourlyRates[roomId] ?: [:]
   def modeRates = roomRates[hvacMode] ?: [:]
   def list = modeRates[hour] ?: []
@@ -2509,16 +2509,16 @@ def appendHourlyRate(String roomId, String hvacMode, Integer hour, BigDecimal ra
   modeRates[hour] = list
   roomRates[hvacMode] = modeRates
   hourlyRates[roomId] = roomRates
-  atomicState.hourlyRates = hourlyRates
-  atomicState.lastHvacMode = hvacMode
+  atomicState?.hourlyRates = hourlyRates
+  atomicState?.lastHvacMode = hvacMode
 }
 
 def appendDabActivityLog(String message) {
-  def list = atomicState.dabActivityLog ?: []
+  def list = atomicState?.dabActivityLog ?: []
   String ts = new Date().format('yyyy-MM-dd HH:mm:ss', location?.timeZone ?: TimeZone.getTimeZone('UTC'))
   list << "${ts} - ${message}"
   if (list.size() > 100) { list = list[-100..-1] }
-  atomicState.dabActivityLog = list
+  atomicState?.dabActivityLog = list
 }
 
 private boolean isFanActive(String opState = null) {
@@ -3358,7 +3358,7 @@ def efficiencyDataPage() {
 def dabActivityLogPage() {
   dynamicPage(name: 'dabActivityLogPage', title: '📘 DAB Activity Log', install: false, uninstall: false) {
     section {
-      def entries = atomicState.dabActivityLog ?: []
+      def entries = atomicState?.dabActivityLog ?: []
       if (entries) {
         entries.reverse().each { paragraph "<code>${it}</code>" }
       } else {
@@ -3385,8 +3385,8 @@ def dabChartPage() {
 }
 
 String buildDabChart() {
-  def vents = getChildDevices().findAll { it.hasAttribute('percent-open') }
-  if (!vents || vents.size() == 0) {
+  def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+  if (vents.isEmpty()) {
     return '<p>No vent data available.</p>'
   }
   String hvacMode = settings?.chartHvacMode ?: getThermostat1Mode() ?: atomicState?.lastHvacMode
