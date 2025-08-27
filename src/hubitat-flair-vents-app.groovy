@@ -127,11 +127,9 @@ import java.net.URLEncoder
 // Maximum number of retry attempts for async API calls.
 @Field static final Integer MAX_API_RETRY_ATTEMPTS = 5
 
-// Delay before verifying vent state after a patch (in milliseconds).
-@Field static final Integer VENT_VERIFY_DELAY_MS = 2000
-
-// Maximum number of attempts to reconcile vent state after a patch.
-@Field static final Integer VENT_PATCH_MAX_RETRIES = 3
+// Delay before verifying vent position after a patch (in ms) and max verification attempts
+@Field static final Integer VENT_VERIFY_DELAY_MS = 3000
+@Field static final Integer MAX_VENT_VERIFY_ATTEMPTS = 3
 
 // ------------------------------
 // End Constants
@@ -212,6 +210,14 @@ def mainPage() {
         input name: 'structureId', type: 'text', title: 'Home Id (SID)', required: false, submitOnChange: true
       }
       listDiscoveredDevices()
+
+      if (state.ventOpenDiscrepancies) {
+        section('Vent Synchronization Issues') {
+          state.ventOpenDiscrepancies.each { id, info ->
+            paragraph "<span style='color: red;'>${info.name ?: id} expected ${info.target}% but reported ${info.actual}%</span>"
+          }
+        }
+      }
 
       section('<h2>Dynamic Airflow Balancing</h2>') {
         input name: 'dabEnabled', type: 'bool', title: 'Use Dynamic Airflow Balancing', defaultValue: false, submitOnChange: true
@@ -2606,8 +2612,8 @@ def patchVentDevice(device, percentOpen, attempt = 1) {
   // Don't update local state until API call succeeds
   patchDataAsync(uri, 'handleVentPatch', body, [device: device, targetOpen: pOpen])
 
-  // Schedule verification of the vent's reported state
-  runInMillis(VENT_VERIFY_DELAY_MS, 'verifyVentPercentOpen', [data: [device: device, targetOpen: pOpen, attempt: attempt]])
+  // Schedule verification of the vent's reported percent open
+  runInMillis(VENT_VERIFY_DELAY_MS, 'verifyVentPercentOpen', [data: [deviceId: deviceId, targetOpen: pOpen, attempt: attempt]])
 }
 
 // Keep the old method name for backward compatibility
@@ -2658,58 +2664,37 @@ def handleVentPatch(resp, data) {
   }
 }
 
+// Verify that the vent reached the requested percent open
 def verifyVentPercentOpen(data) {
-  def device = null
-  if (data.device?.getDeviceNetworkId) {
-    device = data.device
-  } else if (data.device?.deviceNetworkId) {
-    device = getChildDevice(data.device.deviceNetworkId)
-  }
+  if (!data?.deviceId || data.targetOpen == null) { return }
+  def device = getChildDevice(data.deviceId)
   if (!device) { return }
-
-  def targetOpen = data.targetOpen
-  def attempt = data.attempt ?: 1
-  def deviceId = device.getDeviceNetworkId()
-  def uri = "${BASE_URL}/api/vents/${deviceId}/current-reading"
-
-  getDataAsync(uri, 'handleVerifyVentPercentOpen', [device: device, targetOpen: targetOpen, attempt: attempt])
+  def uri = "${BASE_URL}/api/vents/${data.deviceId}/current-reading"
+  getDataAsync(uri, 'handleVentVerify', [device: device, targetOpen: data.targetOpen, attempt: data.attempt ?: 1])
 }
 
-def handleVerifyVentPercentOpen(resp, data) {
+// Handle verification response and retry if needed
+def handleVentVerify(resp, data) {
   decrementActiveRequests()
-  if (!isValidResponse(resp) || !data) { return }
-
-  def device = null
-  if (data.device?.getDeviceNetworkId) {
-    device = data.device
-  } else if (data.device?.deviceNetworkId) {
-    device = getChildDevice(data.device.deviceNetworkId)
-  }
-  if (!device) { return }
-
+  if (!isValidResponse(resp) || !data?.device) { return }
+  def device = data.device
   def attempt = data.attempt ?: 1
-  def target = data.targetOpen
-  def respJson = resp.getJson()
-  processVentTraits(device, respJson)
-  def reported = respJson.data?.attributes?.'percent-open'
+  def target = (data.targetOpen ?: 0) as int
+  def actual = (resp.getJson()?.data?.attributes?.'percent-open' ?: 0) as int
 
-  if (reported != target) {
-    def msg = "${device} reported ${reported}% but expected ${target}% (attempt ${attempt}/${VENT_PATCH_MAX_RETRIES})"
-    if (attempt >= VENT_PATCH_MAX_RETRIES) {
-      logError msg
-      state.ventPatchDiscrepancies = state.ventPatchDiscrepancies ?: [:]
-      state.ventPatchDiscrepancies[device.getDeviceNetworkId()] = [name: device.getLabel(), requested: target, reported: reported]
+  if (actual != target) {
+    if (attempt < MAX_VENT_VERIFY_ATTEMPTS) {
+      def nextAttempt = attempt + 1
+      def logLevel = attempt == 1 ? 2 : 1
+      log "Vent ${device.getLabel()} reported ${actual}% instead of ${target}% (attempt ${attempt}/${MAX_VENT_VERIFY_ATTEMPTS}), retrying", logLevel
+      patchVentDevice(device, target, nextAttempt)
     } else {
-      if (attempt == 1) {
-        log msg, 2
-      } else {
-        logWarn msg
-      }
-      patchVentDevice(device, target, attempt + 1)
+      logError "Vent ${device.getLabel()} failed to reach ${target}% after ${MAX_VENT_VERIFY_ATTEMPTS} attempts (reported ${actual}%)"
+      state.ventOpenDiscrepancies = state.ventOpenDiscrepancies ?: [:]
+      state.ventOpenDiscrepancies[device.getDeviceNetworkId()] = [name: device.getLabel(), target: target, actual: actual]
     }
   } else {
-    state.ventPatchDiscrepancies?.remove(device.getDeviceNetworkId())
-    log "${device} confirmed at ${reported}%", 3
+    state.ventOpenDiscrepancies?.remove(device.getDeviceNetworkId())
   }
 }
 
