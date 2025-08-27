@@ -152,20 +152,33 @@ preferences {
 }
 
 def mainPage() {
-  dynamicPage(name: 'mainPage', title: 'Setup', install: true, uninstall: true) {
+  def validation = validatePreferences()
+  if (settings?.validateNow) {
+    performValidationTest()
+    app.updateSetting('validateNow', null)
+  }
+
+  dynamicPage(name: 'mainPage', title: 'Setup', install: validation.valid, uninstall: true) {
     section('OAuth Setup') {
       input name: 'clientId', type: 'text', title: 'Client Id (OAuth 2.0)', required: true, submitOnChange: true
       input name: 'clientSecret', type: 'password', title: 'Client Secret OAuth 2.0', required: true, submitOnChange: true
       paragraph '<small><b>Obtain your client Id and secret from ' +
                 "<a href='https://forms.gle/VohiQjWNv9CAP2ASA' target='_blank'>here</a></b></small>"
-      
+
+      if (validation.errors.clientId) {
+        paragraph "<span style='color: red;'>${validation.errors.clientId}</span>"
+      }
+      if (validation.errors.clientSecret) {
+        paragraph "<span style='color: red;'>${validation.errors.clientSecret}</span>"
+      }
+
       if (settings?.clientId && settings?.clientSecret) {
         if (!state.flairAccessToken && !state.authInProgress) {
           state.authInProgress = true
           state.remove('authError')  // Clear any previous error when starting new auth
           runIn(2, 'autoAuthenticate')
         }
-        
+
         if (state.flairAccessToken && !state.authError) {
           paragraph "<span style='color: green;'>✓ Authenticated successfully</span>"
         } else if (state.authError && !state.authInProgress) {
@@ -262,8 +275,12 @@ def mainPage() {
         }
         // Only show vents in DAB section, not pucks
         def vents = getChildDevices().findAll { it.hasAttribute('percent-open') }
+        def missingMappings = validation.errors.roomMappings ?: []
         for (child in vents) {
-          input name: "vent${child.getId()}Thermostat", type: 'capability.temperatureMeasurement', title: "Choose Thermostat for ${child.getLabel()} (Optional)", multiple: false, required: false
+          input name: "vent${child.getId()}Thermostat", type: 'capability.temperatureMeasurement', title: "Choose Thermostat for ${child.getLabel()}", multiple: false, required: true
+          if (missingMappings.contains(child.getLabel())) {
+            paragraph "<span style='color: red;'>Room mapping required for ${child.getLabel()}</span>"
+          }
         }
       }
 
@@ -275,9 +292,28 @@ def mainPage() {
                   'will only adjust to 0%, 50%, or 100%. Lower percentages allow for finer control, but may ' +
                   'result in more frequent adjustments (which could affect battery-powered vents).</small>'
       }
+
+      section('Polling Options') {
+        input name: 'pollingIntervalActive', type: 'number', title: 'Polling interval when HVAC active (minutes)', defaultValue: POLLING_INTERVAL_ACTIVE, required: true, submitOnChange: true
+        if (validation.errors.pollingActive) {
+          paragraph "<span style='color: red;'>${validation.errors.pollingActive}</span>"
+        }
+        input name: 'pollingIntervalIdle', type: 'number', title: 'Polling interval when HVAC idle (minutes)', defaultValue: POLLING_INTERVAL_IDLE, required: true, submitOnChange: true
+        if (validation.errors.pollingIdle) {
+          paragraph "<span style='color: red;'>${validation.errors.pollingIdle}</span>"
+        }
+      }
     } else {
       section {
         paragraph 'Device discovery button is hidden until authorization is completed.'
+      }
+    }
+
+    section('Validation') {
+      input name: 'validateNow', type: 'button', title: 'Validate Settings', submitOnChange: true
+      if (state.lastValidationResult?.message) {
+        def color = state.lastValidationResult.success ? 'green' : 'red'
+        paragraph "<span style='color: ${color};'>${state.lastValidationResult.message}</span>"
       }
     }
     section('Debug Options') {
@@ -613,6 +649,70 @@ private log(String msg, int level = 3) {
 // Safe getter for thermostat mode from atomic state
 private getThermostat1Mode() {
   return atomicState?.thermostat1Mode
+}
+
+private void logValidationFailure(String field, String reason) {
+  def msg = JsonOutput.toJson([event: 'validationFailure', field: field, reason: reason])
+  log.warn msg
+}
+
+private Map validatePreferences() {
+  def errors = [:]
+  boolean valid = true
+
+  if (!settings?.clientId) {
+    errors.clientId = 'Client ID is required'
+    logValidationFailure('clientId', 'missing')
+    valid = false
+  }
+  if (!settings?.clientSecret) {
+    errors.clientSecret = 'Client Secret is required'
+    logValidationFailure('clientSecret', 'missing')
+    valid = false
+  }
+
+  def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') }
+  def missingRooms = []
+  vents.each { v ->
+    def key = "vent${v.getId()}Thermostat"
+    if (!settings?."${key}") {
+      missingRooms << v.getLabel()
+      logValidationFailure(key, 'missing')
+      valid = false
+    }
+  }
+  if (missingRooms) { errors.roomMappings = missingRooms }
+
+  Integer active = settings?.pollingIntervalActive as Integer
+  if (!active || active < 1 || active > 15) {
+    errors.pollingActive = 'Active polling interval must be between 1 and 15 minutes'
+    logValidationFailure('pollingIntervalActive', 'out_of_range')
+    valid = false
+  }
+  Integer idle = settings?.pollingIntervalIdle as Integer
+  if (!idle || idle < 5 || idle > 60) {
+    errors.pollingIdle = 'Idle polling interval must be between 5 and 60 minutes'
+    logValidationFailure('pollingIntervalIdle', 'out_of_range')
+    valid = false
+  }
+
+  [valid: valid, errors: errors]
+}
+
+private void performValidationTest() {
+  def result = [success: false, message: '']
+  try {
+    if (!state.flairAccessToken) {
+      throw new Exception('Missing access token')
+    }
+    getStructureData()
+    result.success = true
+    result.message = 'Successfully connected to Flair API'
+  } catch (e) {
+    result.message = "Connectivity test failed: ${e.message}"
+    logValidationFailure('connectivity', e.message)
+  }
+  state.lastValidationResult = result
 }
 
 
@@ -2397,7 +2497,7 @@ def thermostat1ChangeStateHandler(evt) {
       runEvery30Minutes('reBalanceVents')
       
       // Update polling to active interval when HVAC is running
-      updateDevicePollingInterval(POLLING_INTERVAL_ACTIVE)
+      updateDevicePollingInterval((settings?.pollingIntervalActive ?: POLLING_INTERVAL_ACTIVE) as Integer)
       break
     default:
       unschedule('initializeRoomStates')
@@ -2422,7 +2522,7 @@ def thermostat1ChangeStateHandler(evt) {
       }
 
       // Update polling to idle interval when HVAC is idle
-      updateDevicePollingInterval(POLLING_INTERVAL_IDLE)
+      updateDevicePollingInterval((settings?.pollingIntervalIdle ?: POLLING_INTERVAL_IDLE) as Integer)
       break
   }
 }
@@ -2445,7 +2545,7 @@ def updateHvacStateFromDuctTemps() {
       recordStartingTemperatures()
       runEvery5Minutes('evaluateRebalancingVents')
       runEvery30Minutes('reBalanceVents')
-      updateDevicePollingInterval(POLLING_INTERVAL_ACTIVE)
+      updateDevicePollingInterval((settings?.pollingIntervalActive ?: POLLING_INTERVAL_ACTIVE) as Integer)
     }
   } else {
     if (atomicState.thermostat1State) {
@@ -2463,7 +2563,7 @@ def updateHvacStateFromDuctTemps() {
       ]
       runInMillis(TEMP_READINGS_DELAY_MS, 'finalizeRoomStates', [data: params])
       atomicState.remove('thermostat1State')
-      updateDevicePollingInterval(POLLING_INTERVAL_IDLE)
+      updateDevicePollingInterval((settings?.pollingIntervalIdle ?: POLLING_INTERVAL_IDLE) as Integer)
     }
   }
   String currentMode = atomicState.thermostat1State?.mode ?: 'idle'
