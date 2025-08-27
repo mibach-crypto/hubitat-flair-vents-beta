@@ -144,6 +144,7 @@ definition(
 
 preferences {
   page(name: 'mainPage')
+  page(name: 'diagnosticsPage')
   page(name: 'efficiencyDataPage')
   page(name: 'dabChartPage')
   page(name: 'dabRatesTablePage')
@@ -279,6 +280,11 @@ def mainPage() {
       section {
         paragraph 'Device discovery button is hidden until authorization is completed.'
       }
+    }
+    section('Diagnostics & Troubleshooting') {
+      href name: 'diagnosticsLink', title: '\uD83D\uDD27 Diagnostics',
+           description: 'View cache, errors, and run health checks',
+           page: 'diagnosticsPage'
     }
     section('Debug Options') {
       input name: 'debugLevel', type: 'enum', title: 'Choose debug level', defaultValue: 0,
@@ -983,6 +989,9 @@ def decrementActiveRequests() {
 // Wrapper for log.error that respects debugLevel setting
 private logError(String msg) {
   def settingsLevel = (settings?.debugLevel as Integer) ?: 0
+  def ts = new Date().format('yyyy-MM-dd HH:mm:ss', location.timeZone)
+  state.recentErrors = (["${ts} - ${msg}"] + (state.recentErrors ?: []))
+                        .take(10)
   if (settingsLevel > 0) {
     log.error msg
   }
@@ -1296,6 +1305,17 @@ def appButtonHandler(String btn) {
       break
     case 'clearExportData':
       handleClearExportData()
+      break
+    case 'diagReauth':
+      login()
+      unschedule(login)
+      runEvery1Hour(login)
+      break
+    case 'resetCache':
+      clearInstanceCache()
+      break
+    case 'resyncVents':
+      discover()
       break
   }
 }
@@ -3248,6 +3268,47 @@ def matchDeviceByRoomId(roomId) {
 def matchDeviceByRoomName(roomName) {
   return getChildDevices().find { device ->
     device.hasAttribute('percent-open') && device.currentValue('room-name') == roomName
+  }
+}
+
+def getHealthCheckResults() {
+  initializeInstanceCaches()
+  def cacheKey = "instanceCache_${getInstanceId()}"
+  [
+    authentication : state.flairAccessToken ? 'Authenticated' : 'Not authenticated',
+    deviceCacheEntries: state."${cacheKey}_deviceCache"?.size() ?: 0,
+    roomCacheEntries  : state."${cacheKey}_roomCache"?.size() ?: 0,
+    childDevices      : getChildDevices()?.size() ?: 0
+  ]
+}
+
+def diagnosticsPage() {
+  initializeInstanceCaches()
+  def cacheKey = "instanceCache_${getInstanceId()}"
+  def deviceCache = state."${cacheKey}_deviceCache" ?: [:]
+  def cacheJson = deviceCache ? JsonOutput.prettyPrint(JsonOutput.toJson(deviceCache)) : 'No cached device data.'
+  def errors = state.recentErrors ?: []
+  def health = getHealthCheckResults()
+
+  dynamicPage(name: 'diagnosticsPage', title: 'Diagnostics', install: false, uninstall: false) {
+    section('Cached Device Data') {
+      paragraph "<pre>${cacheJson}</pre>"
+    }
+    section('Recent Error Logs') {
+      if (errors) {
+        errors.each { paragraph it }
+      } else {
+        paragraph 'No recent errors.'
+      }
+    }
+    section('Health Check') {
+      health.each { k, v -> paragraph "${k}: ${v}" }
+    }
+    section('Actions') {
+      input name: 'diagReauth', type: 'button', title: 'Re-authenticate', submitOnChange: true
+      input name: 'resetCache', type: 'button', title: 'Clear Cache', submitOnChange: true
+      input name: 'resyncVents', type: 'button', title: 'Re-Sync Vents', submitOnChange: true
+    }
   }
 }
 

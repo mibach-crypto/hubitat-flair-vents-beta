@@ -40,6 +40,19 @@ Control and automation are at your fingertips. Each Flair vent appears as an ind
 - Set the **vent opening level** with `setLevel` (0 for closed, 100 for fully open).
 - Manage **room activity** using the `setRoomActive` command to strategically manage airflow based on room usage.
 
+### Diagnostics & Debugging
+
+The app includes a dedicated **Diagnostics** page accessible from the main configuration screen.
+Use it to:
+
+- Review cached device data currently held by the app.
+- Inspect the last 10 error log entries with timestamps.
+- View basic health-check information such as authentication status and cache sizes.
+- Trigger on-demand actions like re-authentication, cache clearing, or vent re-syncing.
+
+Enable detailed logging by setting **Debug Options → Choose debug level** to a value other than `None`.
+Higher levels output more information to the Hubitat logs, which can help interpret diagnostics results.
+
 ## Development & Testing
 
 ### Prerequisites
