@@ -40,13 +40,18 @@ Control and automation are at your fingertips. Each Flair vent appears as an ind
 - Set the **vent opening level** with `setLevel` (0 for closed, 100 for fully open).
 - Manage **room activity** using the `setRoomActive` command to strategically manage airflow based on room usage.
 
-### Exporting DAB History
-The app keeps a log of Dynamic Airflow Balancing activity in `dabHistory`.
-To export this data for analysis:
+## Diagnostics & Debugging
 
-1. Open the app's main page and locate the **Dynamic Airflow Balancing** section.
-2. Select either JSON or CSV, then click **Export DAB History**.
-3. Copy the contents of the displayed text area and save it wherever you like.
+Access **View Diagnostics** from the app's Debug Options to troubleshoot your setup.
+
+- **Cached Device Data** – shows current vent cache contents. Use **Reset Cache** if data appears stale.
+- **Recent Error Logs** – lists the last 20 errors captured when debug mode is enabled.
+- **Health Check** – validates API connectivity and counts discovered vents. Press **Run Health Check** for an updated status.
+- **Actions** – buttons to re-authenticate or re-sync vents when needed.
+
+### Enable Debug Mode
+
+In the app's settings, choose a **debug level** greater than `0` under Debug Options. Higher levels output more detailed logs and populate the diagnostics page.
 
 ## Development & Testing
 

@@ -158,7 +158,7 @@ preferences {
   page(name: 'dabActivityLogPage')
   page(name: 'dabHistoryPage')
   page(name: 'dabProgressPage')
-  page(name: 'dabDailySummaryPage')
+  page(name: 'diagnosticsPage')
 }
 
 def mainPage() {
@@ -351,9 +351,80 @@ def mainPage() {
     section('Debug Options') {
       input name: 'debugLevel', type: 'enum', title: 'Choose debug level', defaultValue: 0,
             options: [0: 'None', 1: 'Level 1 (All)', 2: 'Level 2', 3: 'Level 3'], submitOnChange: true
-      input name: 'verboseLogging', type: 'bool', title: 'Enable verbose logging', defaultValue: false, submitOnChange: true
+      href name: 'diagnosticsLink', title: 'View Diagnostics',
+           description: 'Troubleshoot vent data and logs', page: 'diagnosticsPage'
     }
   }
+}
+
+def diagnosticsPage() {
+  dynamicPage(name: 'diagnosticsPage', title: 'Diagnostics') {
+    section('Cached Device Data') {
+      def cache = state."instanceCache_${getInstanceId()}_deviceCache"
+      if (cache) {
+        cache.each { id, data ->
+          paragraph "<b>${id}</b>: ${data}"
+        }
+      } else {
+        paragraph 'No cached device data.'
+      }
+      input name: 'resetCache', type: 'button', title: 'Reset Cache'
+    }
+    section('Recent Error Logs') {
+      def logs = state.recentErrors ?: []
+      if (logs) {
+        logs.reverse().each { paragraph it }
+      } else {
+        paragraph 'No recent errors.'
+      }
+    }
+    section('Health Check') {
+      if (state.healthCheckResults) {
+        paragraph state.healthCheckResults.results.join('<br/>')
+        paragraph "<small>Last run: ${state.healthCheckResults.timestamp}</small>"
+      } else {
+        paragraph 'No health check run yet.'
+      }
+      input name: 'runHealthCheck', type: 'button', title: 'Run Health Check'
+    }
+    section('Actions') {
+      input name: 'reauthenticate', type: 'button', title: 'Re-Authenticate'
+      input name: 'resyncVents', type: 'button', title: 'Re-Sync Vents'
+    }
+  }
+}
+
+def performHealthCheck() {
+  def results = []
+  results << (state.flairAccessToken ? 'Auth token present' : 'Auth token missing')
+  try {
+    httpGet([
+      uri: "${BASE_URL}/api/structures",
+      headers: [Authorization: "Bearer ${state.flairAccessToken}"],
+      timeout: HTTP_TIMEOUT_SECS,
+      contentType: CONTENT_TYPE
+    ]) { resp ->
+      results << "API reachable: HTTP ${resp.status}"
+    }
+  } catch (e) {
+    results << "API error: ${e.message}"
+  }
+  def ventCount = getChildDevices().findAll { it.hasAttribute('percent-open') }.size()
+  results << "Vents discovered: ${ventCount}"
+  state.healthCheckResults = [
+    timestamp: new Date().format('yyyy-MM-dd HH:mm:ss', location.timeZone ?: TimeZone.getTimeZone('UTC')),
+    results: results
+  ]
+}
+
+def resetCaches() {
+  def instanceId = getInstanceId()
+  def cacheKey = "instanceCache_${instanceId}"
+  ['roomCache', 'roomCacheTimestamps', 'deviceCache', 'deviceCacheTimestamps',
+   'pendingRoomRequests', 'pendingDeviceRequests', 'initialized'].each { suffix ->
+    state.remove("${cacheKey}_${suffix}")
+  }
+  log 'Instance caches cleared', 2
 }
 
 // ------------------------------
@@ -1166,6 +1237,12 @@ private void logError(String msg, String module = 'App', String correlationId = 
       state.recentLogs = logs.size() > 50 ? logs[-50..-1] : logs
     }
   }
+  def ts = new Date().format('yyyy-MM-dd HH:mm:ss', location.timeZone ?: TimeZone.getTimeZone('UTC'))
+  def errors = (state.recentErrors ?: []) + ["${ts} - ${msg}"]
+  if (errors.size() > 20) {
+    errors = errors[-20..-1]
+  }
+  state.recentErrors = errors
 }
 
 // Wrapper for log.warn that respects debugLevel setting
@@ -1546,15 +1623,24 @@ def appButtonHandler(String btn) {
       unschedule(login)
       runEvery1Hour(login)
       break
-      case 'discoverDevices':
-        discover()
-        break
-      case 'runDabHistoryCheck':
-        checkDabHistoryIntegrity()
-        break
-      case 'exportEfficiencyData':
-        handleExportEfficiencyData()
-        break
+    case 'discoverDevices':
+      discover()
+      break
+    case 'runHealthCheck':
+      performHealthCheck()
+      break
+    case 'reauthenticate':
+      autoReauthenticate()
+      break
+    case 'resetCache':
+      resetCaches()
+      break
+    case 'resyncVents':
+      discover()
+      break
+    case 'exportEfficiencyData':
+      handleExportEfficiencyData()
+      break
     case 'importEfficiencyData':
       handleImportEfficiencyData()
       break
