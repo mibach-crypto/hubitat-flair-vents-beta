@@ -2420,7 +2420,9 @@ def updateHvacStateFromDuctTemps() {
   if (!settings?.dabEnabled) { return }
   String previousMode = atomicState.thermostat1State?.mode ?: 'idle'
   String hvacMode = calculateHvacMode()
-  appendDabActivityLog("Start: ${previousMode} → ${hvacMode ?: 'idle'}")
+  if (hvacMode != previousMode) {
+    appendDabActivityLog("Start: ${previousMode} → ${hvacMode ?: 'idle'}")
+  }
   if (hvacMode) {
     if (!atomicState.thermostat1State || atomicState.thermostat1State?.mode != hvacMode) {
       atomicStateUpdate('thermostat1State', 'mode', hvacMode)
@@ -2452,11 +2454,14 @@ def updateHvacStateFromDuctTemps() {
     }
   }
   String currentMode = atomicState.thermostat1State?.mode ?: 'idle'
-  appendDabActivityLog("End: ${previousMode} → ${currentMode}")
+  if (currentMode != previousMode) {
+    appendDabActivityLog("End: ${previousMode} → ${currentMode}")
+  }
 }
 
 def reBalanceVents() {
   log 'Rebalancing Vents!!!', 3
+  appendDabActivityLog("Rebalancing vents")
   def params = [
     ventIdsByRoomId: atomicState.ventsByRoomId,
     startedCycle: atomicState.thermostat1State?.startedCycle,
