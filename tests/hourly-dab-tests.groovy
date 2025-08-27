@@ -34,4 +34,24 @@ class HourlyDabTests extends Specification {
     script.atomicState.hourlyRates.room1.cooling[0].size() == 10
     script.getAverageHourlyRate('room1', 'cooling', 0) == 6.5
   }
+
+  def "hourly rates are retrieved when hour keys are strings"() {
+    setup:
+    final log = new CapturingLog()
+    AppExecutor executorApi = Mock {
+      _ * getState() >> [:]
+      _ * getLog() >> log
+    }
+    def sandbox = new HubitatAppSandbox(APP_FILE)
+    def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
+
+    when:
+    script.appendHourlyRate('room1', 'cooling', 0, 5.0)
+    // Simulate Hubitat's JSON serialization which converts numeric keys to strings
+    script.atomicState.hourlyRates = new groovy.json.JsonSlurper().parseText(
+        groovy.json.JsonOutput.toJson(script.atomicState.hourlyRates))
+
+    then:
+    script.getAverageHourlyRate('room1', 'cooling', 0) == 5.0d
+  }
 }
