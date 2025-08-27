@@ -125,6 +125,9 @@ import java.net.URLEncoder
 // Maximum number of retry attempts for async API calls.
 @Field static final Integer MAX_API_RETRY_ATTEMPTS = 5
 
+// Consecutive failures per URI before resetting API connection.
+@Field static final Integer API_FAILURE_THRESHOLD = 3
+
 // ------------------------------
 // End Constants
 // ------------------------------
@@ -1046,11 +1049,13 @@ def isValidResponse(resp) {
 
 // Updated getDataAsync to accept a String callback name with simple throttling.
 def getDataAsync(String uri, String callback, data = null, int retryCount = 0) {
+  atomicState.failureCounts = atomicState.failureCounts ?: [:]
   if (canMakeRequest()) {
+    atomicState.failureCounts.remove(uri)
     incrementActiveRequests()
     def headers = [ Authorization: "Bearer ${state.flairAccessToken}" ]
     def httpParams = [ uri: uri, headers: headers, contentType: CONTENT_TYPE, timeout: HTTP_TIMEOUT_SECS ]
-    
+
     try {
       asynchttpGet(callback, httpParams, data)
     } catch (Exception e) {
@@ -1067,9 +1072,11 @@ def getDataAsync(String uri, String callback, data = null, int retryCount = 0) {
       } else {
         retryData.data = data
       }
-      runInMillis(API_CALL_DELAY_MS, 'retryGetDataAsyncWrapper', [data: retryData])
+      def delay = (Math.pow(2, retryCount) * API_CALL_DELAY_MS).toLong()
+      runInMillis(delay, 'retryGetDataAsyncWrapper', [data: retryData])
     } else {
       logError "getDataAsync failed after ${MAX_API_RETRY_ATTEMPTS} retries for URI: ${uri}"
+      incrementFailureCount(uri)
     }
   }
 }
@@ -1124,8 +1131,10 @@ def retryGetDataAsyncWrapper(data) {
 // If callback is null, we use a no-op callback.
 def patchDataAsync(String uri, String callback, body, data = null, int retryCount = 0) {
   if (!callback) { callback = 'noOpHandler' }
-  
+  atomicState.failureCounts = atomicState.failureCounts ?: [:]
+
   if (canMakeRequest()) {
+    atomicState.failureCounts.remove(uri)
     incrementActiveRequests()
     def headers = [ Authorization: "Bearer ${state.flairAccessToken}" ]
     def httpParams = [
@@ -1136,7 +1145,7 @@ def patchDataAsync(String uri, String callback, body, data = null, int retryCoun
        timeout: HTTP_TIMEOUT_SECS,
        body: JsonOutput.toJson(body)
     ]
-    
+
     try {
       asynchttpPatch(callback, httpParams, data)
     } catch (Exception e) {
@@ -1148,9 +1157,11 @@ def patchDataAsync(String uri, String callback, body, data = null, int retryCoun
   } else {
     if (retryCount < MAX_API_RETRY_ATTEMPTS) {
       def retryData = [uri: uri, callback: callback, body: body, data: data, retryCount: retryCount + 1]
-      runInMillis(API_CALL_DELAY_MS, 'retryPatchDataAsyncWrapper', [data: retryData])
+      def delay = (Math.pow(2, retryCount) * API_CALL_DELAY_MS).toLong()
+      runInMillis(delay, 'retryPatchDataAsyncWrapper', [data: retryData])
     } else {
       logError "patchDataAsync failed after ${MAX_API_RETRY_ATTEMPTS} retries for URI: ${uri}"
+      incrementFailureCount(uri)
     }
   }
 }
@@ -1161,8 +1172,28 @@ def retryPatchDataAsyncWrapper(data) {
     logError "retryPatchDataAsyncWrapper called with invalid data: ${data}"
     return
   }
-  
+
   patchDataAsync(data.uri, data.callback, data.body, data.data, data.retryCount)
+}
+
+private incrementFailureCount(String uri) {
+  atomicState.failureCounts = atomicState.failureCounts ?: [:]
+  def count = (atomicState.failureCounts[uri] ?: 0) + 1
+  atomicState.failureCounts[uri] = count
+  if (count >= API_FAILURE_THRESHOLD) {
+    def msg = "API circuit breaker activated for ${uri} after ${count} failures"
+    logWarn msg
+    try {
+      sendEvent(name: 'apiCircuitBreaker', value: uri, descriptionText: msg)
+    } catch (Exception ignored) {}
+    resetApiConnection()
+  }
+}
+
+def resetApiConnection() {
+  logWarn 'Resetting API connection'
+  atomicState.failureCounts = [:]
+  authenticate()
 }
 
 def noOpHandler(resp, data) {
