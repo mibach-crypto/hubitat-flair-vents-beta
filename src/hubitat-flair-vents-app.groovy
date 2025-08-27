@@ -33,6 +33,7 @@ import java.net.URLEncoder
 @Field static final Long ROOM_CACHE_DURATION_MS = 30000 // 30 second cache duration
 @Field static final Long DEVICE_CACHE_DURATION_MS = 30000 // 30 second cache duration for device readings
 @Field static final Integer MAX_CACHE_SIZE = 50 // Maximum cache entries per instance
+@Field static final Integer DEFAULT_HISTORY_RETENTION_DAYS = 10 // Default days to retain DAB history
 
 // Content-Type header for API requests.
 @Field static final String CONTENT_TYPE = 'application/json'
@@ -200,6 +201,11 @@ def mainPage() {
                     'below a specified percent to prevent HVAC issues.</small>'
           input name: 'thermostat1CloseInactiveRooms', type: 'bool', title: 'Close vents on inactive rooms', defaultValue: true, submitOnChange: true
           input name: 'fanOnlyOpenAllVents', type: 'bool', title: 'Fan-only → open all vents 100 %', defaultValue: true, submitOnChange: true
+          input name: 'dabHistoryRetentionDays', type: 'number', title: 'DAB history retention (days)', defaultValue: DEFAULT_HISTORY_RETENTION_DAYS, submitOnChange: true
+
+          if (settings.dabHistoryRetentionDays && settings.dabHistoryRetentionDays < 1) {
+            app.updateSetting('dabHistoryRetentionDays', 1)
+          }
 
           if (settings.thermostat1AdditionalStandardVents < 0) {
             app.updateSetting('thermostat1AdditionalStandardVents', 0)
@@ -2496,27 +2502,37 @@ def evaluateRebalancingVents() {
   }
 }
 
-// Retrieve the average hourly efficiency rate for a room and HVAC mode
-def getAverageHourlyRate(String roomId, String hvacMode, Integer hour) {
-  def rates = atomicState?.hourlyRates?.get(roomId)?.get(hvacMode)?.get(hour)
-  if (!rates || rates.size() == 0) { return 0.0 }
-  BigDecimal sum = 0.0
-  rates.each { sum += it as BigDecimal }
-  cleanDecimalForJson(sum / rates.size())
+// Retrieve all stored rates for a specific room, HVAC mode, and hour
+def getHourlyRates(String roomId, String hvacMode, Integer hour) {
+  def history = atomicState?.dabHistory?.get(roomId)?.get(hvacMode) ?: []
+  Integer retention = (settings?.dabHistoryRetentionDays ?: DEFAULT_HISTORY_RETENTION_DAYS) as Integer
+  String cutoff = (new Date() - retention).format('yyyy-MM-dd', location?.timeZone ?: TimeZone.getTimeZone('UTC'))
+  history.findAll { it.hour == hour && it.date >= cutoff }*.rate.collect { it as BigDecimal }
 }
 
-// Append a new efficiency rate to the rolling 10-day hourly history
+// Retrieve the average hourly efficiency rate for a room and HVAC mode
+def getAverageHourlyRate(String roomId, String hvacMode, Integer hour) {
+  def rates = getHourlyRates(roomId, hvacMode, hour)
+  if (!rates || rates.size() == 0) { return 0.0 }
+  cleanDecimalForJson(rates.sum() / rates.size())
+}
+
+// Append a new efficiency rate with timestamped history and purge by retention period
 def appendHourlyRate(String roomId, String hvacMode, Integer hour, BigDecimal rate) {
-  def hourlyRates = atomicState?.hourlyRates ?: [:]
-  def roomRates = hourlyRates[roomId] ?: [:]
-  def modeRates = roomRates[hvacMode] ?: [:]
-  def list = modeRates[hour] ?: []
-  list << rate
-  if (list.size() > 10) { list = list[-10..-1] }
-  modeRates[hour] = list
-  roomRates[hvacMode] = modeRates
-  hourlyRates[roomId] = roomRates
-  atomicState?.hourlyRates = hourlyRates
+  def history = atomicState?.dabHistory ?: [:]
+  def roomHistory = history[roomId] ?: [:]
+  def modeHistory = roomHistory[hvacMode] ?: []
+
+  String dateStr = new Date().format('yyyy-MM-dd', location?.timeZone ?: TimeZone.getTimeZone('UTC'))
+  modeHistory << [date: dateStr, hour: hour, rate: rate]
+
+  Integer retention = (settings?.dabHistoryRetentionDays ?: DEFAULT_HISTORY_RETENTION_DAYS) as Integer
+  String cutoff = (new Date() - retention).format('yyyy-MM-dd', location?.timeZone ?: TimeZone.getTimeZone('UTC'))
+  modeHistory = modeHistory.findAll { it.date >= cutoff }
+
+  roomHistory[hvacMode] = modeHistory
+  history[roomId] = roomHistory
+  atomicState?.dabHistory = history
   atomicState?.lastHvacMode = hvacMode
 }
 
@@ -3421,9 +3437,9 @@ String buildDabChart() {
     def roomName = vent.currentValue('room-name') ?: vent.getLabel()
     def data = (0..23).collect { hr ->
       if (hvacMode == 'both') {
-        def cooling = atomicState?.hourlyRates?.get(roomId)?.get(COOLING)?.get(hr) ?: []
-        def heating = atomicState?.hourlyRates?.get(roomId)?.get(HEATING)?.get(hr) ?: []
-        def combined = (cooling + heating).collect { it as BigDecimal }
+        def cooling = getHourlyRates(roomId, COOLING, hr)
+        def heating = getHourlyRates(roomId, HEATING, hr)
+        def combined = cooling + heating
         combined ? cleanDecimalForJson(combined.sum() / combined.size()) : 0.0
       } else {
         getAverageHourlyRate(roomId, hvacMode, hr) ?: 0.0
@@ -3478,9 +3494,9 @@ String buildDabRatesTable() {
     hours.each { hr ->
       def value
       if (hvacMode == 'both') {
-        def cooling = atomicState?.hourlyRates?.get(roomId)?.get(COOLING)?.get(hr) ?: []
-        def heating = atomicState?.hourlyRates?.get(roomId)?.get(HEATING)?.get(hr) ?: []
-        def combined = (cooling + heating).collect { it as BigDecimal }
+        def cooling = getHourlyRates(roomId, COOLING, hr)
+        def heating = getHourlyRates(roomId, HEATING, hr)
+        def combined = cooling + heating
         value = combined ? cleanDecimalForJson(combined.sum() / combined.size()) : 0.0
       } else {
         value = getAverageHourlyRate(roomId, hvacMode, hr) ?: 0.0
