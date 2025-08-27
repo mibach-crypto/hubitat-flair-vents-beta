@@ -148,6 +148,7 @@ preferences {
   page(name: 'dabChartPage')
   page(name: 'dabRatesTablePage')
   page(name: 'dabActivityLogPage')
+  page(name: 'dabProgressPage')
 }
 
 def mainPage() {
@@ -245,6 +246,12 @@ def mainPage() {
             href name: 'dabRatesTableLink', title: '📋 View DAB Rates Table',
                  description: 'Tabular hourly DAB calculations for each room',
                  page: 'dabRatesTablePage'
+          }
+          // DAB Progress Page Link
+          section {
+            href name: 'dabProgressLink', title: '📈 View DAB Progress',
+                 description: 'Track DAB progress by date and hour',
+                 page: 'dabProgressPage'
           }
           // DAB Activity Log Link
           section {
@@ -3425,6 +3432,24 @@ def dabChartPage() {
   }
 }
 
+def dabProgressPage() {
+  dynamicPage(name: 'dabProgressPage', title: '📈 DAB Progress', install: false, uninstall: false) {
+    section {
+      def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+      Map roomOptions = vents.collectEntries { v -> [(v.currentValue('room-id') ?: v.getId()): (v.currentValue('room-name') ?: v.getLabel())] }
+      input name: 'progressRoom', type: 'enum', title: 'Room', required: false, submitOnChange: true, options: roomOptions
+      input name: 'progressHvacMode', type: 'enum', title: 'HVAC Mode', required: false, submitOnChange: true,
+            options: [(COOLING): 'Cooling', (HEATING): 'Heating', 'both': 'Both']
+      input name: 'progressStart', type: 'date', title: 'Start Date', required: false, submitOnChange: true
+      input name: 'progressEnd', type: 'date', title: 'End Date', required: false, submitOnChange: true
+      paragraph buildDabProgressTable()
+    }
+    section {
+      href name: 'backToMain', title: '← Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+    }
+  }
+}
+
 String buildDabChart() {
   def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
   if (vents.isEmpty()) {
@@ -3507,6 +3532,72 @@ String buildDabRatesTable() {
         value = getAverageHourlyRate(roomId, hvacMode, hr) ?: 0.0
       }
       html << "<td style='text-align:right;padding:4px;'>${roundBigDecimal(value)}</td>"
+    }
+    html << '</tr>'
+  }
+  html << '</table>'
+  html.toString()
+}
+
+String buildDabProgressTable() {
+  def history = atomicState?.dabHistory ?: [:]
+  String roomId = settings?.progressRoom
+  if (!roomId) { return '<p>Select a room to view progress.</p>' }
+
+  String hvacMode = settings?.progressHvacMode ?: getThermostat1Mode() ?: atomicState?.lastHvacMode
+  if (!hvacMode || hvacMode in ['auto', 'manual']) { hvacMode = atomicState?.lastHvacMode }
+  hvacMode = hvacMode ?: COOLING
+  Date start = settings?.progressStart ? Date.parse('yyyy-MM-dd', settings.progressStart) : null
+  Date end = settings?.progressEnd ? Date.parse('yyyy-MM-dd', settings.progressEnd) : null
+
+  def roomData = history[roomId] ?: [:]
+  def modes = hvacMode == 'both' ? [COOLING, HEATING] : [hvacMode]
+  def aggregated = [:] // date -> hour -> List<BigDecimal>
+  modes.each { mode ->
+    def modeData = roomData[mode] ?: [:]
+    modeData.each { dateStr, hoursMap ->
+      Date dateObj
+      try {
+        dateObj = Date.parse('yyyy-MM-dd', dateStr)
+      } catch (err) {
+        return
+      }
+      if (start && dateObj.before(start)) { return }
+      if (end && dateObj.after(end)) { return }
+      def dayMap = aggregated[dateStr] ?: [:]
+      hoursMap.each { hr, val ->
+        def list = dayMap[hr as Integer] ?: []
+        if (val instanceof List) {
+          list += val.collect { it as BigDecimal }
+        } else if (val != null) {
+          list << (val as BigDecimal)
+        }
+        dayMap[hr as Integer] = list
+      }
+      aggregated[dateStr] = dayMap
+    }
+  }
+
+  if (!aggregated) { return '<p>No DAB progress history available.</p>' }
+
+  def dates = aggregated.keySet().sort()
+  def hours = (0..23)
+  def html = new StringBuilder()
+  html << "<table style='width:100%;border-collapse:collapse;'>"
+  html << "<tr><th style='text-align:left;padding:4px;'>Date</th>"
+  hours.each { hr -> html << "<th style='text-align:right;padding:4px;'>${hr}</th>" }
+  html << '</tr>'
+  dates.each { dateStr ->
+    html << "<tr><td style='text-align:left;padding:4px;'>${dateStr}</td>"
+    hours.each { hr ->
+      def values = aggregated[dateStr]?.get(hr) ?: []
+      BigDecimal avg = 0.0
+      if (values) {
+        BigDecimal sum = 0.0
+        values.each { sum += it as BigDecimal }
+        avg = cleanDecimalForJson(sum / values.size())
+      }
+      html << "<td style='text-align:right;padding:4px;'>${roundBigDecimal(avg)}</td>"
     }
     html << '</tr>'
   }
