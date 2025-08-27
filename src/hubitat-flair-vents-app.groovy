@@ -2759,12 +2759,16 @@ def adjustVentOpeningsToEnsureMinimumAirflowTarget(rateAndTempPerVentId, String 
       BigDecimal percentOpenVal = calculatedPercentOpen[ventId] ?: 0
       if (percentOpenVal >= MAX_PERCENTAGE_OPEN) {
         percentOpenVal = MAX_PERCENTAGE_OPEN
+        calculatedPercentOpen[ventId] = MAX_PERCENTAGE_OPEN
       } else {
         def proportion = hvacMode == COOLING ?
           (stateVal.temp - minTemp) / (maxTemp - minTemp) :
           (maxTemp - stateVal.temp) / (maxTemp - minTemp)
         def increment = INCREMENT_PERCENTAGE * proportion
         percentOpenVal = percentOpenVal + increment
+        if (percentOpenVal >= MAX_PERCENTAGE_OPEN) {
+          percentOpenVal = MAX_PERCENTAGE_OPEN
+        }
         calculatedPercentOpen[ventId] = percentOpenVal
         log "Adjusting % open from ${roundBigDecimal(percentOpenVal - increment)}% to ${roundBigDecimal(percentOpenVal)}%", 2
         diffPercentageSum = diffPercentageSum - increment
