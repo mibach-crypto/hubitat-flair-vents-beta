@@ -454,7 +454,10 @@ def uninstalled() {
 
 def initialize() {
   unsubscribe()
-  
+
+  // Ensure DAB history map exists
+  atomicState?.dabHistory = atomicState?.dabHistory ?: [:]
+
   // Initialize instance-based caches
   initializeInstanceCaches()
   
@@ -2770,8 +2773,15 @@ def evaluateRebalancingVents() {
 // history is accessible, convert the hour to a String for both storage
 // and retrieval.
 def getAverageHourlyRate(String roomId, String hvacMode, Integer hour) {
-  String hourKey = hour.toString()
-  def rates = atomicState?.hourlyRates?.get(roomId)?.get(hvacMode)?.get(hourKey)
+  def history = atomicState?.dabHistory ?: [:]
+  def hourlyRates = history.hourlyRates ?: [:]
+  def roomRates = hourlyRates[roomId] ?: [:]
+  def modeRates = roomRates[hvacMode] ?: [:]
+  hourlyRates[roomId] = roomRates
+  roomRates[hvacMode] = modeRates
+  history.hourlyRates = hourlyRates
+  atomicState?.dabHistory = history
+  def rates = modeRates[hour]
   if (!rates || rates.size() == 0) { return 0.0 }
   BigDecimal sum = 0.0
   rates.each { sum += it as BigDecimal }
@@ -2782,8 +2792,8 @@ def getAverageHourlyRate(String roomId, String hvacMode, Integer hour) {
 // Ensures the hour key is stored as a String to match Hubitat's
 // serialization behaviour.
 def appendHourlyRate(String roomId, String hvacMode, Integer hour, BigDecimal rate) {
-  String hourKey = hour.toString()
-  def hourlyRates = atomicState?.hourlyRates ?: [:]
+  def history = atomicState?.dabHistory ?: [:]
+  def hourlyRates = history.hourlyRates ?: [:]
   def roomRates = hourlyRates[roomId] ?: [:]
   def modeRates = roomRates[hvacMode] ?: [:]
   def list = modeRates[hourKey] ?: []
@@ -2792,8 +2802,12 @@ def appendHourlyRate(String roomId, String hvacMode, Integer hour, BigDecimal ra
   modeRates[hourKey] = list
   roomRates[hvacMode] = modeRates
   hourlyRates[roomId] = roomRates
-  atomicState.hourlyRates = hourlyRates
-  atomicState.lastHvacMode = hvacMode
+  history.hourlyRates = hourlyRates
+  atomicState?.dabHistory = history
+  atomicState?.lastHvacMode = hvacMode
+  if (!(history.hourlyRates[roomId]?.get(hvacMode)?.get(hour)?.contains(rate))) {
+    logWarn "Failed inserting hourly rate for room ${roomId}, mode ${hvacMode}, hour ${hour}"
+  }
 }
 
 def appendDabActivityLog(String message) {
@@ -3918,9 +3932,8 @@ String buildDabChart() {
     def roomName = vent.currentValue('room-name') ?: vent.getLabel()
     def data = (0..23).collect { hr ->
       if (hvacMode == 'both') {
-        String hourKey = hr.toString()
-        def cooling = atomicState?.hourlyRates?.get(roomId)?.get(COOLING)?.get(hourKey) ?: []
-        def heating = atomicState?.hourlyRates?.get(roomId)?.get(HEATING)?.get(hourKey) ?: []
+        def cooling = atomicState?.dabHistory?.hourlyRates?.get(roomId)?.get(COOLING)?.get(hr) ?: []
+        def heating = atomicState?.dabHistory?.hourlyRates?.get(roomId)?.get(HEATING)?.get(hr) ?: []
         def combined = (cooling + heating).collect { it as BigDecimal }
         combined ? cleanDecimalForJson(combined.sum() / combined.size()) : 0.0
       } else {
@@ -3976,9 +3989,8 @@ String buildDabRatesTable() {
     hours.each { hr ->
       def value
       if (hvacMode == 'both') {
-        String hourKey = hr.toString()
-        def cooling = atomicState?.hourlyRates?.get(roomId)?.get(COOLING)?.get(hourKey) ?: []
-        def heating = atomicState?.hourlyRates?.get(roomId)?.get(HEATING)?.get(hourKey) ?: []
+        def cooling = atomicState?.dabHistory?.hourlyRates?.get(roomId)?.get(COOLING)?.get(hr) ?: []
+        def heating = atomicState?.dabHistory?.hourlyRates?.get(roomId)?.get(HEATING)?.get(hr) ?: []
         def combined = (cooling + heating).collect { it as BigDecimal }
         value = combined ? cleanDecimalForJson(combined.sum() / combined.size()) : 0.0
       } else {
