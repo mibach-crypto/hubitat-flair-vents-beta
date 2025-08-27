@@ -97,6 +97,10 @@ class EfficiencyExportImportTests extends Specification {
         app.children = [mockDevice1, mockDevice2, mockDevice3]
         app.atomicState.maxCoolingRate = 1.5
         app.atomicState.maxHeatingRate = 1.2
+        app.atomicState.dabHistory = [
+            'room-001': ['cooling': [[date: '2024-01-01', hour: 1, rate: 0.5]]]
+        ]
+        app.atomicState.dabActivityLog = ['2024-01-01 00:00:00 - init']
     }
 
     def "should collect all efficiency data for export"() {
@@ -107,7 +111,9 @@ class EfficiencyExportImportTests extends Specification {
                     maxCoolingRate: delegate.atomicState.maxCoolingRate,
                     maxHeatingRate: delegate.atomicState.maxHeatingRate
                 ],
-                roomEfficiencies: []
+                roomEfficiencies: [],
+                dabHistory: delegate.atomicState.dabHistory,
+                dabActivityLog: delegate.atomicState.dabActivityLog
             ]
             
             // Only collect from vents (devices with percent-open attribute)
@@ -147,6 +153,10 @@ class EfficiencyExportImportTests extends Specification {
         bedroom.ventId == 'vent-002'
         bedroom.coolingRate == 1.2
         bedroom.heatingRate == 0.75
+
+        and: "should include history and activity log"
+        result.dabHistory['room-001'].cooling[0].rate == 0.5
+        result.dabActivityLog.size() == 1
     }
 
     def "should generate valid JSON from efficiency data"() {
@@ -155,13 +165,15 @@ class EfficiencyExportImportTests extends Specification {
             globalRates: [maxCoolingRate: 1.5, maxHeatingRate: 1.2],
             roomEfficiencies: [
                 [roomId: 'room-001', roomName: 'Living Room', ventId: 'vent-001', coolingRate: 0.85, heatingRate: 0.92]
-            ]
+            ],
+            dabHistory: ['room-001': ['cooling': [[date: '2024-01-01', hour: 1, rate: 0.5]]]],
+            dabActivityLog: ['2024-01-01 00:00:00 - init']
         ]
         
         app.metaClass.generateEfficiencyJSON = { data ->
             def exportData = [
                 exportMetadata: [
-                    version: '0.22',
+                    version: '0.24',
                     exportDate: new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'").format(new Date()),
                     structureId: delegate.settings.structureId
                 ],
@@ -175,7 +187,7 @@ class EfficiencyExportImportTests extends Specification {
         def parsedJson = new groovy.json.JsonSlurper().parseText(jsonResult)
         
         then: "should include metadata"
-        parsedJson.exportMetadata.version == '0.22'
+        parsedJson.exportMetadata.version == '0.24'
         parsedJson.exportMetadata.structureId == 'structure-123'
         parsedJson.exportMetadata.exportDate != null
         
@@ -184,6 +196,8 @@ class EfficiencyExportImportTests extends Specification {
         parsedJson.efficiencyData.globalRates.maxHeatingRate == 1.2
         parsedJson.efficiencyData.roomEfficiencies.size() == 1
         parsedJson.efficiencyData.roomEfficiencies[0].roomName == 'Living Room'
+        parsedJson.efficiencyData.dabHistory['room-001'] != null
+        parsedJson.efficiencyData.dabActivityLog.size() == 1
     }
 
     def "should validate import data structure"() {
@@ -193,6 +207,8 @@ class EfficiencyExportImportTests extends Specification {
             if (!jsonData.exportMetadata || !jsonData.efficiencyData) return false
             if (!jsonData.efficiencyData.globalRates) return false
             if (!jsonData.efficiencyData.roomEfficiencies) return false
+            if (jsonData.efficiencyData.dabHistory && !(jsonData.efficiencyData.dabHistory instanceof Map)) return false
+            if (jsonData.efficiencyData.dabActivityLog && !(jsonData.efficiencyData.dabActivityLog instanceof List)) return false
             
             // Validate global rates
             def globalRates = jsonData.efficiencyData.globalRates
@@ -218,12 +234,14 @@ class EfficiencyExportImportTests extends Specification {
         validData << [
             // Valid complete data
             [
-                exportMetadata: [version: '0.22', exportDate: '2025-06-26T12:00:00Z', structureId: 'struct-1'],
+                exportMetadata: [version: '0.24', exportDate: '2025-06-26T12:00:00Z', structureId: 'struct-1'],
                 efficiencyData: [
                     globalRates: [maxCoolingRate: 1.5, maxHeatingRate: 1.2],
                     roomEfficiencies: [
                         [roomId: 'room-1', roomName: 'Living Room', ventId: 'vent-1', coolingRate: 0.85, heatingRate: 0.92]
-                    ]
+                    ],
+                    dabHistory: ['room-1': ['cooling': [[date: '2024-01-01', hour: 1, rate: 0.5]]]],
+                    dabActivityLog: ['entry']
                 ]
             ],
             // Missing metadata
@@ -304,7 +322,9 @@ class EfficiencyExportImportTests extends Specification {
                 globalUpdated: false,
                 roomsUpdated: 0,
                 roomsSkipped: 0,
-                errors: []
+                errors: [],
+                historyRestored: false,
+                activityLogRestored: false
             ]
             
             // Update global rates
@@ -329,17 +349,28 @@ class EfficiencyExportImportTests extends Specification {
                     results.errors << "Room not found: ${roomData.roomName} (${roomData.roomId})"
                 }
             }
-            
+
+            if (efficiencyData.dabHistory) {
+                delegate.atomicState.dabHistory = efficiencyData.dabHistory
+                results.historyRestored = true
+            }
+            if (efficiencyData.dabActivityLog) {
+                delegate.atomicState.dabActivityLog = efficiencyData.dabActivityLog
+                results.activityLogRestored = true
+            }
+
             return results
         }
-        
+
         and: "import data"
         def importData = [
             globalRates: [maxCoolingRate: 2.0, maxHeatingRate: 1.8],
             roomEfficiencies: [
                 [roomId: 'room-001', roomName: 'Living Room', ventId: 'vent-001', coolingRate: 1.0, heatingRate: 1.1],
                 [roomId: 'room-999', roomName: 'Missing Room', ventId: 'vent-999', coolingRate: 0.5, heatingRate: 0.6]
-            ]
+            ],
+            dabHistory: ['room-001': ['cooling': [[date: '2024-01-01', hour: 1, rate: 0.5]]]],
+            dabActivityLog: ['entry1', 'entry2']
         ]
         
         when: "applying imported efficiencies"
@@ -355,10 +386,16 @@ class EfficiencyExportImportTests extends Specification {
         results.roomsSkipped == 1
         mockDevice1.currentValue('room-cooling-rate') == 1.0
         mockDevice1.currentValue('room-heating-rate') == 1.1
-        
+
         and: "should report errors for missing devices"
         results.errors.size() == 1
         results.errors[0].contains('Missing Room')
+
+        and: "should restore history and activity log"
+        results.historyRestored
+        results.activityLogRestored
+        app.atomicState.dabHistory['room-001'] != null
+        app.atomicState.dabActivityLog.size() == 2
     }
 
     def "should handle import with room name fallback matching"() {
@@ -385,7 +422,7 @@ class EfficiencyExportImportTests extends Specification {
         }
         
         app.metaClass.applyImportedEfficiencies = { efficiencyData ->
-            def results = [roomsUpdated: 0, roomsSkipped: 0, errors: []]
+            def results = [roomsUpdated: 0, roomsSkipped: 0, errors: [], historyRestored: false, activityLogRestored: false]
             
             efficiencyData.roomEfficiencies?.each { roomData ->
                 // Try room ID first, then fall back to room name
@@ -404,6 +441,8 @@ class EfficiencyExportImportTests extends Specification {
                 }
             }
             
+            if (efficiencyData.dabHistory) { results.historyRestored = true }
+            if (efficiencyData.dabActivityLog) { results.activityLogRestored = true }
             return results
         }
         
@@ -446,7 +485,9 @@ class EfficiencyExportImportTests extends Specification {
                 globalUpdated: false,
                 roomsUpdated: 0,
                 roomsSkipped: 0,
-                errors: []
+                errors: [],
+                historyRestored: false,
+                activityLogRestored: false
             ]
             
             if (efficiencyData.globalRates) {
@@ -469,6 +510,8 @@ class EfficiencyExportImportTests extends Specification {
                 }
             }
             
+            if (efficiencyData.dabHistory) { results.historyRestored = true }
+            if (efficiencyData.dabActivityLog) { results.activityLogRestored = true }
             return results
         }
         
@@ -476,18 +519,20 @@ class EfficiencyExportImportTests extends Specification {
         app.metaClass.importEfficiencyData = { jsonContent ->
             try {
                 def jsonData = new groovy.json.JsonSlurper().parseText(jsonContent)
-                
+
                 if (!delegate.validateImportData(jsonData)) {
                     return [success: false, error: 'Invalid data format']
                 }
-                
+
                 def results = delegate.applyImportedEfficiencies(jsonData.efficiencyData)
-                
+
                 return [
                     success: true,
                     globalUpdated: results.globalUpdated,
                     roomsUpdated: results.roomsUpdated,
                     roomsSkipped: results.roomsSkipped,
+                    historyRestored: results.historyRestored,
+                    activityLogRestored: results.activityLogRestored,
                     errors: results.errors
                 ]
             } catch (Exception e) {
@@ -499,7 +544,7 @@ class EfficiencyExportImportTests extends Specification {
         def validJson = '''
         {
             "exportMetadata": {
-                "version": "0.22",
+                "version": "0.24",
                 "exportDate": "2025-06-26T12:00:00Z",
                 "structureId": "structure-123"
             },
@@ -516,19 +561,25 @@ class EfficiencyExportImportTests extends Specification {
                         "coolingRate": 1.5,
                         "heatingRate": 1.3
                     }
-                ]
+                ],
+                "dabHistory": {"room-001": {"cooling": [{"date": "2024-01-01", "hour": 1, "rate": 0.5}]}},
+                "dabActivityLog": ["entry1"]
             }
         }
         '''
         
         when: "importing valid JSON data"
         def result = app.importEfficiencyData(validJson)
-        
+
         then: "should successfully import data"
         result.success == true
         result.globalUpdated == true
         result.roomsUpdated == 1
         result.roomsSkipped == 0
+        result.historyRestored
+        result.activityLogRestored
+        app.atomicState.dabHistory['room-001'] != null
+        app.atomicState.dabActivityLog.size() == 1
         result.errors.size() == 0
     }
 
@@ -583,7 +634,9 @@ class EfficiencyExportImportTests extends Specification {
                     maxCoolingRate: delegate.atomicState.maxCoolingRate,
                     maxHeatingRate: delegate.atomicState.maxHeatingRate
                 ],
-                roomEfficiencies: []
+                roomEfficiencies: [],
+                dabHistory: delegate.atomicState.dabHistory ?: [:],
+                dabActivityLog: delegate.atomicState.dabActivityLog ?: []
             ]
             
             // Only collect from vents (devices with percent-open attribute)
@@ -625,7 +678,7 @@ class EfficiencyExportImportTests extends Specification {
         }
         
         app.metaClass.applyImportedEfficiencies = { efficiencyData ->
-            def results = [roomsUpdated: 0, roomsSkipped: 0, errors: []]
+            def results = [roomsUpdated: 0, roomsSkipped: 0, errors: [], historyRestored: false, activityLogRestored: false]
             
             efficiencyData.roomEfficiencies?.each { roomData ->
                 def device = delegate.matchDeviceByRoomId(roomData.roomId) ?:
@@ -640,7 +693,10 @@ class EfficiencyExportImportTests extends Specification {
                     results.errors << "Room not found: ${roomData.roomName}"
                 }
             }
-            
+
+            if (efficiencyData.dabHistory) { results.historyRestored = true }
+            if (efficiencyData.dabActivityLog) { results.activityLogRestored = true }
+
             return results
         }
         

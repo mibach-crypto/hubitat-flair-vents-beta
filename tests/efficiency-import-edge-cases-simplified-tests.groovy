@@ -85,7 +85,9 @@ class EfficiencyImportEdgeCasesSimplifiedTest extends Specification {
                     maxCoolingRate: app.cleanDecimalForJson(app.atomicState.maxCoolingRate),
                     maxHeatingRate: app.cleanDecimalForJson(app.atomicState.maxHeatingRate)
                 ],
-                roomEfficiencies: []
+                roomEfficiencies: [],
+                dabHistory: app.atomicState.dabHistory ?: [:],
+                dabActivityLog: app.atomicState.dabActivityLog ?: []
             ]
             
             app.getChildDevices().findAll { it.hasAttribute('percent-open') }.each { device ->
@@ -109,7 +111,7 @@ class EfficiencyImportEdgeCasesSimplifiedTest extends Specification {
         app.generateEfficiencyJSON = { data ->
             def exportData = [
                 exportMetadata: [
-                    version: '0.22',
+                    version: '0.24',
                     exportDate: new Date().format("yyyy-MM-dd'T'HH:mm:ss'Z'"),
                     structureId: 'test-structure'
                 ],
@@ -124,6 +126,8 @@ class EfficiencyImportEdgeCasesSimplifiedTest extends Specification {
             if (!jsonData.exportMetadata || !jsonData.efficiencyData) return false
             if (!jsonData.efficiencyData.globalRates) return false
             if (jsonData.efficiencyData.roomEfficiencies == null) return false
+            if (jsonData.efficiencyData.dabHistory && !(jsonData.efficiencyData.dabHistory instanceof Map)) return false
+            if (jsonData.efficiencyData.dabActivityLog && !(jsonData.efficiencyData.dabActivityLog instanceof List)) return false
             
             // Validate global rates
             def globalRates = jsonData.efficiencyData.globalRates
@@ -161,7 +165,9 @@ class EfficiencyImportEdgeCasesSimplifiedTest extends Specification {
                 globalUpdated: false,
                 roomsUpdated: 0,
                 roomsSkipped: 0,
-                errors: []
+                errors: [],
+                historyRestored: false,
+                activityLogRestored: false
             ]
             
             // Update global rates
@@ -184,7 +190,16 @@ class EfficiencyImportEdgeCasesSimplifiedTest extends Specification {
                     results.errors << "Room not found: ${roomData.roomName} (${roomData.roomId})"
                 }
             }
-            
+
+            if (efficiencyData.dabHistory) {
+                app.atomicState.dabHistory = efficiencyData.dabHistory
+                results.historyRestored = true
+            }
+            if (efficiencyData.dabActivityLog) {
+                app.atomicState.dabActivityLog = efficiencyData.dabActivityLog
+                results.activityLogRestored = true
+            }
+
             return results
         }
 
@@ -192,18 +207,20 @@ class EfficiencyImportEdgeCasesSimplifiedTest extends Specification {
         app.importEfficiencyData = { jsonContent ->
             try {
                 def jsonData = new groovy.json.JsonSlurper().parseText(jsonContent)
-                
+
                 if (!app.validateImportData(jsonData)) {
                     return [success: false, error: 'Invalid data format. Please ensure you are using exported efficiency data.']
                 }
-                
+
                 def results = app.applyImportedEfficiencies(jsonData.efficiencyData)
-                
+
                 return [
                     success: true,
                     globalUpdated: results.globalUpdated,
                     roomsUpdated: results.roomsUpdated,
                     roomsSkipped: results.roomsSkipped,
+                    historyRestored: results.historyRestored,
+                    activityLogRestored: results.activityLogRestored,
                     errors: results.errors
                 ]
             } catch (Exception e) {
@@ -301,7 +318,7 @@ class EfficiencyImportEdgeCasesSimplifiedTest extends Specification {
     def "test validation with missing required fields"() {
         given: "JSON data missing required structure"
         def invalidData = [
-            exportMetadata: [version: '0.22'],
+            exportMetadata: [version: '0.24'],
             efficiencyData: [
                 globalRates: [:], // Missing required rates
                 roomEfficiencies: [
@@ -418,7 +435,7 @@ class EfficiencyImportEdgeCasesSimplifiedTest extends Specification {
     private createValidBackupJson(roomData) {
         return [
             exportMetadata: [
-                version: '0.22',
+                version: '0.24',
                 exportDate: '2025-06-26T15:00:00Z',
                 structureId: 'test-structure'
             ],

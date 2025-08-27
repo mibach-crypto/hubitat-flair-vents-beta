@@ -3430,6 +3430,12 @@ def handleImportEfficiencyData() {
       if (result.globalUpdated) {
         statusMsg += " and global efficiency rates"
       }
+      if (result.historyRestored) {
+        statusMsg += ", restored history"
+      }
+      if (result.activityLogRestored) {
+        statusMsg += ", restored activity log"
+      }
       if (result.roomsSkipped > 0) {
         statusMsg += ". Skipped ${result.roomsSkipped} rooms (not found)"
       }
@@ -3473,7 +3479,9 @@ def exportEfficiencyData() {
       maxCoolingRate: cleanDecimalForJson(atomicState.maxCoolingRate),
       maxHeatingRate: cleanDecimalForJson(atomicState.maxHeatingRate)
     ],
-    roomEfficiencies: []
+    roomEfficiencies: [],
+    dabHistory: atomicState?.dabHistory ?: [:],
+    dabActivityLog: atomicState?.dabActivityLog ?: []
   ]
   
   // Only collect from vents (devices with percent-open attribute)
@@ -3533,7 +3541,7 @@ def exportDabHistory(String format = 'json') {
 def generateEfficiencyJSON(data) {
   def exportData = [
     exportMetadata: [
-      version: '0.23',
+      version: '0.24',
       exportDate: new Date().format("yyyy-MM-dd'T'HH:mm:ss'Z'"),
       structureId: settings.structureId ?: 'Unknown'
     ],
@@ -3557,6 +3565,8 @@ def importEfficiencyData(jsonContent) {
       globalUpdated: results.globalUpdated,
       roomsUpdated: results.roomsUpdated,
       roomsSkipped: results.roomsSkipped,
+      historyRestored: results.historyRestored,
+      activityLogRestored: results.activityLogRestored,
       errors: results.errors
     ]
   } catch (Exception e) {
@@ -3569,6 +3579,8 @@ def validateImportData(jsonData) {
   if (!jsonData.exportMetadata || !jsonData.efficiencyData) return false
   if (!jsonData.efficiencyData.globalRates) return false
   if (!jsonData.efficiencyData.roomEfficiencies) return false
+  if (jsonData.efficiencyData.dabHistory && !(jsonData.efficiencyData.dabHistory instanceof Map)) return false
+  if (jsonData.efficiencyData.dabActivityLog && !(jsonData.efficiencyData.dabActivityLog instanceof List)) return false
   
   // Validate global rates
   def globalRates = jsonData.efficiencyData.globalRates
@@ -3592,7 +3604,9 @@ def applyImportedEfficiencies(efficiencyData) {
     globalUpdated: false,
     roomsUpdated: 0,
     roomsSkipped: 0,
-    errors: []
+    errors: [],
+    historyRestored: false,
+    activityLogRestored: false
   ]
   
   // Update global rates
@@ -3618,7 +3632,19 @@ def applyImportedEfficiencies(efficiencyData) {
       log(2, 'App', "Skipped room '${roomData.roomName}' - no matching device found")
     }
   }
-  
+
+  if (efficiencyData.dabHistory) {
+    atomicState.dabHistory = efficiencyData.dabHistory
+    results.historyRestored = true
+    log "Restored DAB history (${efficiencyData.dabHistory.size()} rooms)", 2
+  }
+
+  if (efficiencyData.dabActivityLog) {
+    atomicState.dabActivityLog = efficiencyData.dabActivityLog
+    results.activityLogRestored = true
+    log "Restored DAB activity log (${efficiencyData.dabActivityLog.size()} entries)", 2
+  }
+
   return results
 }
 
