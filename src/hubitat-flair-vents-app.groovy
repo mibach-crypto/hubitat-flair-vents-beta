@@ -2534,10 +2534,12 @@ def evaluateRebalancingVents() {
 
 // Retrieve all stored rates for a specific room, HVAC mode, and hour
 def getHourlyRates(String roomId, String hvacMode, Integer hour) {
-  def history = atomicState?.dabHistory?.get(roomId)?.get(hvacMode) ?: []
+  def history = atomicState?.dabHistory ?: []
   Integer retention = (settings?.dabHistoryRetentionDays ?: DEFAULT_HISTORY_RETENTION_DAYS) as Integer
-  String cutoff = (new Date() - retention).format('yyyy-MM-dd', location?.timeZone ?: TimeZone.getTimeZone('UTC'))
-  history.findAll { it.hour == hour && it.date >= cutoff }*.rate.collect { it as BigDecimal }
+  Long cutoff = now() - retention * 24L * 60L * 60L * 1000L
+  history.findAll { entry ->
+    entry[1] == roomId && entry[2] == hvacMode && entry[3] == hour && entry[0] >= cutoff
+  }*.get(4).collect { it as BigDecimal }
 }
 
 // Retrieve the average hourly efficiency rate for a room and HVAC mode
@@ -2549,29 +2551,34 @@ def getAverageHourlyRate(String roomId, String hvacMode, Integer hour) {
 
 // Append a new efficiency rate with timestamped history and purge by retention period
 def appendHourlyRate(String roomId, String hvacMode, Integer hour, BigDecimal rate) {
-  def history = atomicState?.dabHistory ?: [:]
-  def roomHistory = history[roomId] ?: [:]
-  def modeHistory = roomHistory[hvacMode] ?: []
-
-  String dateStr = new Date().format('yyyy-MM-dd', location?.timeZone ?: TimeZone.getTimeZone('UTC'))
-  modeHistory << [date: dateStr, hour: hour, rate: rate]
+  def history = atomicState?.dabHistory ?: []
+  Long nowTs = now()
+  if (!atomicState?.dabHistoryStartTimestamp) {
+    atomicState.dabHistoryStartTimestamp = nowTs
+  }
+  history << [nowTs, roomId, hvacMode, hour, rate]
 
   Integer retention = (settings?.dabHistoryRetentionDays ?: DEFAULT_HISTORY_RETENTION_DAYS) as Integer
-  String cutoff = (new Date() - retention).format('yyyy-MM-dd', location?.timeZone ?: TimeZone.getTimeZone('UTC'))
-  modeHistory = modeHistory.findAll { it.date >= cutoff }
+  Long cutoff = nowTs - retention * 24L * 60L * 60L * 1000L
+  history = history.findAll { it[0] >= cutoff }
 
-  roomHistory[hvacMode] = modeHistory
-  history[roomId] = roomHistory
-  atomicState?.dabHistory = history
-  atomicState?.lastHvacMode = hvacMode
+  atomicState.dabHistory = history
+  if (history) { atomicState.dabHistoryStartTimestamp = history[0][0] }
+  atomicState.lastHvacMode = hvacMode
 }
 
 def appendDabActivityLog(String message) {
   def list = atomicState?.dabActivityLog ?: []
   String ts = new Date().format('yyyy-MM-dd HH:mm:ss', location?.timeZone ?: TimeZone.getTimeZone('UTC'))
-  list << "${ts} - ${message}"
+  Long start = atomicState?.dabHistoryStartTimestamp
+  if (!start) {
+    start = now()
+    atomicState.dabHistoryStartTimestamp = start
+  }
+  String startStr = new Date(start).format('yyyy-MM-dd HH:mm:ss', location?.timeZone ?: TimeZone.getTimeZone('UTC'))
+  list << "${ts} (since ${startStr}) - ${message}"
   if (list.size() > 100) { list = list[-100..-1] }
-  atomicState?.dabActivityLog = list
+  atomicState.dabActivityLog = list
 }
 
 private boolean isFanActive(String opState = null) {
@@ -3190,24 +3197,13 @@ def exportEfficiencyData() {
 // Export DAB history from atomicState to JSON or CSV
 def exportDabHistory(String format = 'json') {
   def history = atomicState?.dabHistory ?: []
-
-  // Normalize history to list of maps
-  def records = []
-  if (history instanceof Map) {
-    history.each { k, v ->
-      if (v instanceof Map) {
-        records << (v + [id: k])
-      } else {
-        records << [id: k, value: v]
-      }
-    }
-  } else if (history instanceof List) {
-    records = history
+  def records = history.collect { rec ->
+    [timestamp: rec[0], roomId: rec[1], hvacMode: rec[2], hour: rec[3], rate: rec[4]]
   }
 
   if (format == 'csv') {
     if (!records) { return '' }
-    def headers = records[0].keySet() as List
+    def headers = ['timestamp', 'roomId', 'hvacMode', 'hour', 'rate']
     def lines = []
     lines << headers.join(',')
     records.each { rec ->
@@ -3616,7 +3612,7 @@ String buildDabRatesTable() {
 }
 
 String buildDabProgressTable() {
-  def history = atomicState?.dabHistory ?: [:]
+  def history = atomicState?.dabHistory ?: []
   String roomId = settings?.progressRoom
   if (!roomId) { return '<p>Select a room to view progress.</p>' }
 
@@ -3625,36 +3621,25 @@ String buildDabProgressTable() {
   hvacMode = hvacMode ?: COOLING
   Date start = settings?.progressStart ? Date.parse('yyyy-MM-dd', settings.progressStart) : null
   Date end = settings?.progressEnd ? Date.parse('yyyy-MM-dd', settings.progressEnd) : null
-
-  def roomData = history[roomId] ?: [:]
   def modes = hvacMode == 'both' ? [COOLING, HEATING] : [hvacMode]
+  def tz = location?.timeZone ?: TimeZone.getTimeZone('UTC')
+
   def aggregated = [:] // date -> hour -> List<BigDecimal>
-  modes.each { mode ->
-    def modeData = roomData[mode] ?: [:]
-    modeData.each { dateStr, hoursMap ->
-      Date dateObj
-      try {
-        dateObj = Date.parse('yyyy-MM-dd', dateStr)
-      } catch (err) {
-        return
-      }
-      if (start && dateObj.before(start)) { return }
-      if (end && dateObj.after(end)) { return }
-      def dayMap = aggregated[dateStr] ?: [:]
-      hoursMap.each { hr, val ->
-        def list = dayMap[hr as Integer] ?: []
-        if (val instanceof List) {
-          list += val.collect { it as BigDecimal }
-        } else if (val != null) {
-          list << (val as BigDecimal)
-        }
-        dayMap[hr as Integer] = list
-      }
-      aggregated[dateStr] = dayMap
-    }
+  history.findAll { rec ->
+    rec[1] == roomId && modes.contains(rec[2]) &&
+    (!start || !new Date(rec[0]).before(start)) &&
+    (!end || !new Date(rec[0]).after(end))
+  }.each { rec ->
+    Date d = new Date(rec[0])
+    String dateStr = d.format('yyyy-MM-dd', tz)
+    def dayMap = aggregated[dateStr] ?: [:]
+    def list = dayMap[rec[3] as Integer] ?: []
+    list << (rec[4] as BigDecimal)
+    dayMap[rec[3] as Integer] = list
+    aggregated[dateStr] = dayMap
   }
 
-  if (!aggregated) { return '<p>No DAB progress history available.</p>' }
+  if (!aggregated) { return '<p>No DAB progress history available for the selected period.</p>' }
 
   def dates = aggregated.keySet().sort()
   def hours = (0..23)
