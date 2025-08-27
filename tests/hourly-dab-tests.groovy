@@ -30,33 +30,16 @@ class HourlyDabTests extends Specification {
     script.settings = [dabHistoryRetentionDays: 10]
 
     and: 'prepopulate history with an old entry'
-    def oldDate = (new Date() - 11).format('yyyy-MM-dd', TimeZone.getTimeZone('UTC'))
-    script.atomicState = [hourlyRates: [room1: [cooling: [[date: oldDate, hour: 0, rate: 1.0]]]]]
+    def oldTs = (new Date() - 11).getTime()
+    script.atomicState = [dabHistoryStartTimestamp: oldTs, dabHistory: [[oldTs, 'room1', 'cooling', 0, 1.0]]]
 
     then:
     script.atomicState.hourlyRates.room1.cooling['0'].size() == 10
     script.getAverageHourlyRate('room1', 'cooling', 0) == 6.5
   }
 
-  def "hourly rates are retrieved when hour keys are strings"() {
-    setup:
-    final log = new CapturingLog()
-    AppExecutor executorApi = Mock {
-      _ * getState() >> [:]
-      _ * getAtomicState() >> [:]
-      _ * getLog() >> log
-    }
-    def sandbox = new HubitatAppSandbox(APP_FILE)
-    def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
-
-    when:
-    script.appendHourlyRate('room1', 'cooling', 0, 5.0)
-    // Simulate Hubitat's JSON serialization which converts numeric keys to strings
-    script.atomicState.hourlyRates = new groovy.json.JsonSlurper().parseText(
-        groovy.json.JsonOutput.toJson(script.atomicState.hourlyRates))
-
-    then:
-    script.atomicState.dabHistory.hourlyRates.room1.cooling[0].size() == 10
-    script.getAverageHourlyRate('room1', 'cooling', 0) == 6.5
+    then: 'old entry is purged and average uses remaining values'
+    script.atomicState.dabHistory.size() == 1
+    script.getAverageHourlyRate('room1', 'cooling', 0) == 2.0
   }
 }

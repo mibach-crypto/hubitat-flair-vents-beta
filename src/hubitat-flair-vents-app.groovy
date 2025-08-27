@@ -2738,6 +2738,16 @@ def evaluateRebalancingVents() {
   }
 }
 
+// Retrieve all stored rates for a specific room, HVAC mode, and hour
+def getHourlyRates(String roomId, String hvacMode, Integer hour) {
+  def history = atomicState?.dabHistory ?: []
+  Integer retention = (settings?.dabHistoryRetentionDays ?: DEFAULT_HISTORY_RETENTION_DAYS) as Integer
+  Long cutoff = now() - retention * 24L * 60L * 60L * 1000L
+  history.findAll { entry ->
+    entry[1] == roomId && entry[2] == hvacMode && entry[3] == hour && entry[0] >= cutoff
+  }*.get(4).collect { it as BigDecimal }
+}
+
 // Retrieve the average hourly efficiency rate for a room and HVAC mode
 // Retrieve the average hourly efficiency rate for a room and HVAC mode
 // Hubitat serializes map keys as Strings when stored in `atomicState`.
@@ -2765,68 +2775,35 @@ def getAverageHourlyRate(String roomId, String hvacMode, Integer hour) {
 // Ensures the hour key is stored as a String to match Hubitat's
 // serialization behaviour.
 def appendHourlyRate(String roomId, String hvacMode, Integer hour, BigDecimal rate) {
-  def history = atomicState?.dabHistory ?: [:]
-  def hourlyRates = history.hourlyRates ?: [:]
-  def roomRates = hourlyRates[roomId] ?: [:]
-  def modeRates = roomRates[hvacMode] ?: [:]
-  def list = modeRates[hourKey] ?: []
-  list << rate
-  if (list.size() > 10) { list = list[-10..-1] }
-  modeRates[hourKey] = list
-  roomRates[hvacMode] = modeRates
-  hourlyRates[roomId] = roomRates
-  history.hourlyRates = hourlyRates
-  atomicState?.dabHistory = history
-  atomicState?.lastHvacMode = hvacMode
-  if (!(history.hourlyRates[roomId]?.get(hvacMode)?.get(hour)?.contains(rate))) {
-    logWarn "Failed inserting hourly rate for room ${roomId}, mode ${hvacMode}, hour ${hour}"
+  def history = atomicState?.dabHistory ?: []
+  Long nowTs = now()
+  if (!atomicState?.dabHistoryStartTimestamp) {
+    atomicState.dabHistoryStartTimestamp = nowTs
   }
+  history << [nowTs, roomId, hvacMode, hour, rate]
+
+  Integer retention = (settings?.dabHistoryRetentionDays ?: DEFAULT_HISTORY_RETENTION_DAYS) as Integer
+  Long cutoff = nowTs - retention * 24L * 60L * 60L * 1000L
+  history = history.findAll { it[0] >= cutoff }
+
+  atomicState.dabHistory = history
+  if (history) { atomicState.dabHistoryStartTimestamp = history[0][0] }
+  atomicState.lastHvacMode = hvacMode
 }
 
-  def appendDabActivityLog(String message) {
-    def list = atomicState?.dabActivityLog ?: []
-    String ts = new Date().format('yyyy-MM-dd HH:mm:ss', location?.timeZone ?: TimeZone.getTimeZone('UTC'))
-    list << "${ts} - ${message}"
-    if (list.size() > 100) { list = list[-100..-1] }
-    atomicState?.dabActivityLog = list
+def appendDabActivityLog(String message) {
+  def list = atomicState?.dabActivityLog ?: []
+  String ts = new Date().format('yyyy-MM-dd HH:mm:ss', location?.timeZone ?: TimeZone.getTimeZone('UTC'))
+  Long start = atomicState?.dabHistoryStartTimestamp
+  if (!start) {
+    start = now()
+    atomicState.dabHistoryStartTimestamp = start
   }
-
-  // Validate DAB history structure and log anomalies
-  def checkDabHistoryIntegrity() {
-    def history = atomicState?.dabHistory
-    def anomalies = []
-
-    if (!(history instanceof Map)) {
-      anomalies << 'DAB history missing or malformed'
-    } else {
-      history.each { date, hours ->
-        if (!(hours instanceof Map)) {
-          anomalies << "${date} has invalid data"
-          return
-        }
-        (0..23).each { h ->
-          if (!hours.containsKey(h)) {
-            anomalies << "${date} missing hour ${h}"
-          }
-        }
-        hours.each { hour, data ->
-          if (!(hour instanceof Integer) || hour < 0 || hour > 23) {
-            anomalies << "${date} has malformed hour ${hour}"
-          }
-        }
-      }
-    }
-
-    if (anomalies) {
-      anomalies.each { msg ->
-        appendDabActivityLog("Integrity issue: ${msg}")
-        logWarn "DAB History: ${msg}"
-        sendEvent(name: 'dabHistoryIntegrity', value: 'warning', descriptionText: msg)
-      }
-    } else {
-      appendDabActivityLog('DAB history integrity check passed')
-    }
-  }
+  String startStr = new Date(start).format('yyyy-MM-dd HH:mm:ss', location?.timeZone ?: TimeZone.getTimeZone('UTC'))
+  list << "${ts} (since ${startStr}) - ${message}"
+  if (list.size() > 100) { list = list[-100..-1] }
+  atomicState.dabActivityLog = list
+}
 
 private boolean isFanActive(String opState = null) {
   opState = opState ?: settings.thermostat1?.currentValue('thermostatOperatingState')
@@ -3453,24 +3430,13 @@ def exportEfficiencyData() {
 // Export DAB history from atomicState to JSON or CSV
 def exportDabHistory(String format = 'json') {
   def history = atomicState?.dabHistory ?: []
-
-  // Normalize history to list of maps
-  def records = []
-  if (history instanceof Map) {
-    history.each { k, v ->
-      if (v instanceof Map) {
-        records << (v + [id: k])
-      } else {
-        records << [id: k, value: v]
-      }
-    }
-  } else if (history instanceof List) {
-    records = history
+  def records = history.collect { rec ->
+    [timestamp: rec[0], roomId: rec[1], hvacMode: rec[2], hour: rec[3], rate: rec[4]]
   }
 
   if (format == 'csv') {
     if (!records) { return '' }
-    def headers = records[0].keySet() as List
+    def headers = ['timestamp', 'roomId', 'hvacMode', 'hour', 'rate']
     def lines = []
     lines << headers.join(',')
     records.each { rec ->
@@ -3960,7 +3926,7 @@ String buildDabRatesTable() {
 }
 
 String buildDabProgressTable() {
-  def history = atomicState?.hourlyRates ?: [:]
+  def history = atomicState?.dabHistory ?: []
   String roomId = settings?.progressRoom
   if (!roomId) { return '<p>Select a room to view progress.</p>' }
 
@@ -3969,36 +3935,25 @@ String buildDabProgressTable() {
   hvacMode = hvacMode ?: COOLING
   Date start = settings?.progressStart ? Date.parse('yyyy-MM-dd', settings.progressStart) : null
   Date end = settings?.progressEnd ? Date.parse('yyyy-MM-dd', settings.progressEnd) : null
-
-  def roomData = history[roomId] ?: [:]
   def modes = hvacMode == 'both' ? [COOLING, HEATING] : [hvacMode]
+  def tz = location?.timeZone ?: TimeZone.getTimeZone('UTC')
+
   def aggregated = [:] // date -> hour -> List<BigDecimal>
-  modes.each { mode ->
-    def modeData = roomData[mode] ?: [:]
-    modeData.each { dateStr, hoursMap ->
-      Date dateObj
-      try {
-        dateObj = Date.parse('yyyy-MM-dd', dateStr)
-      } catch (err) {
-        return
-      }
-      if (start && dateObj.before(start)) { return }
-      if (end && dateObj.after(end)) { return }
-      def dayMap = aggregated[dateStr] ?: [:]
-      hoursMap.each { hr, val ->
-        def list = dayMap[hr as Integer] ?: []
-        if (val instanceof List) {
-          list += val.collect { it as BigDecimal }
-        } else if (val != null) {
-          list << (val as BigDecimal)
-        }
-        dayMap[hr as Integer] = list
-      }
-      aggregated[dateStr] = dayMap
-    }
+  history.findAll { rec ->
+    rec[1] == roomId && modes.contains(rec[2]) &&
+    (!start || !new Date(rec[0]).before(start)) &&
+    (!end || !new Date(rec[0]).after(end))
+  }.each { rec ->
+    Date d = new Date(rec[0])
+    String dateStr = d.format('yyyy-MM-dd', tz)
+    def dayMap = aggregated[dateStr] ?: [:]
+    def list = dayMap[rec[3] as Integer] ?: []
+    list << (rec[4] as BigDecimal)
+    dayMap[rec[3] as Integer] = list
+    aggregated[dateStr] = dayMap
   }
 
-  if (!aggregated) { return '<p>No DAB progress history available.</p>' }
+  if (!aggregated) { return '<p>No DAB progress history available for the selected period.</p>' }
 
   def dates = aggregated.keySet().sort()
   def hours = (0..23)
