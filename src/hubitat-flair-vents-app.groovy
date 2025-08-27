@@ -148,6 +148,7 @@ preferences {
   page(name: 'dabChartPage')
   page(name: 'dabRatesTablePage')
   page(name: 'dabActivityLogPage')
+  page(name: 'dabHistoryPage')
   page(name: 'dabProgressPage')
 }
 
@@ -258,6 +259,12 @@ def mainPage() {
             href name: 'dabActivityLogLink', title: '📘 View DAB Activity Log',
                  description: 'See recent HVAC mode transitions',
                  page: 'dabActivityLogPage'
+          }
+          // DAB History Page Link
+          section {
+            href name: 'dabHistoryLink', title: '📚 View DAB History',
+                 description: 'Browse stored hourly DAB history',
+                 page: 'dabHistoryPage'
           }
           // DAB History Export
           section {
@@ -3474,6 +3481,49 @@ def dabActivityLogPage() {
         entries.reverse().each { paragraph "<code>${it}</code>" }
       } else {
         paragraph 'No activity yet.'
+      }
+    }
+    section {
+      href name: 'backToMain', title: '← Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+    }
+  }
+}
+
+def dabHistoryPage() {
+  dynamicPage(name: 'dabHistoryPage', title: '📚 DAB History', install: false, uninstall: false) {
+    section {
+      input name: 'historyHvacMode', type: 'enum', title: 'HVAC Mode', required: false, submitOnChange: true,
+            options: [(COOLING): 'Cooling', (HEATING): 'Heating', 'both': 'Both']
+      input name: 'historyStart', type: 'date', title: 'Start Date', required: false, submitOnChange: true
+      input name: 'historyEnd', type: 'date', title: 'End Date', required: false, submitOnChange: true
+    }
+    section {
+      def history = atomicState?.dabHistory ?: [:]
+      def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+      Map roomNames = vents.collectEntries { v -> [(v.currentValue('room-id') ?: v.getId()): (v.currentValue('room-name') ?: v.getLabel())] }
+      String start = settings?.historyStart
+      String end = settings?.historyEnd
+      String mode = settings?.historyHvacMode ?: 'both'
+      List entries = []
+      history.each { roomId, modeMap ->
+        modeMap.each { hvacMode, records ->
+          if (mode == 'both' || hvacMode == mode) {
+            records.each { rec ->
+              if ((!start || rec.date >= start) && (!end || rec.date <= end)) {
+                entries << [date: rec.date, hour: (rec.hour as Integer), room: roomNames[roomId] ?: roomId, hvacMode: hvacMode, rate: rec.rate]
+              }
+            }
+          }
+        }
+      }
+      entries.sort { a, b -> (a.date <=> b.date) ?: (a.hour <=> b.hour) }
+      if (entries) {
+        entries.each { e ->
+          String hr = e.hour.toString().padLeft(2, '0')
+          paragraph "<code>${e.date} ${hr}:00 ${e.room} (${e.hvacMode}) - ${e.rate}</code>"
+        }
+      } else {
+        paragraph 'No DAB history for selected filters.'
       }
     }
     section {
