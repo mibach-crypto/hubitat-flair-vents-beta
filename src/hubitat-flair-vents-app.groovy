@@ -272,11 +272,39 @@ def mainPage() {
                  description: 'Tabular hourly DAB calculations for each room',
                  page: 'dabRatesTablePage'
           }
-        // DAB Activity Log Link
-        section {
-          href name: 'dabActivityLogLink', title: '📘 View DAB Activity Log',
-               description: 'See recent HVAC mode transitions',
-               page: 'dabActivityLogPage'
+          // DAB Progress Page Link
+          section {
+            href name: 'dabProgressLink', title: '📈 View DAB Progress',
+                 description: 'Track DAB progress by date and hour',
+                 page: 'dabProgressPage'
+          }
+          // DAB History Page Link
+          section {
+            href name: 'dabHistoryLink', title: '📚 View DAB History',
+                 description: 'Review archived DAB rates with filters',
+                 page: 'dabHistoryPage'
+          }
+          // DAB Activity Log Link
+          section {
+            href name: 'dabActivityLogLink', title: '📘 View DAB Activity Log',
+                 description: 'See recent HVAC mode transitions',
+                 page: 'dabActivityLogPage'
+          }
+          // DAB History Export
+          section {
+            input name: 'dabHistoryFormat', type: 'enum', title: 'Export Format',
+                  options: ['json': 'JSON', 'csv': 'CSV'], defaultValue: 'json',
+                  submitOnChange: true
+            input name: 'exportDabHistory', type: 'button',
+                  title: 'Export DAB History', submitOnChange: true
+            if (state.dabHistoryExportStatus) {
+              paragraph state.dabHistoryExportStatus
+            }
+            if (state.dabHistoryExportData) {
+              paragraph "<textarea rows='8' cols='80' readonly>" +
+                        "${state.dabHistoryExportData}" + "</textarea>"
+            }
+          }
         }
         // Run integrity check
         section {
@@ -2775,12 +2803,36 @@ def getAverageHourlyRate(String roomId, String hvacMode, Integer hour) {
 // Ensures the hour key is stored as a String to match Hubitat's
 // serialization behaviour.
 def appendHourlyRate(String roomId, String hvacMode, Integer hour, BigDecimal rate) {
-  def history = atomicState?.dabHistory ?: []
-  Long nowTs = now()
-  if (!atomicState?.dabHistoryStartTimestamp) {
-    atomicState.dabHistoryStartTimestamp = nowTs
+  if (!roomId || !hvacMode || hour == null || rate == null) {
+    recordHistoryError('Null value detected while appending history entry')
+    return
   }
-  history << [nowTs, roomId, hvacMode, hour, rate]
+
+  def history = atomicState?.dabHistory ?: [:]
+  def roomHistory = history[roomId] ?: [:]
+  def modeHistory = roomHistory[hvacMode] ?: []
+
+  String dateStr = new Date().format('yyyy-MM-dd', location?.timeZone ?: TimeZone.getTimeZone('UTC'))
+
+  // Sanity check timestamp ordering against last entry
+  if (modeHistory) {
+    def last = modeHistory[-1]
+    if (last?.date && last?.hour != null) {
+      try {
+        Date prev = Date.parse('yyyy-MM-dd HH', "${last.date} ${last.hour}")
+        Date curr = Date.parse('yyyy-MM-dd HH', "${dateStr} ${hour}")
+        if (curr.before(prev)) {
+          recordHistoryError("Out-of-order timestamp for room ${roomId} ${hvacMode}: ${dateStr} ${hour}")
+        }
+      } catch (err) {
+        recordHistoryError("Invalid timestamp format in history for room ${roomId} ${hvacMode}")
+      }
+    } else {
+      recordHistoryError("Missing fields in previous history entry for room ${roomId} ${hvacMode}")
+    }
+  }
+
+  modeHistory << [date: dateStr, hour: hour, rate: rate]
 
   Integer retention = (settings?.dabHistoryRetentionDays ?: DEFAULT_HISTORY_RETENTION_DAYS) as Integer
   Long cutoff = nowTs - retention * 24L * 60L * 60L * 1000L
@@ -2803,6 +2855,13 @@ def appendDabActivityLog(String message) {
   list << "${ts} (since ${startStr}) - ${message}"
   if (list.size() > 100) { list = list[-100..-1] }
   atomicState.dabActivityLog = list
+}
+
+def recordHistoryError(String message) {
+  def errs = atomicState?.dabHistoryErrors ?: []
+  String ts = new Date().format('yyyy-MM-dd HH:mm:ss', location?.timeZone ?: TimeZone.getTimeZone('UTC'))
+  errs << "${ts} - ${message}"
+  atomicState?.dabHistoryErrors = errs
 }
 
 private boolean isFanActive(String opState = null) {
@@ -3713,6 +3772,35 @@ def efficiencyDataPage() {
   }
 }
 
+def dabHistoryPage() {
+  dynamicPage(name: 'dabHistoryPage', title: '📚 DAB History', install: false, uninstall: false) {
+    section {
+      def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+      Map roomOptions = vents.collectEntries { v ->
+        [(v.currentValue('room-id') ?: v.getId()): (v.currentValue('room-name') ?: v.getLabel())]
+      }
+      input name: 'historyRoom', type: 'enum', title: 'Room', required: false, submitOnChange: true, options: roomOptions
+      input name: 'historyHvacMode', type: 'enum', title: 'HVAC Mode', required: false, submitOnChange: true,
+            options: [(COOLING): 'Cooling', (HEATING): 'Heating', 'both': 'Both']
+      input name: 'historyStart', type: 'date', title: 'Start Date', required: false, submitOnChange: true
+      input name: 'historyStartHour', type: 'number', title: 'Start Hour (0-23)', required: false, range: '0..23', submitOnChange: true
+      input name: 'historyEnd', type: 'date', title: 'End Date', required: false, submitOnChange: true
+      input name: 'historyEndHour', type: 'number', title: 'End Hour (0-23)', required: false, range: '0..23', submitOnChange: true
+      def result = buildDabHistoryTable()
+      def allErrors = []
+      if (atomicState?.dabHistoryErrors) { allErrors += atomicState.dabHistoryErrors }
+      if (result.errors) { allErrors += result.errors }
+      if (allErrors) {
+        paragraph "<span style='color:red'>⚠️ ${allErrors.join('<br>')}</span>"
+      }
+      paragraph result.table
+    }
+    section {
+      href name: 'backToMain', title: '← Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+    }
+  }
+}
+
 def dabActivityLogPage() {
   dynamicPage(name: 'dabActivityLogPage', title: '📘 DAB Activity Log', install: false, uninstall: false) {
     section {
@@ -3816,24 +3904,78 @@ def dabProgressPage() {
   }
 }
 
-def dabHistoryPage() {
-  dynamicPage(name: 'dabHistoryPage', title: '📚 DAB History', install: false, uninstall: false) {
-    section {
-      input name: 'historyHvacMode', type: 'enum', title: 'HVAC Mode', required: false, submitOnChange: true,
-            options: [(COOLING): 'Cooling', (HEATING): 'Heating', 'both': 'Both']
-      input name: 'historyGranularity', type: 'enum', title: 'Granularity', required: false, submitOnChange: true,
-            options: ['hour': 'Hourly', 'day': 'Daily'], defaultValue: 'hour'
-      input name: 'historyStart', type: 'date', title: 'Start Date', required: false, submitOnChange: true
-      input name: 'historyEnd', type: 'date', title: 'End Date', required: false, submitOnChange: true
-      paragraph buildDabHistoryChart()
-      paragraph buildDabHistoryTable()
-      def notice = buildHistoryCoverageNotice()
-      if (notice) { paragraph notice }
-    }
-    section {
-      href name: 'backToMain', title: '← Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+Map buildDabHistoryTable() {
+  def history = atomicState?.dabHistory ?: [:]
+  String roomId = settings?.historyRoom
+  String hvacMode = settings?.historyHvacMode ?: 'both'
+  Date startDate = settings?.historyStart ? Date.parse('yyyy-MM-dd', settings.historyStart) : null
+  Integer startHour = settings?.historyStartHour != null ? (settings.historyStartHour as Integer) : null
+  Date endDate = settings?.historyEnd ? Date.parse('yyyy-MM-dd', settings.historyEnd) : null
+  Integer endHour = settings?.historyEndHour != null ? (settings.historyEndHour as Integer) : null
+  def modes = hvacMode == 'both' ? [COOLING, HEATING] : [hvacMode]
+  def entries = []
+  history.each { rid, modeMap ->
+    if (roomId && rid != roomId) { return }
+    modeMap.each { mode, list ->
+      if (!(mode in modes)) { return }
+      if (list instanceof List) {
+        list.each { rec ->
+          entries << [room: rid, mode: mode, date: rec.date, hour: rec.hour, rate: rec.rate]
+        }
+      }
     }
   }
+  Long startMs = null
+  if (startDate) { startMs = startDate.clearTime().time + ((startHour ?: 0) * 3600000L) }
+  Long endMs = null
+  if (endDate) { endMs = endDate.clearTime().time + ((endHour ?: 23) * 3600000L) }
+  entries = entries.findAll { e ->
+    try {
+      long ms = Date.parse('yyyy-MM-dd HH', "${e.date} ${e.hour}").time
+      (!startMs || ms >= startMs) && (!endMs || ms <= endMs)
+    } catch (err) {
+      true
+    }
+  }
+  def errors = sanityCheckHistoryEntries(entries)
+  entries.sort { a, b ->
+    Date.parse('yyyy-MM-dd HH', "${a.date} ${a.hour}") <=> Date.parse('yyyy-MM-dd HH', "${b.date} ${b.hour}")
+  }
+  if (!entries) {
+    return [table: '<p>No DAB history available.</p>', errors: errors]
+  }
+  def html = new StringBuilder()
+  html << "<table style='width:100%;border-collapse:collapse;'>"
+  html << "<tr><th style='text-align:left;padding:4px;'>Date</th><th style='text-align:right;padding:4px;'>Hour</th><th style='text-align:left;padding:4px;'>Mode</th><th style='text-align:right;padding:4px;'>Rate</th></tr>"
+  entries.each { e ->
+    html << "<tr><td style='text-align:left;padding:4px;'>${e.date}</td>"
+    html << "<td style='text-align:right;padding:4px;'>${e.hour}</td>"
+    html << "<td style='text-align:left;padding:4px;'>${e.mode}</td>"
+    html << "<td style='text-align:right;padding:4px;'>${roundBigDecimal(e.rate as BigDecimal)}</td></tr>"
+  }
+  html << '</table>'
+  [table: html.toString(), errors: errors]
+}
+
+List sanityCheckHistoryEntries(List entries) {
+  def errors = []
+  Date prev
+  entries.each { e ->
+    if (!e.date || e.hour == null || e.rate == null) {
+      errors << 'Null value found in history entry'
+      return
+    }
+    try {
+      Date curr = Date.parse('yyyy-MM-dd HH', "${e.date} ${e.hour}")
+      if (prev && curr.before(prev)) {
+        errors << "Timestamp out of order at ${e.date} ${e.hour}"
+      }
+      prev = curr
+    } catch (err) {
+      errors << "Invalid timestamp format for ${e.date} ${e.hour}"
+    }
+  }
+  return errors
 }
 
 String buildDabChart() {
