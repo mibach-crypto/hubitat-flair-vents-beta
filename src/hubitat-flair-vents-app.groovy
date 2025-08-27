@@ -378,10 +378,10 @@ def initialize() {
   // HVAC state will be updated after each vent refresh; compute initial state now
   if (settings?.dabEnabled) {
     updateHvacStateFromDuctTemps()
-    unschedule(updateHvacStateFromDuctTemps)
+    unschedule('updateHvacStateFromDuctTemps')
     runEvery1Minute('updateHvacStateFromDuctTemps')
   } else {
-    unschedule(updateHvacStateFromDuctTemps)
+    unschedule('updateHvacStateFromDuctTemps')
   }
   // Schedule periodic cleanup of instance caches and pending requests
   runEvery5Minutes('cleanupPendingRequests')
@@ -2370,7 +2370,7 @@ def thermostat1ChangeStateHandler(evt) {
       }
       atomicStateUpdate('thermostat1State', 'mode', hvacMode)
       atomicStateUpdate('thermostat1State', 'startedRunning', now())
-      unschedule(initializeRoomStates)
+      unschedule('initializeRoomStates')
       runInMillis(POST_STATE_CHANGE_DELAY_MS, 'initializeRoomStates', [data: hvacMode])
       recordStartingTemperatures()
       runEvery5Minutes('evaluateRebalancingVents')
@@ -2380,10 +2380,10 @@ def thermostat1ChangeStateHandler(evt) {
       updateDevicePollingInterval(POLLING_INTERVAL_ACTIVE)
       break
     default:
-      unschedule(initializeRoomStates)
-      unschedule(finalizeRoomStates)
-      unschedule(evaluateRebalancingVents)
-      unschedule(reBalanceVents)
+      unschedule('initializeRoomStates')
+      unschedule('finalizeRoomStates')
+      unschedule('evaluateRebalancingVents')
+      unschedule('reBalanceVents')
       if (atomicState.thermostat1State) {
         atomicStateUpdate('thermostat1State', 'finishedRunning', now())
         def params = [
@@ -2418,7 +2418,7 @@ def updateHvacStateFromDuctTemps() {
     if (!atomicState.thermostat1State || atomicState.thermostat1State?.mode != hvacMode) {
       atomicStateUpdate('thermostat1State', 'mode', hvacMode)
       atomicStateUpdate('thermostat1State', 'startedRunning', now())
-      unschedule(initializeRoomStates)
+      unschedule('initializeRoomStates')
       runInMillis(POST_STATE_CHANGE_DELAY_MS, 'initializeRoomStates', [data: hvacMode])
       recordStartingTemperatures()
       runEvery5Minutes('evaluateRebalancingVents')
@@ -2427,10 +2427,10 @@ def updateHvacStateFromDuctTemps() {
     }
   } else {
     if (atomicState.thermostat1State) {
-      unschedule(initializeRoomStates)
-      unschedule(finalizeRoomStates)
-      unschedule(evaluateRebalancingVents)
-      unschedule(reBalanceVents)
+      unschedule('initializeRoomStates')
+      unschedule('finalizeRoomStates')
+      unschedule('evaluateRebalancingVents')
+      unschedule('reBalanceVents')
       atomicStateUpdate('thermostat1State', 'finishedRunning', now())
       def params = [
         ventIdsByRoomId: atomicState.ventsByRoomId,
