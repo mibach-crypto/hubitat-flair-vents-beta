@@ -397,7 +397,10 @@ def initialize() {
   
   // Clean up any existing BigDecimal precision issues
   cleanupExistingDecimalPrecision()
-  
+
+  // Ensure required DAB tracking structures exist
+  initializeDabTracking()
+
   // Check if we need to auto-authenticate on startup
   if (settings?.clientId && settings?.clientSecret) {
     if (!state.flairAccessToken) {
@@ -696,6 +699,24 @@ def cleanupExistingDecimalPrecision() {
     
   } catch (Exception e) {
     log "Error during decimal precision cleanup: ${e.message}", 2
+  }
+}
+
+def initializeDabTracking() {
+  try {
+    if (atomicState.dabHistory == null) {
+      atomicState.dabHistory = [:]
+    }
+  } catch (Exception e) {
+    logWarn "Failed to initialize DAB history map: ${e.message}"
+  }
+
+  try {
+    if (atomicState.dabActivityLog == null) {
+      atomicState.dabActivityLog = []
+    }
+  } catch (Exception e) {
+    logWarn "Failed to initialize DAB activity log: ${e.message}"
   }
 }
 
