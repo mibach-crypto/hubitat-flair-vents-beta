@@ -240,15 +240,19 @@ def mainPage() {
                  description: 'Tabular hourly DAB calculations for each room',
                  page: 'dabRatesTablePage'
           }
-          // DAB Activity Log Link
-          section {
-            href name: 'dabActivityLogLink', title: '📘 View DAB Activity Log',
-                 description: 'See recent HVAC mode transitions',
-                 page: 'dabActivityLogPage'
-          }
+        // DAB Activity Log Link
+        section {
+          href name: 'dabActivityLogLink', title: '📘 View DAB Activity Log',
+               description: 'See recent HVAC mode transitions',
+               page: 'dabActivityLogPage'
         }
-        // Only show vents in DAB section, not pucks
-        def vents = getChildDevices().findAll { it.hasAttribute('percent-open') }
+        // Run integrity check
+        section {
+          input name: 'runDabHistoryCheck', type: 'button', title: 'Run DAB History Check', submitOnChange: true
+        }
+      }
+      // Only show vents in DAB section, not pucks
+      def vents = getChildDevices().findAll { it.hasAttribute('percent-open') }
         for (child in vents) {
           input name: "vent${child.getId()}Thermostat", type: 'capability.temperatureMeasurement', title: "Choose Thermostat for ${child.getLabel()} (Optional)", multiple: false, required: false
         }
@@ -387,8 +391,11 @@ def initialize() {
     updateHvacStateFromDuctTemps()
     unschedule('updateHvacStateFromDuctTemps')
     runEvery1Minute('updateHvacStateFromDuctTemps')
+    unschedule('checkDabHistoryIntegrity')
+    runEvery1Day('checkDabHistoryIntegrity')
   } else {
     unschedule('updateHvacStateFromDuctTemps')
+    unschedule('checkDabHistoryIntegrity')
   }
   // Schedule periodic cleanup of instance caches and pending requests
   runEvery5Minutes('cleanupPendingRequests')
@@ -1272,12 +1279,15 @@ def appButtonHandler(String btn) {
       unschedule(login)
       runEvery1Hour(login)
       break
-    case 'discoverDevices':
-      discover()
-      break
-    case 'exportEfficiencyData':
-      handleExportEfficiencyData()
-      break
+      case 'discoverDevices':
+        discover()
+        break
+      case 'runDabHistoryCheck':
+        checkDabHistoryIntegrity()
+        break
+      case 'exportEfficiencyData':
+        handleExportEfficiencyData()
+        break
     case 'importEfficiencyData':
       handleImportEfficiencyData()
       break
@@ -2520,13 +2530,50 @@ def appendHourlyRate(String roomId, String hvacMode, Integer hour, BigDecimal ra
   atomicState?.lastHvacMode = hvacMode
 }
 
-def appendDabActivityLog(String message) {
-  def list = atomicState?.dabActivityLog ?: []
-  String ts = new Date().format('yyyy-MM-dd HH:mm:ss', location?.timeZone ?: TimeZone.getTimeZone('UTC'))
-  list << "${ts} - ${message}"
-  if (list.size() > 100) { list = list[-100..-1] }
-  atomicState?.dabActivityLog = list
-}
+  def appendDabActivityLog(String message) {
+    def list = atomicState?.dabActivityLog ?: []
+    String ts = new Date().format('yyyy-MM-dd HH:mm:ss', location?.timeZone ?: TimeZone.getTimeZone('UTC'))
+    list << "${ts} - ${message}"
+    if (list.size() > 100) { list = list[-100..-1] }
+    atomicState?.dabActivityLog = list
+  }
+
+  // Validate DAB history structure and log anomalies
+  def checkDabHistoryIntegrity() {
+    def history = atomicState?.dabHistory
+    def anomalies = []
+
+    if (!(history instanceof Map)) {
+      anomalies << 'DAB history missing or malformed'
+    } else {
+      history.each { date, hours ->
+        if (!(hours instanceof Map)) {
+          anomalies << "${date} has invalid data"
+          return
+        }
+        (0..23).each { h ->
+          if (!hours.containsKey(h)) {
+            anomalies << "${date} missing hour ${h}"
+          }
+        }
+        hours.each { hour, data ->
+          if (!(hour instanceof Integer) || hour < 0 || hour > 23) {
+            anomalies << "${date} has malformed hour ${hour}"
+          }
+        }
+      }
+    }
+
+    if (anomalies) {
+      anomalies.each { msg ->
+        appendDabActivityLog("Integrity issue: ${msg}")
+        logWarn "DAB History: ${msg}"
+        sendEvent(name: 'dabHistoryIntegrity', value: 'warning', descriptionText: msg)
+      }
+    } else {
+      appendDabActivityLog('DAB history integrity check passed')
+    }
+  }
 
 private boolean isFanActive(String opState = null) {
   opState = opState ?: settings.thermostat1?.currentValue('thermostatOperatingState')
