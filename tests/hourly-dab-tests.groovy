@@ -17,7 +17,7 @@ class HourlyDabTests extends Specification {
     Flags.DontRequireParseMethodInDevice
   ]
 
-  def "hourly rate history maintains rolling ten values"() {
+  def "timestamped rate history purges entries older than retention"() {
     setup:
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
@@ -26,12 +26,18 @@ class HourlyDabTests extends Specification {
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
+    script.location = [timeZone: TimeZone.getTimeZone('UTC')]
+    script.settings = [dabHistoryRetentionDays: 10]
 
-    when:
-    (1..11).each { script.appendHourlyRate('room1', 'cooling', 0, it) }
+    and: 'prepopulate history with an old entry'
+    def oldDate = (new Date() - 11).format('yyyy-MM-dd', TimeZone.getTimeZone('UTC'))
+    script.atomicState = [dabHistory: [room1: [cooling: [[date: oldDate, hour: 0, rate: 1.0]]]]]
 
-    then:
-    script.atomicState.hourlyRates.room1.cooling[0].size() == 10
-    script.getAverageHourlyRate('room1', 'cooling', 0) == 6.5
+    when: 'appending a new rate'
+    script.appendHourlyRate('room1', 'cooling', 0, 2.0)
+
+    then: 'old entry is purged and average uses remaining values'
+    script.atomicState.dabHistory.room1.cooling.size() == 1
+    script.getAverageHourlyRate('room1', 'cooling', 0) == 2.0
   }
 }
