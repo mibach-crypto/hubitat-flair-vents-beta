@@ -272,49 +272,19 @@ def mainPage() {
                  description: 'Tabular hourly DAB calculations for each room',
                  page: 'dabRatesTablePage'
           }
-          // DAB Progress Page Link
-          section {
-            href name: 'dabProgressLink', title: '📈 View DAB Progress',
-                 description: 'Track DAB progress by date and hour',
-                 page: 'dabProgressPage'
-          }
-          // DAB History Page Link
-          section {
-            href name: 'dabHistoryLink', title: '📚 View DAB History',
-                 description: 'Explore historical DAB data',
-                 page: 'dabHistoryPage'
-          }
-          // DAB Activity Log Link
-          section {
-            href name: 'dabActivityLogLink', title: '📘 View DAB Activity Log',
-                 description: 'See recent HVAC mode transitions',
-                 page: 'dabActivityLogPage'
-          }
-          // DAB History Page Link
-          section {
-            href name: 'dabHistoryLink', title: '📚 View DAB History',
-                 description: 'Browse stored hourly DAB history',
-                 page: 'dabHistoryPage'
-          }
-          // DAB History Export
-          section {
-            input name: 'dabHistoryFormat', type: 'enum', title: 'Export Format',
-                  options: ['json': 'JSON', 'csv': 'CSV'], defaultValue: 'json',
-                  submitOnChange: true
-            input name: 'exportDabHistory', type: 'button',
-                  title: 'Export DAB History', submitOnChange: true
-            if (state.dabHistoryExportStatus) {
-              paragraph state.dabHistoryExportStatus
-            }
-            if (state.dabHistoryExportData) {
-              paragraph "<textarea rows='8' cols='80' readonly>" +
-                        "${state.dabHistoryExportData}" + "</textarea>"
-            }
-          }
+        // DAB Activity Log Link
+        section {
+          href name: 'dabActivityLogLink', title: '📘 View DAB Activity Log',
+               description: 'See recent HVAC mode transitions',
+               page: 'dabActivityLogPage'
         }
-        // Only show vents in DAB section, not pucks
-        def vents = getChildDevices().findAll { it.hasAttribute('percent-open') }
-        def missingMappings = validation.errors.roomMappings ?: []
+        // Run integrity check
+        section {
+          input name: 'runDabHistoryCheck', type: 'button', title: 'Run DAB History Check', submitOnChange: true
+        }
+      }
+      // Only show vents in DAB section, not pucks
+      def vents = getChildDevices().findAll { it.hasAttribute('percent-open') }
         for (child in vents) {
           input name: "vent${child.getId()}Thermostat", type: 'capability.temperatureMeasurement', title: "Choose Thermostat for ${child.getLabel()}", multiple: false, required: true
           if (missingMappings.contains(child.getLabel())) {
@@ -481,8 +451,11 @@ def initialize() {
     updateHvacStateFromDuctTemps()
     unschedule('updateHvacStateFromDuctTemps')
     runEvery1Minute('updateHvacStateFromDuctTemps')
+    unschedule('checkDabHistoryIntegrity')
+    runEvery1Day('checkDabHistoryIntegrity')
   } else {
     unschedule('updateHvacStateFromDuctTemps')
+    unschedule('checkDabHistoryIntegrity')
   }
   // Schedule periodic cleanup of instance caches and pending requests
   runEvery5Minutes('cleanupPendingRequests')
@@ -1533,15 +1506,15 @@ def appButtonHandler(String btn) {
       unschedule(login)
       runEvery1Hour(login)
       break
-    case 'discoverDevices':
-      discover()
-      break
-    case 'exportEfficiencyData':
-      handleExportEfficiencyData()
-      break
-    case 'exportDabHistory':
-      handleExportDabHistory()
-      break
+      case 'discoverDevices':
+        discover()
+        break
+      case 'runDabHistoryCheck':
+        checkDabHistoryIntegrity()
+        break
+      case 'exportEfficiencyData':
+        handleExportEfficiencyData()
+        break
     case 'importEfficiencyData':
       handleImportEfficiencyData()
       break
@@ -2810,68 +2783,50 @@ def appendHourlyRate(String roomId, String hvacMode, Integer hour, BigDecimal ra
   }
 }
 
-def appendDabActivityLog(String message) {
-  def list = atomicState?.dabActivityLog ?: []
-  String ts = new Date().format('yyyy-MM-dd HH:mm:ss', location?.timeZone ?: TimeZone.getTimeZone('UTC'))
-  list << "${ts} - ${message}"
-  if (list.size() > 100) { list = list[-100..-1] }
-  atomicState?.dabActivityLog = list
-  archiveDabHistoryEntry([type: 'activity', message: message, timestamp: ts])
-}
+  def appendDabActivityLog(String message) {
+    def list = atomicState?.dabActivityLog ?: []
+    String ts = new Date().format('yyyy-MM-dd HH:mm:ss', location?.timeZone ?: TimeZone.getTimeZone('UTC'))
+    list << "${ts} - ${message}"
+    if (list.size() > 100) { list = list[-100..-1] }
+    atomicState?.dabActivityLog = list
+  }
 
-private void archiveDabHistoryEntry(Map entry) {
-  try {
-    File file = new File(DAB_HISTORY_FILE)
-    File dir = file.parentFile
-    if (!dir.exists()) { dir.mkdirs() }
-    List history = []
-    if (file.exists()) {
-      try {
-        history = new JsonSlurper().parseText(file.text) as List
-      } catch (ignored) {
-        history = []
+  // Validate DAB history structure and log anomalies
+  def checkDabHistoryIntegrity() {
+    def history = atomicState?.dabHistory
+    def anomalies = []
+
+    if (!(history instanceof Map)) {
+      anomalies << 'DAB history missing or malformed'
+    } else {
+      history.each { date, hours ->
+        if (!(hours instanceof Map)) {
+          anomalies << "${date} has invalid data"
+          return
+        }
+        (0..23).each { h ->
+          if (!hours.containsKey(h)) {
+            anomalies << "${date} missing hour ${h}"
+          }
+        }
+        hours.each { hour, data ->
+          if (!(hour instanceof Integer) || hour < 0 || hour > 23) {
+            anomalies << "${date} has malformed hour ${hour}"
+          }
+        }
+      }
+    }
+
+    if (anomalies) {
+      anomalies.each { msg ->
+        appendDabActivityLog("Integrity issue: ${msg}")
+        logWarn "DAB History: ${msg}"
+        sendEvent(name: 'dabHistoryIntegrity', value: 'warning', descriptionText: msg)
       }
     } else {
-      file.text = '[]'
-    }
-    history << entry
-    file.text = JsonOutput.prettyPrint(JsonOutput.toJson(history))
-    rotateDabHistoryFileIfNeeded(file)
-  } catch (Exception e) {
-    logWarn "Failed to archive DAB history: ${e.message}"
-  }
-}
-
-private void rotateDabHistoryFileIfNeeded(File file) {
-  if (file.length() > DAB_HISTORY_MAX_FILE_SIZE) {
-    String ts = new Date().format('yyyyMMddHHmmss', location?.timeZone ?: TimeZone.getTimeZone('UTC'))
-    File dir = file.parentFile
-    File archive = new File(dir, "dab-history-${ts}.json")
-    file.renameTo(archive)
-    file.text = '[]'
-    def archives = dir.listFiles()?.findAll { it.name.startsWith('dab-history-') && it.name.endsWith('.json') }?.sort { it.lastModified() } ?: []
-    while (archives.size() > DAB_HISTORY_MAX_ARCHIVES) {
-      archives[0].delete()
-      archives = archives.drop(1)
+      appendDabActivityLog('DAB history integrity check passed')
     }
   }
-}
-
-def readDabHistoryArchive() {
-  File file = new File(DAB_HISTORY_FILE)
-  File dir = file.parentFile
-  if (!dir.exists()) { return [] }
-  def slurper = new JsonSlurper()
-  def files = dir.listFiles()?.findAll { it.name.startsWith('dab-history') && it.name.endsWith('.json') }?.sort { it.name }
-  def data = []
-  files.each { f ->
-    try {
-      def content = slurper.parseText(f.text)
-      if (content instanceof List) { data.addAll(content) }
-    } catch (ignored) { }
-  }
-  data
-}
 
 private boolean isFanActive(String opState = null) {
   opState = opState ?: settings.thermostat1?.currentValue('thermostatOperatingState')
