@@ -2871,7 +2871,7 @@ def calculateLongestMinutesToTarget(rateAndTempPerVentId, String hvacMode, BigDe
           minutesToTarget = maxRunningTime  // Cap at max running time
         }
       } else if (stateVal.rate == 0) {
-        minutesToTarget = 0
+        minutesToTarget = maxRunningTime
         logWarn "'${stateVal.name}' shows no temperature change with vent open"
       }
       if (minutesToTarget > maxRunningTime) {
