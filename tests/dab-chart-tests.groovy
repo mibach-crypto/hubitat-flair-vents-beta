@@ -24,6 +24,7 @@ class DabChartTests extends Specification {
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
       _ * getLog() >> log
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
@@ -60,6 +61,7 @@ class DabChartTests extends Specification {
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
       _ * getLog() >> log
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
@@ -93,6 +95,7 @@ class DabChartTests extends Specification {
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
       _ * getLog() >> log
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
