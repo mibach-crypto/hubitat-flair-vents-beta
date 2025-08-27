@@ -35,9 +35,7 @@ import java.net.URLEncoder
 @Field static final Long DEVICE_CACHE_DURATION_MS = 30000 // 30 second cache duration for device readings
 @Field static final Integer MAX_CACHE_SIZE = 50 // Maximum cache entries per instance
 @Field static final Integer DEFAULT_HISTORY_RETENTION_DAYS = 10 // Default days to retain DAB history
-@Field static final String DAB_HISTORY_FILE = 'data/dab-history.json'
-@Field static final Long DAB_HISTORY_MAX_FILE_SIZE = 1024 * 1000  // 1 MB
-@Field static final Integer DAB_HISTORY_MAX_ARCHIVES = 5
+@Field static final Integer DAILY_SUMMARY_PAGE_SIZE = 30 // Entries per page for daily summary
 
 // Content-Type header for API requests.
 @Field static final String CONTENT_TYPE = 'application/json'
@@ -160,7 +158,7 @@ preferences {
   page(name: 'dabActivityLogPage')
   page(name: 'dabHistoryPage')
   page(name: 'dabProgressPage')
-  page(name: 'dabHistoryPage')
+  page(name: 'dabDailySummaryPage')
 }
 
 def mainPage() {
@@ -278,11 +276,11 @@ def mainPage() {
                  description: 'Track DAB progress by date and hour',
                  page: 'dabProgressPage'
           }
-          // DAB History Page Link
+          // Daily DAB Summary Link
           section {
-            href name: 'dabHistoryLink', title: '📚 View DAB History',
-                 description: 'Review archived DAB rates with filters',
-                 page: 'dabHistoryPage'
+            href name: 'dabDailySummaryLink', title: '📅 View Daily DAB Summary',
+                 description: 'Daily airflow averages per room and mode',
+                 page: 'dabDailySummaryPage'
           }
           // DAB Activity Log Link
           section {
@@ -482,11 +480,11 @@ def initialize() {
     updateHvacStateFromDuctTemps()
     unschedule('updateHvacStateFromDuctTemps')
     runEvery1Minute('updateHvacStateFromDuctTemps')
-    unschedule('checkDabHistoryIntegrity')
-    runEvery1Day('checkDabHistoryIntegrity')
+    unschedule('aggregateDailyDabStats')
+    runEvery1Day('aggregateDailyDabStats')
   } else {
     unschedule('updateHvacStateFromDuctTemps')
-    unschedule('checkDabHistoryIntegrity')
+    unschedule('aggregateDailyDabStats')
   }
   // Schedule periodic cleanup of instance caches and pending requests
   runEvery5Minutes('cleanupPendingRequests')
@@ -2860,6 +2858,33 @@ def appendHourlyRate(String roomId, String hvacMode, Integer hour, BigDecimal ra
   atomicState.lastHvacMode = hvacMode
 }
 
+// Aggregate previous day's hourly rates into daily averages
+def aggregateDailyDabStats() {
+  def history = atomicState?.dabHistory ?: [:]
+  if (!history) { return }
+  String tzId = location?.timeZone ?: TimeZone.getTimeZone('UTC')
+  String targetDate = (new Date() - 1).format('yyyy-MM-dd', tzId)
+  def stats = atomicState?.dabDailyStats ?: [:]
+  history.each { roomId, modeMap ->
+    modeMap.each { hvacMode, entries ->
+      def dailyRates = entries.findAll { it.date == targetDate }*.rate.collect { it as BigDecimal }
+      if (dailyRates && dailyRates.size() > 0) {
+        BigDecimal avg = cleanDecimalForJson(dailyRates.sum() / dailyRates.size())
+        def roomStats = stats[roomId] ?: [:]
+        def modeStats = roomStats[hvacMode] ?: []
+        modeStats = modeStats.findAll { it.date != targetDate }
+        modeStats << [date: targetDate, avg: avg]
+        Integer retention = (settings?.dabHistoryRetentionDays ?: DEFAULT_HISTORY_RETENTION_DAYS) as Integer
+        String cutoff = (new Date() - retention).format('yyyy-MM-dd', tzId)
+        modeStats = modeStats.findAll { it.date >= cutoff }
+        roomStats[hvacMode] = modeStats
+        stats[roomId] = roomStats
+      }
+    }
+  }
+  atomicState.dabDailyStats = stats
+}
+
 def appendDabActivityLog(String message) {
   def list = atomicState?.dabActivityLog ?: []
   String ts = new Date().format('yyyy-MM-dd HH:mm:ss', location?.timeZone ?: TimeZone.getTimeZone('UTC'))
@@ -3921,78 +3946,16 @@ def dabProgressPage() {
   }
 }
 
-Map buildDabHistoryTable() {
-  def history = atomicState?.dabHistory ?: [:]
-  String roomId = settings?.historyRoom
-  String hvacMode = settings?.historyHvacMode ?: 'both'
-  Date startDate = settings?.historyStart ? Date.parse('yyyy-MM-dd', settings.historyStart) : null
-  Integer startHour = settings?.historyStartHour != null ? (settings.historyStartHour as Integer) : null
-  Date endDate = settings?.historyEnd ? Date.parse('yyyy-MM-dd', settings.historyEnd) : null
-  Integer endHour = settings?.historyEndHour != null ? (settings.historyEndHour as Integer) : null
-  def modes = hvacMode == 'both' ? [COOLING, HEATING] : [hvacMode]
-  def entries = []
-  history.each { rid, modeMap ->
-    if (roomId && rid != roomId) { return }
-    modeMap.each { mode, list ->
-      if (!(mode in modes)) { return }
-      if (list instanceof List) {
-        list.each { rec ->
-          entries << [room: rid, mode: mode, date: rec.date, hour: rec.hour, rate: rec.rate]
-        }
-      }
+def dabDailySummaryPage() {
+  dynamicPage(name: 'dabDailySummaryPage', title: '📅 Daily DAB Summary', install: false, uninstall: false) {
+    section {
+      input name: 'dailySummaryPage', type: 'number', title: 'Page', required: false, defaultValue: 1, submitOnChange: true
+      paragraph buildDabDailySummaryTable()
+    }
+    section {
+      href name: 'backToMain', title: '← Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
     }
   }
-  Long startMs = null
-  if (startDate) { startMs = startDate.clearTime().time + ((startHour ?: 0) * 3600000L) }
-  Long endMs = null
-  if (endDate) { endMs = endDate.clearTime().time + ((endHour ?: 23) * 3600000L) }
-  entries = entries.findAll { e ->
-    try {
-      long ms = Date.parse('yyyy-MM-dd HH', "${e.date} ${e.hour}").time
-      (!startMs || ms >= startMs) && (!endMs || ms <= endMs)
-    } catch (err) {
-      true
-    }
-  }
-  def errors = sanityCheckHistoryEntries(entries)
-  entries.sort { a, b ->
-    Date.parse('yyyy-MM-dd HH', "${a.date} ${a.hour}") <=> Date.parse('yyyy-MM-dd HH', "${b.date} ${b.hour}")
-  }
-  if (!entries) {
-    return [table: '<p>No DAB history available.</p>', errors: errors]
-  }
-  def html = new StringBuilder()
-  html << "<table style='width:100%;border-collapse:collapse;'>"
-  html << "<tr><th style='text-align:left;padding:4px;'>Date</th><th style='text-align:right;padding:4px;'>Hour</th><th style='text-align:left;padding:4px;'>Mode</th><th style='text-align:right;padding:4px;'>Rate</th></tr>"
-  entries.each { e ->
-    html << "<tr><td style='text-align:left;padding:4px;'>${e.date}</td>"
-    html << "<td style='text-align:right;padding:4px;'>${e.hour}</td>"
-    html << "<td style='text-align:left;padding:4px;'>${e.mode}</td>"
-    html << "<td style='text-align:right;padding:4px;'>${roundBigDecimal(e.rate as BigDecimal)}</td></tr>"
-  }
-  html << '</table>'
-  [table: html.toString(), errors: errors]
-}
-
-List sanityCheckHistoryEntries(List entries) {
-  def errors = []
-  Date prev
-  entries.each { e ->
-    if (!e.date || e.hour == null || e.rate == null) {
-      errors << 'Null value found in history entry'
-      return
-    }
-    try {
-      Date curr = Date.parse('yyyy-MM-dd HH', "${e.date} ${e.hour}")
-      if (prev && curr.before(prev)) {
-        errors << "Timestamp out of order at ${e.date} ${e.hour}"
-      }
-      prev = curr
-    } catch (err) {
-      errors << "Invalid timestamp format for ${e.date} ${e.hour}"
-    }
-  }
-  return errors
 }
 
 String buildDabChart() {
@@ -4139,148 +4102,37 @@ String buildDabProgressTable() {
   html.toString()
 }
 
-String buildDabHistoryChart() {
+String buildDabDailySummaryTable() {
+  def stats = atomicState?.dabDailyStats ?: [:]
+  if (!stats) { return '<p>No daily statistics available.</p>' }
   def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
-  if (vents.isEmpty()) { return '<p>No vent data available.</p>' }
-
-  String hvacMode = settings?.historyHvacMode ?: getThermostat1Mode() ?: atomicState?.lastHvacMode
-  if (!hvacMode || hvacMode in ['auto', 'manual']) { hvacMode = atomicState?.lastHvacMode }
-  hvacMode = hvacMode ?: COOLING
-  Date start = settings?.historyStart ? Date.parse('yyyy-MM-dd', settings.historyStart) : null
-  Date end = settings?.historyEnd ? Date.parse('yyyy-MM-dd', settings.historyEnd) : null
-  String granularity = settings?.historyGranularity ?: 'hour'
-
-  def buckets = collectDabHistoryBuckets(vents, hvacMode, start, end, granularity)
-  if (!buckets.labels) { return '<p>No DAB history available for the selected range.</p>' }
-  boolean hasData = buckets.datasets.any { ds -> ds.data.any { it != null && it != 0 } }
-  if (!hasData) { return '<p>No DAB history available for the selected range.</p>' }
-
-  def config = [
-    type: 'line',
-    data: [labels: buckets.labels, datasets: buckets.datasets],
-    options: [
-      plugins: [legend: [position: 'bottom']],
-      scales: [
-        x: [title: [display: true, text: granularity == 'day' ? 'Date' : 'Date/Hour']],
-        y: [title: [display: true, text: 'Avg Rate'], beginAtZero: true]
-      ]
-    ]
-  ]
-  def configJson = JsonOutput.toJson(config)
-  def encoded = configJson.bytes.encodeBase64().toString()
-  "<img src='https://quickchart.io/chart?b64=${encoded}' style='max-width:100%'>"
-}
-
-String buildDabHistoryTable() {
-  def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
-  if (vents.isEmpty()) { return '<p>No vent data available.</p>' }
-
-  String hvacMode = settings?.historyHvacMode ?: getThermostat1Mode() ?: atomicState?.lastHvacMode
-  if (!hvacMode || hvacMode in ['auto', 'manual']) { hvacMode = atomicState?.lastHvacMode }
-  hvacMode = hvacMode ?: COOLING
-  Date start = settings?.historyStart ? Date.parse('yyyy-MM-dd', settings.historyStart) : null
-  Date end = settings?.historyEnd ? Date.parse('yyyy-MM-dd', settings.historyEnd) : null
-  String granularity = settings?.historyGranularity ?: 'hour'
-
-  def buckets = collectDabHistoryBuckets(vents, hvacMode, start, end, granularity)
-  if (!buckets.labels) { return '<p>No DAB history available for the selected range.</p>' }
-
-  def html = new StringBuilder()
-  html << "<table style='width:100%;border-collapse:collapse;'>"
-  html << "<tr><th style='text-align:left;padding:4px;'>Room</th>"
-  buckets.labels.each { lbl -> html << "<th style='text-align:right;padding:4px;'>${lbl}</th>" }
-  html << '</tr>'
-  buckets.datasets.each { ds ->
-    html << "<tr><td style='text-align:left;padding:4px;'>${ds.label}</td>"
-    ds.data.each { val ->
-      def cell = val != null ? roundBigDecimal(val) : '--'
-      html << "<td style='text-align:right;padding:4px;'>${cell}</td>"
+  Map roomNames = vents.collectEntries { v -> [(v.currentValue('room-id') ?: v.getId()): (v.currentValue('room-name') ?: v.getLabel())] }
+  def records = []
+  stats.each { roomId, modeMap ->
+    modeMap.each { hvacMode, list ->
+      list.each { rec ->
+        records << [date: rec.date, room: roomNames[roomId] ?: roomId, mode: hvacMode, avg: rec.avg]
+      }
     }
-    html << '</tr>'
+  }
+  if (!records) { return '<p>No daily statistics available.</p>' }
+  records.sort { a, b -> b.date <=> a.date }
+  int page = (settings?.dailySummaryPage ?: 1) as int
+  int totalPages = ((records.size() - 1) / DAILY_SUMMARY_PAGE_SIZE) + 1
+  if (page < 1) { page = 1 }
+  if (page > totalPages) { page = totalPages }
+  int start = (page - 1) * DAILY_SUMMARY_PAGE_SIZE
+  int end = Math.min(start + DAILY_SUMMARY_PAGE_SIZE, records.size())
+  def pageRecords = records.subList(start, end)
+  def html = new StringBuilder()
+  html << "<p>Page ${page} of ${totalPages}</p>"
+  html << "<table style='width:100%;border-collapse:collapse;'>"
+  html << "<tr><th style='text-align:left;padding:4px;'>Date</th><th style='text-align:left;padding:4px;'>Room</th><th style='text-align:left;padding:4px;'>Mode</th><th style='text-align:right;padding:4px;'>Avg</th></tr>"
+  pageRecords.each { r ->
+    html << "<tr><td style='text-align:left;padding:4px;'>${r.date}</td><td style='text-align:left;padding:4px;'>${r.room}</td><td style='text-align:left;padding:4px;'>${r.mode}</td><td style='text-align:right;padding:4px;'>${roundBigDecimal(r.avg)}</td></tr>"
   }
   html << '</table>'
   html.toString()
-}
-
-private Map collectDabHistoryBuckets(List vents, String hvacMode, Date start, Date end, String granularity) {
-  Map datasets = vents.collectEntries { v ->
-    def roomId = v.currentValue('room-id') ?: v.getId()
-    def roomName = v.currentValue('room-name') ?: v.getLabel()
-    [(roomId): [label: roomName, temp: [:]]]
-  }
-  Set labels = [] as LinkedHashSet
-  def modes = hvacMode == 'both' ? [COOLING, HEATING] : [hvacMode]
-
-  atomicState?.dabHistory?.each { roomId, roomMap ->
-    if (!datasets.containsKey(roomId)) { return }
-    modes.each { mode ->
-      def entries = roomMap[mode] ?: []
-      entries.each { rec ->
-        Date d
-        try {
-          d = Date.parse('yyyy-MM-dd', rec.date)
-        } catch (err) {
-          return
-        }
-        if (start && d.before(start)) { return }
-        if (end && d.after(end)) { return }
-        String label = granularity == 'day' ? rec.date : "${rec.date} ${String.format('%02d', rec.hour as Integer)}"
-        labels << label
-        def temp = datasets[roomId].temp
-        def list = temp[label] ?: []
-        list << (rec.rate as BigDecimal)
-        temp[label] = list
-      }
-    }
-  }
-
-  List lblList = labels.toList().sort()
-  datasets.each { roomId, ds ->
-    def temp = ds.remove('temp')
-    ds.data = lblList.collect { lbl ->
-      def list = temp[lbl]
-      list ? cleanDecimalForJson(list.sum() / list.size()) : null
-    }
-  }
-  [labels: lblList, datasets: datasets.values()]
-}
-
-String buildHistoryCoverageNotice() {
-  def bounds = getDabHistoryBounds()
-  if (!bounds.start) { return 'No DAB history recorded yet.' }
-  Date reqStart = settings?.historyStart ? Date.parse('yyyy-MM-dd', settings.historyStart) : null
-  Date reqEnd = settings?.historyEnd ? Date.parse('yyyy-MM-dd', settings.historyEnd) : null
-  List msgs = []
-  if (reqStart && reqStart.before(bounds.start)) {
-    msgs << "No data before ${bounds.start.format('yyyy-MM-dd')}"
-  }
-  if (reqEnd && reqEnd.after(bounds.end)) {
-    msgs << "No data after ${bounds.end.format('yyyy-MM-dd')}"
-  }
-  if (!msgs && (reqStart || reqEnd)) {
-    msgs << "Data covers ${bounds.start.format('yyyy-MM-dd')} to ${bounds.end.format('yyyy-MM-dd')}"
-  }
-  msgs.join('. ')
-}
-
-private Map getDabHistoryBounds() {
-  Date earliest
-  Date latest
-  atomicState?.dabHistory?.each { roomId, roomMap ->
-    roomMap.each { mode, entries ->
-      entries.each { rec ->
-        Date d
-        try {
-          d = Date.parse('yyyy-MM-dd', rec.date)
-        } catch (err) {
-          return
-        }
-        if (!earliest || d.before(earliest)) { earliest = d }
-        if (!latest || d.after(latest)) { latest = d }
-      }
-    }
-  }
-  [start: earliest, end: latest]
 }
 
 // ------------------------------
