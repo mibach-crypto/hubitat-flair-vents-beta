@@ -9,6 +9,7 @@ Harness the power of Dynamic Airflow Balancing to refine air distribution throug
 - **Rate of temperature change calculation** in each room for precise vent adjustment.
 - **Reduced adjustments** mean less wear on vent motors and quieter operation.
 - **Minimum airflow compliance** to prevent HVAC issues from insufficient airflow, particularly useful when integrating Flair Smart Vents with traditional vents.
+- **Hourly DAB insights** via built-in chart and table showing per-room calculations for each hour of the day.
 
 ### Enhanced Vent Control and Combined Airflow Management
 This integration doesn't just enable remote control over each Flair vent; it smartly manages airflow to ensure your HVAC system operates efficiently without damage. Key features include:

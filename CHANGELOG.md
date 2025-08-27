@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.238] - 2025-08-26
+
+### Added
+- Table page displaying hourly Dynamic Airflow Balancing (DAB) rates for each room
+
 ## [0.237] - 2025-08-24
 
 ### Added
