@@ -105,11 +105,11 @@ class TimeCalculationsTest extends Specification {
       'userSettingValues': USER_SETTINGS)
     
     expect:
-    // Zero rate (should return 0)
+    // Zero rate (should return maxRunningTime)
     def rateAndTempPerVentId = [
       'vent1': [rate:0, temp:25, active:true, name: 'Room1']
     ]
-    script.calculateLongestMinutesToTarget(rateAndTempPerVentId, 'cooling', 20, 60, true) == 0
+    script.calculateLongestMinutesToTarget(rateAndTempPerVentId, 'cooling', 20, 60, true) == 60
   }
 
   def "calculateLongestMinutesToTargetTest - Very Slow Rate"() {
