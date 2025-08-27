@@ -127,9 +127,8 @@ import java.net.URLEncoder
 // Maximum number of retry attempts for async API calls.
 @Field static final Integer MAX_API_RETRY_ATTEMPTS = 5
 
-// Delay before verifying vent position after a patch (in ms) and max verification attempts
-@Field static final Integer VENT_VERIFY_DELAY_MS = 3000
-@Field static final Integer MAX_VENT_VERIFY_ATTEMPTS = 3
+// Consecutive failures per URI before resetting API connection.
+@Field static final Integer API_FAILURE_THRESHOLD = 3
 
 // ------------------------------
 // End Constants
@@ -1316,89 +1315,11 @@ def isValidResponse(resp) {
   return true
 }
 
-private initEndpointTracking() {
-  if (state.endpointFailures == null) { state.endpointFailures = [:] }
-  if (state.circuitOpenUntil == null) { state.circuitOpenUntil = [:] }
-}
-
-private long computeBackoff(int retryCount) {
-  long base = API_CALL_DELAY_MS
-  long expo = base * (Math.pow(2, retryCount) as long)
-  long jitter = (long)(Math.random() * base)
-  return expo + jitter
-}
-
-private void scheduleRetry(String uri, String callback, data, int retryCount, boolean authRetry = false, long delayMs = -1) {
-  if (retryCount < MAX_API_RETRY_ATTEMPTS) {
-    long wait = delayMs > 0 ? delayMs : computeBackoff(retryCount)
-    def retryData = [uri: uri, callback: callback, retryCount: retryCount + 1, authRetry: authRetry]
-    if (data?.device && uri.contains('/room')) {
-      retryData.data = [deviceId: data.device.getDeviceNetworkId()]
-    } else {
-      retryData.data = data
-    }
-    runInMillis(wait, 'retryGetDataAsyncWrapper', [data: retryData])
-  } else {
-    logError "getDataAsync failed after ${MAX_API_RETRY_ATTEMPTS} retries for URI: ${uri}"
-  }
-}
-
-def asyncHttpGetWrapper(resp, requestData) {
-  decrementActiveRequests()
-  initEndpointTracking()
-
-  def uri = requestData.uri
-  def callback = requestData.callback
-  def data = requestData.data
-  int retryCount = requestData.retryCount ?: 0
-  boolean authRetry = requestData.authRetry ?: false
-
-  int status = resp?.getStatus() ?: 0
-
-  if (status == 401 && !authRetry) {
-    logWarn "401 response for ${uri}; re-authenticating"
-    authenticate()
-    scheduleRetry(uri, callback, data, retryCount, true)
-    return
-  }
-
-  if (status >= 500) {
-    def failures = (state.endpointFailures[uri] ?: 0) + 1
-    state.endpointFailures[uri] = failures
-    if (failures >= CIRCUIT_BREAKER_THRESHOLD) {
-      state.circuitOpenUntil[uri] = now() + CIRCUIT_BREAKER_TIMEOUT_MS
-      state.endpointFailures[uri] = 0
-      logWarn "Circuit breaker opened for ${uri} after ${failures} failures"
-      scheduleRetry(uri, callback, data, retryCount, authRetry, CIRCUIT_BREAKER_TIMEOUT_MS)
-      return
-    } else {
-      scheduleRetry(uri, callback, data, retryCount, authRetry)
-      return
-    }
-  }
-
-  // Reset failure count on success
-  state.endpointFailures[uri] = 0
-
-  if (callback) {
-    this."${callback}"(resp, data)
-  }
-}
-
-// Updated getDataAsync with exponential backoff, jitter, and circuit breaker support.
-def getDataAsync(String uri, String callback, data = null, int retryCount = 0, boolean authRetry = false) {
-  initEndpointTracking()
-
-  // Respect circuit breaker if the endpoint is temporarily blocked
-  def openUntil = state.circuitOpenUntil[uri]
-  if (openUntil && now() < openUntil) {
-    def delay = openUntil - now()
-    logWarn "Circuit breaker open for ${uri}, delaying request by ${delay}ms"
-    scheduleRetry(uri, callback, data, retryCount, authRetry, delay)
-    return
-  }
-
+// Updated getDataAsync to accept a String callback name with simple throttling.
+def getDataAsync(String uri, String callback, data = null, int retryCount = 0) {
+  atomicState.failureCounts = atomicState.failureCounts ?: [:]
   if (canMakeRequest()) {
+    atomicState.failureCounts.remove(uri)
     incrementActiveRequests()
     def headers = [ Authorization: "Bearer ${state.flairAccessToken}" ]
     def httpParams = [ uri: uri, headers: headers, contentType: CONTENT_TYPE, timeout: HTTP_TIMEOUT_SECS ]
@@ -1412,7 +1333,19 @@ def getDataAsync(String uri, String callback, data = null, int retryCount = 0, b
       return
     }
   } else {
-    scheduleRetry(uri, callback, data, retryCount, authRetry)
+    if (retryCount < MAX_API_RETRY_ATTEMPTS) {
+      def retryData = [uri: uri, callback: callback, retryCount: retryCount + 1]
+      if (data?.device && uri.contains('/room')) {
+        retryData.data = [deviceId: data.device.getDeviceNetworkId()]
+      } else {
+        retryData.data = data
+      }
+      def delay = (Math.pow(2, retryCount) * API_CALL_DELAY_MS).toLong()
+      runInMillis(delay, 'retryGetDataAsyncWrapper', [data: retryData])
+    } else {
+      logError "getDataAsync failed after ${MAX_API_RETRY_ATTEMPTS} retries for URI: ${uri}"
+      incrementFailureCount(uri)
+    }
   }
 }
 
@@ -1468,8 +1401,10 @@ def retryGetDataAsyncWrapper(data) {
 // If callback is null, we use a no-op callback.
 def patchDataAsync(String uri, String callback, body, data = null, int retryCount = 0) {
   if (!callback) { callback = 'noOpHandler' }
-  
+  atomicState.failureCounts = atomicState.failureCounts ?: [:]
+
   if (canMakeRequest()) {
+    atomicState.failureCounts.remove(uri)
     incrementActiveRequests()
     def headers = [ Authorization: "Bearer ${state.flairAccessToken}" ]
     def httpParams = [
@@ -1480,7 +1415,7 @@ def patchDataAsync(String uri, String callback, body, data = null, int retryCoun
        timeout: HTTP_TIMEOUT_SECS,
        body: JsonOutput.toJson(body)
     ]
-    
+
     try {
       asynchttpPatch(callback, httpParams, data)
     } catch (Exception e) {
@@ -1492,9 +1427,11 @@ def patchDataAsync(String uri, String callback, body, data = null, int retryCoun
   } else {
     if (retryCount < MAX_API_RETRY_ATTEMPTS) {
       def retryData = [uri: uri, callback: callback, body: body, data: data, retryCount: retryCount + 1]
-      runInMillis(API_CALL_DELAY_MS, 'retryPatchDataAsyncWrapper', [data: retryData])
+      def delay = (Math.pow(2, retryCount) * API_CALL_DELAY_MS).toLong()
+      runInMillis(delay, 'retryPatchDataAsyncWrapper', [data: retryData])
     } else {
       logError "patchDataAsync failed after ${MAX_API_RETRY_ATTEMPTS} retries for URI: ${uri}"
+      incrementFailureCount(uri)
     }
   }
 }
@@ -1505,8 +1442,28 @@ def retryPatchDataAsyncWrapper(data) {
     logError "retryPatchDataAsyncWrapper called with invalid data: ${data}"
     return
   }
-  
+
   patchDataAsync(data.uri, data.callback, data.body, data.data, data.retryCount)
+}
+
+private incrementFailureCount(String uri) {
+  atomicState.failureCounts = atomicState.failureCounts ?: [:]
+  def count = (atomicState.failureCounts[uri] ?: 0) + 1
+  atomicState.failureCounts[uri] = count
+  if (count >= API_FAILURE_THRESHOLD) {
+    def msg = "API circuit breaker activated for ${uri} after ${count} failures"
+    logWarn msg
+    try {
+      sendEvent(name: 'apiCircuitBreaker', value: uri, descriptionText: msg)
+    } catch (Exception ignored) {}
+    resetApiConnection()
+  }
+}
+
+def resetApiConnection() {
+  logWarn 'Resetting API connection'
+  atomicState.failureCounts = [:]
+  authenticate()
 }
 
 def noOpHandler(resp, data) {

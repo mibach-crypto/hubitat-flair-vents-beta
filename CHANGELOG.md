@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.239] - 2025-08-27
+
+### Added
+- Exponential backoff and per-URI circuit breaker for API requests with automatic re-authentication on repeated failures
+
 ## [0.238] - 2025-08-26
 
 ### Added

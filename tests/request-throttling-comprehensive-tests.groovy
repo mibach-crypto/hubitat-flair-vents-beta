@@ -437,6 +437,66 @@ class RequestThrottlingComprehensiveTest extends Specification {
     script.atomicState.activeRequests == 2
   }
 
+  def "getDataAsync triggers circuit breaker after consecutive failures"() {
+    setup:
+    final log = new CapturingLog()
+    AppExecutor executorApi = Mock(AppExecutor) {
+      _ * getState() >> [flairAccessToken: 'test-token']
+      _ * getLog() >> log
+      _ * getSetting('debugLevel') >> 1
+      _ * getAtomicState() >> [activeRequests: 0]
+    }
+    def sandbox = new HubitatAppSandbox(APP_FILE)
+    def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS,
+      'userSettingValues': ['debugLevel': 1])
+    script.state = [flairAccessToken: 'test-token']
+    script.atomicState = [activeRequests: 0, failureCounts: [:]]
+    script.metaClass.canMakeRequest = { -> false }
+    boolean resetCalled = false
+    script.metaClass.resetApiConnection = { -> resetCalled = true }
+    def uri = 'test-uri'
+
+    when:
+    script.API_FAILURE_THRESHOLD.times {
+      script.getDataAsync(uri, 'testCallback', null, script.MAX_API_RETRY_ATTEMPTS)
+    }
+
+    then:
+    resetCalled
+    script.atomicState.failureCounts == [:]
+    log.records.contains(new Tuple(Level.warn, "API circuit breaker activated for ${uri} after ${script.API_FAILURE_THRESHOLD} failures"))
+  }
+
+  def "patchDataAsync triggers circuit breaker after consecutive failures"() {
+    setup:
+    final log = new CapturingLog()
+    AppExecutor executorApi = Mock(AppExecutor) {
+      _ * getState() >> [flairAccessToken: 'test-token']
+      _ * getLog() >> log
+      _ * getSetting('debugLevel') >> 1
+      _ * getAtomicState() >> [activeRequests: 0]
+    }
+    def sandbox = new HubitatAppSandbox(APP_FILE)
+    def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS,
+      'userSettingValues': ['debugLevel': 1])
+    script.state = [flairAccessToken: 'test-token']
+    script.atomicState = [activeRequests: 0, failureCounts: [:]]
+    script.metaClass.canMakeRequest = { -> false }
+    boolean resetCalled = false
+    script.metaClass.resetApiConnection = { -> resetCalled = true }
+    def uri = 'test-uri'
+
+    when:
+    script.API_FAILURE_THRESHOLD.times {
+      script.patchDataAsync(uri, 'testCallback', [test: 'body'], null, script.MAX_API_RETRY_ATTEMPTS)
+    }
+
+    then:
+    resetCalled
+    script.atomicState.failureCounts == [:]
+    log.records.contains(new Tuple(Level.warn, "API circuit breaker activated for ${uri} after ${script.API_FAILURE_THRESHOLD} failures"))
+  }
+
   def "throttling system maintains request counts accurately under concurrent load simulation"() {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
