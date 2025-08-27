@@ -1,6 +1,6 @@
 /**
  *  Hubitat Flair Vents Integration
- *  Version 0.238
+ *  Version 0.239
  *
  *  Copyright 2024 Jaime Botero. All Rights Reserved
  *
@@ -149,6 +149,7 @@ preferences {
   page(name: 'dabRatesTablePage')
   page(name: 'dabActivityLogPage')
   page(name: 'dabProgressPage')
+  page(name: 'dabHistoryPage')
 }
 
 def mainPage() {
@@ -252,6 +253,12 @@ def mainPage() {
             href name: 'dabProgressLink', title: '📈 View DAB Progress',
                  description: 'Track DAB progress by date and hour',
                  page: 'dabProgressPage'
+          }
+          // DAB History Page Link
+          section {
+            href name: 'dabHistoryLink', title: '📚 View DAB History',
+                 description: 'Explore historical DAB data',
+                 page: 'dabHistoryPage'
           }
           // DAB Activity Log Link
           section {
@@ -3526,6 +3533,26 @@ def dabProgressPage() {
   }
 }
 
+def dabHistoryPage() {
+  dynamicPage(name: 'dabHistoryPage', title: '📚 DAB History', install: false, uninstall: false) {
+    section {
+      input name: 'historyHvacMode', type: 'enum', title: 'HVAC Mode', required: false, submitOnChange: true,
+            options: [(COOLING): 'Cooling', (HEATING): 'Heating', 'both': 'Both']
+      input name: 'historyGranularity', type: 'enum', title: 'Granularity', required: false, submitOnChange: true,
+            options: ['hour': 'Hourly', 'day': 'Daily'], defaultValue: 'hour'
+      input name: 'historyStart', type: 'date', title: 'Start Date', required: false, submitOnChange: true
+      input name: 'historyEnd', type: 'date', title: 'End Date', required: false, submitOnChange: true
+      paragraph buildDabHistoryChart()
+      paragraph buildDabHistoryTable()
+      def notice = buildHistoryCoverageNotice()
+      if (notice) { paragraph notice }
+    }
+    section {
+      href name: 'backToMain', title: '← Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+    }
+  }
+}
+
 String buildDabChart() {
   def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
   if (vents.isEmpty()) {
@@ -3679,6 +3706,150 @@ String buildDabProgressTable() {
   }
   html << '</table>'
   html.toString()
+}
+
+String buildDabHistoryChart() {
+  def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+  if (vents.isEmpty()) { return '<p>No vent data available.</p>' }
+
+  String hvacMode = settings?.historyHvacMode ?: getThermostat1Mode() ?: atomicState?.lastHvacMode
+  if (!hvacMode || hvacMode in ['auto', 'manual']) { hvacMode = atomicState?.lastHvacMode }
+  hvacMode = hvacMode ?: COOLING
+  Date start = settings?.historyStart ? Date.parse('yyyy-MM-dd', settings.historyStart) : null
+  Date end = settings?.historyEnd ? Date.parse('yyyy-MM-dd', settings.historyEnd) : null
+  String granularity = settings?.historyGranularity ?: 'hour'
+
+  def buckets = collectDabHistoryBuckets(vents, hvacMode, start, end, granularity)
+  if (!buckets.labels) { return '<p>No DAB history available for the selected range.</p>' }
+  boolean hasData = buckets.datasets.any { ds -> ds.data.any { it != null && it != 0 } }
+  if (!hasData) { return '<p>No DAB history available for the selected range.</p>' }
+
+  def config = [
+    type: 'line',
+    data: [labels: buckets.labels, datasets: buckets.datasets],
+    options: [
+      plugins: [legend: [position: 'bottom']],
+      scales: [
+        x: [title: [display: true, text: granularity == 'day' ? 'Date' : 'Date/Hour']],
+        y: [title: [display: true, text: 'Avg Rate'], beginAtZero: true]
+      ]
+    ]
+  ]
+  def configJson = JsonOutput.toJson(config)
+  def encoded = configJson.bytes.encodeBase64().toString()
+  "<img src='https://quickchart.io/chart?b64=${encoded}' style='max-width:100%'>"
+}
+
+String buildDabHistoryTable() {
+  def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+  if (vents.isEmpty()) { return '<p>No vent data available.</p>' }
+
+  String hvacMode = settings?.historyHvacMode ?: getThermostat1Mode() ?: atomicState?.lastHvacMode
+  if (!hvacMode || hvacMode in ['auto', 'manual']) { hvacMode = atomicState?.lastHvacMode }
+  hvacMode = hvacMode ?: COOLING
+  Date start = settings?.historyStart ? Date.parse('yyyy-MM-dd', settings.historyStart) : null
+  Date end = settings?.historyEnd ? Date.parse('yyyy-MM-dd', settings.historyEnd) : null
+  String granularity = settings?.historyGranularity ?: 'hour'
+
+  def buckets = collectDabHistoryBuckets(vents, hvacMode, start, end, granularity)
+  if (!buckets.labels) { return '<p>No DAB history available for the selected range.</p>' }
+
+  def html = new StringBuilder()
+  html << "<table style='width:100%;border-collapse:collapse;'>"
+  html << "<tr><th style='text-align:left;padding:4px;'>Room</th>"
+  buckets.labels.each { lbl -> html << "<th style='text-align:right;padding:4px;'>${lbl}</th>" }
+  html << '</tr>'
+  buckets.datasets.each { ds ->
+    html << "<tr><td style='text-align:left;padding:4px;'>${ds.label}</td>"
+    ds.data.each { val ->
+      def cell = val != null ? roundBigDecimal(val) : '--'
+      html << "<td style='text-align:right;padding:4px;'>${cell}</td>"
+    }
+    html << '</tr>'
+  }
+  html << '</table>'
+  html.toString()
+}
+
+private Map collectDabHistoryBuckets(List vents, String hvacMode, Date start, Date end, String granularity) {
+  Map datasets = vents.collectEntries { v ->
+    def roomId = v.currentValue('room-id') ?: v.getId()
+    def roomName = v.currentValue('room-name') ?: v.getLabel()
+    [(roomId): [label: roomName, temp: [:]]]
+  }
+  Set labels = [] as LinkedHashSet
+  def modes = hvacMode == 'both' ? [COOLING, HEATING] : [hvacMode]
+
+  atomicState?.dabHistory?.each { roomId, roomMap ->
+    if (!datasets.containsKey(roomId)) { return }
+    modes.each { mode ->
+      def entries = roomMap[mode] ?: []
+      entries.each { rec ->
+        Date d
+        try {
+          d = Date.parse('yyyy-MM-dd', rec.date)
+        } catch (err) {
+          return
+        }
+        if (start && d.before(start)) { return }
+        if (end && d.after(end)) { return }
+        String label = granularity == 'day' ? rec.date : "${rec.date} ${String.format('%02d', rec.hour as Integer)}"
+        labels << label
+        def temp = datasets[roomId].temp
+        def list = temp[label] ?: []
+        list << (rec.rate as BigDecimal)
+        temp[label] = list
+      }
+    }
+  }
+
+  List lblList = labels.toList().sort()
+  datasets.each { roomId, ds ->
+    def temp = ds.remove('temp')
+    ds.data = lblList.collect { lbl ->
+      def list = temp[lbl]
+      list ? cleanDecimalForJson(list.sum() / list.size()) : null
+    }
+  }
+  [labels: lblList, datasets: datasets.values()]
+}
+
+String buildHistoryCoverageNotice() {
+  def bounds = getDabHistoryBounds()
+  if (!bounds.start) { return 'No DAB history recorded yet.' }
+  Date reqStart = settings?.historyStart ? Date.parse('yyyy-MM-dd', settings.historyStart) : null
+  Date reqEnd = settings?.historyEnd ? Date.parse('yyyy-MM-dd', settings.historyEnd) : null
+  List msgs = []
+  if (reqStart && reqStart.before(bounds.start)) {
+    msgs << "No data before ${bounds.start.format('yyyy-MM-dd')}"
+  }
+  if (reqEnd && reqEnd.after(bounds.end)) {
+    msgs << "No data after ${bounds.end.format('yyyy-MM-dd')}"
+  }
+  if (!msgs && (reqStart || reqEnd)) {
+    msgs << "Data covers ${bounds.start.format('yyyy-MM-dd')} to ${bounds.end.format('yyyy-MM-dd')}"
+  }
+  msgs.join('. ')
+}
+
+private Map getDabHistoryBounds() {
+  Date earliest
+  Date latest
+  atomicState?.dabHistory?.each { roomId, roomMap ->
+    roomMap.each { mode, entries ->
+      entries.each { rec ->
+        Date d
+        try {
+          d = Date.parse('yyyy-MM-dd', rec.date)
+        } catch (err) {
+          return
+        }
+        if (!earliest || d.before(earliest)) { earliest = d }
+        if (!latest || d.after(latest)) { latest = d }
+      }
+    }
+  }
+  [start: earliest, end: latest]
 }
 
 // ------------------------------
