@@ -283,6 +283,7 @@ def mainPage() {
     section('Debug Options') {
       input name: 'debugLevel', type: 'enum', title: 'Choose debug level', defaultValue: 0,
             options: [0: 'None', 1: 'Level 1 (All)', 2: 'Level 2', 3: 'Level 3'], submitOnChange: true
+      input name: 'verboseLogging', type: 'bool', title: 'Enable verbose logging', defaultValue: false, submitOnChange: true
     }
   }
 }
@@ -386,7 +387,7 @@ def initialize() {
   // Check if we need to auto-authenticate on startup
   if (settings?.clientId && settings?.clientSecret) {
     if (!state.flairAccessToken) {
-      log 'No access token found on initialization, auto-authenticating...', 2
+      log(2, 'App', 'No access token found on initialization, auto-authenticating...')
       autoAuthenticate()
     } else {
       // Token exists, ensure hourly refresh is scheduled
@@ -430,31 +431,31 @@ private BigDecimal getRoomTemp(def vent) {
   if (tempDevice) {
     def temp = tempDevice.currentValue('temperature')
     if (temp == null) {
-      log "WARNING: Temperature device ${tempDevice?.getLabel() ?: 'Unknown'} for room '${roomName}' is not reporting temperature!", 2
+      log(2, 'App', "WARNING: Temperature device ${tempDevice?.getLabel() ?: 'Unknown'} for room '${roomName}' is not reporting temperature!")
       // Fall back to room temperature
       def roomTemp = vent.currentValue('room-current-temperature-c') ?: 0
-      log "Falling back to room temperature for '${roomName}': ${roomTemp}°C", 2
+      log(2, 'App', "Falling back to room temperature for '${roomName}': ${roomTemp}°C")
       return roomTemp
     }
     if (settings.thermostat1TempUnit == '2') {
       temp = convertFahrenheitToCentigrade(temp)
     }
-    log "Got temp from ${tempDevice?.getLabel() ?: 'Unknown'} for '${roomName}': ${temp}°C", 2
+    log(2, 'App', "Got temp from ${tempDevice?.getLabel() ?: 'Unknown'} for '${roomName}': ${temp}°C")
     return temp
   }
   
   def roomTemp = vent.currentValue('room-current-temperature-c')
   if (roomTemp == null) {
-    log "ERROR: No temperature available for room '${roomName}' - neither from Puck nor from room API!", 2
+    log(2, 'App', "ERROR: No temperature available for room '${roomName}' - neither from Puck nor from room API!")
     return 0
   }
-  log "Using room temperature for '${roomName}': ${roomTemp}°C", 2
+  log(2, 'App', "Using room temperature for '${roomName}': ${roomTemp}°C")
   return roomTemp
 }
 
 private atomicStateUpdate(String stateKey, String key, value) {
   atomicState.updateMapValue(stateKey, key, value)
-  log "atomicStateUpdate(${stateKey}, ${key}, ${value})", 1
+  log(1, 'App', "atomicStateUpdate(${stateKey}, ${key}, ${value})")
 }
 
 def getThermostatSetpoint(String hvacMode) {
@@ -500,7 +501,7 @@ def roundToDecimalPlaces(def value, int decimalPlaces) {
     // Return as Double to ensure proper JSON serialization
     return rounded as Double
   } catch (Exception e) {
-    log "Error rounding value ${value}: ${e.message}", 2
+    log(2, 'App', "Error rounding value ${value}: ${e.message}")
     return 0
   }
 }
@@ -527,7 +528,7 @@ def cleanDecimalForJson(def value) {
     // Ensure we return a clean Double, not BigDecimal
     return Double.valueOf(rounded)
   } catch (Exception e) {
-    log "Error cleaning decimal for JSON: ${e.message}", 2
+    log(2, 'App', "Error cleaning decimal for JSON: ${e.message}")
     return 0.0d
   }
 }
@@ -579,11 +580,11 @@ def calculateHvacMode() {
                        v.currentValue('current-temperature-c') ?:
                        v.currentValue('temperature')) as BigDecimal
     BigDecimal diff = duct - room
-    log "Vent ${v?.displayName ?: v?.id}: duct=${duct}°C room=${room}°C diff=${diff}°C", 4
+    log(4, 'DAB', "Vent ${v?.displayName ?: v?.id}: duct=${duct}°C room=${room}°C diff=${diff}°C", v?.id)
     avgDiff += diff
   }
   avgDiff = avgDiff / vents.size()
-  log "Average duct-room temp diff=${avgDiff}°C", 4
+  log(4, 'DAB', "Average duct-room temp diff=${avgDiff}°C")
   if (avgDiff > DUCT_TEMP_DIFF_THRESHOLD) { return HEATING }
   if (avgDiff < -DUCT_TEMP_DIFF_THRESHOLD) { return COOLING }
   null
@@ -597,16 +598,25 @@ def calculateHvacMode(BigDecimal temp, BigDecimal coolingSetpoint, BigDecimal he
 
 void removeChildren() {
   def children = getChildDevices()
-  log "Deleting all child devices: ${children}", 2
+  log(2, 'Device', "Deleting all child devices: ${children}")
   children.each { if (it) deleteChildDevice(it.getDeviceNetworkId()) }
 }
 
 // Only log messages if their level is greater than or equal to the debug level setting.
-private log(String msg, int level = 3) {
-  def settingsLevel = (settings?.debugLevel as Integer) ?: 0
-  if (settingsLevel == 0) { return }
-  if (level >= settingsLevel) {
-    log.debug msg
+private void log(int level, String module, String msg, String correlationId = null) {
+  int settingsLevel = (settings?.debugLevel as Integer) ?: 0
+  if (settingsLevel == 0 || level < settingsLevel) { return }
+
+  String prefix = correlationId ? "[${module}|${correlationId}]" : "[${module}]"
+  log.debug "${prefix} ${msg}"
+
+  if (settings?.verboseLogging) {
+    def tz = location?.timeZone ?: TimeZone.getTimeZone('UTC')
+    def entry = [ts: new Date().format("yyyy-MM-dd'T'HH:mm:ssZ", tz),
+                 level: level, module: module, cid: correlationId, msg: msg]
+    def logs = state.recentLogs ?: []
+    logs << entry
+    state.recentLogs = logs.size() > 50 ? logs[-50..-1] : logs
   }
 }
 
@@ -622,21 +632,21 @@ private safeSendEvent(device, Map eventData) {
     sendEvent(device, eventData)
   } catch (Exception e) {
     // In test environment, sendEvent might not be available
-    log "Warning: Could not send event ${eventData} to device ${device}: ${e.message}", 2
+    log(2, 'App', "Warning: Could not send event ${eventData} to device ${device}: ${e.message}")
   }
 }
 
 // Clean up existing BigDecimal precision issues in stored data
 def cleanupExistingDecimalPrecision() {
   try {
-    log "Cleaning up existing decimal precision issues", 2
+    log(2, 'App', "Cleaning up existing decimal precision issues")
     
     // Clean up global rates in atomicState
     if (atomicState.maxCoolingRate) {
       def cleanedCooling = cleanDecimalForJson(atomicState.maxCoolingRate)
       if (cleanedCooling != atomicState.maxCoolingRate) {
         atomicState.maxCoolingRate = cleanedCooling
-        log "Cleaned maxCoolingRate: ${atomicState.maxCoolingRate}", 2
+        log(2, 'App', "Cleaned maxCoolingRate: ${atomicState.maxCoolingRate}")
       }
     }
     
@@ -644,7 +654,7 @@ def cleanupExistingDecimalPrecision() {
       def cleanedHeating = cleanDecimalForJson(atomicState.maxHeatingRate)
       if (cleanedHeating != atomicState.maxHeatingRate) {
         atomicState.maxHeatingRate = cleanedHeating
-        log "Cleaned maxHeatingRate: ${atomicState.maxHeatingRate}", 2
+        log(2, 'App', "Cleaned maxHeatingRate: ${atomicState.maxHeatingRate}")
       }
     }
     
@@ -671,16 +681,16 @@ def cleanupExistingDecimalPrecision() {
           }
         }
       } catch (Exception e) {
-        log "Error cleaning device precision for ${device.getLabel()}: ${e.message}", 2
+        log(2, 'App', "Error cleaning device precision for ${device.getLabel()}: ${e.message}")
       }
     }
     
     if (devicesUpdated > 0) {
-      log "Updated decimal precision for ${devicesUpdated} device attributes", 2
+      log(2, 'App', "Updated decimal precision for ${devicesUpdated} device attributes")
     }
     
   } catch (Exception e) {
-    log "Error during decimal precision cleanup: ${e.message}", 2
+    log(2, 'App', "Error during decimal precision cleanup: ${e.message}")
   }
 }
 
@@ -723,7 +733,7 @@ private initializeInstanceCaches() {
     state."${cacheKey}_pendingRoomRequests" = [:]
     state."${cacheKey}_pendingDeviceRequests" = [:]
     state."${cacheKey}_initialized" = true
-    log "Initialized instance-based caches for instance ${instanceId}", 3
+    log(3, 'App', "Initialized instance-based caches for instance ${instanceId}")
   }
 }
 
@@ -750,7 +760,7 @@ def cacheRoomData(String roomId, Map roomData) {
     if (lruKey) {
       roomCache.remove(lruKey)
       roomCacheTimestamps.remove(lruKey)
-      log "Evicted LRU cache entry: ${lruKey}", 4
+      log(4, 'App', "Evicted LRU cache entry: ${lruKey}")
     }
   }
   
@@ -861,7 +871,7 @@ def cacheDeviceReading(String deviceKey, Map deviceData) {
     if (lruKey) {
       deviceCache.remove(lruKey)
       deviceCacheTimestamps.remove(lruKey)
-      log "Evicted LRU device cache entry: ${lruKey}", 4
+      log(4, 'App', "Evicted LRU device cache entry: ${lruKey}")
     }
   }
   
@@ -936,7 +946,7 @@ def clearInstanceCache() {
   deviceCacheTimestamps.clear()
   pendingRoomRequests.clear()
   pendingDeviceRequests.clear()
-  log "Cleared all instance caches", 3
+  log(3, 'App', "Cleared all instance caches")
 }
 
 // ------------------------------
@@ -957,9 +967,9 @@ def canMakeRequest() {
   
   // Immediate stuck counter detection and reset
   if (currentActiveRequests >= MAX_CONCURRENT_REQUESTS) {
-    log "CRITICAL: Active request counter is stuck at ${currentActiveRequests}/${MAX_CONCURRENT_REQUESTS} - resetting immediately", 1
+    log(1, 'App', "CRITICAL: Active request counter is stuck at ${currentActiveRequests}/${MAX_CONCURRENT_REQUESTS} - resetting immediately")
     atomicState.activeRequests = 0
-    log "Reset active request counter to 0 immediately", 1
+    log(1, 'App', "Reset active request counter to 0 immediately")
     return true  // Now we can make the request
   }
   
@@ -977,22 +987,40 @@ def decrementActiveRequests() {
   initRequestTracking()
   def currentCount = atomicState.activeRequests ?: 0
   atomicState.activeRequests = Math.max(0, currentCount - 1)
-  log "Decremented active requests from ${currentCount} to ${atomicState.activeRequests}", 1
+  log(1, 'App', "Decremented active requests from ${currentCount} to ${atomicState.activeRequests}")
 }
 
 // Wrapper for log.error that respects debugLevel setting
-private logError(String msg) {
-  def settingsLevel = (settings?.debugLevel as Integer) ?: 0
+private void logError(String msg, String module = 'App', String correlationId = null) {
+  int settingsLevel = (settings?.debugLevel as Integer) ?: 0
   if (settingsLevel > 0) {
-    log.error msg
+    String prefix = correlationId ? "[${module}|${correlationId}]" : "[${module}]"
+    log.error "${prefix} ${msg}"
+    if (settings?.verboseLogging) {
+      def tz = location?.timeZone ?: TimeZone.getTimeZone('UTC')
+      def entry = [ts: new Date().format("yyyy-MM-dd'T'HH:mm:ssZ", tz),
+                   level: 0, module: module, cid: correlationId, msg: msg]
+      def logs = state.recentLogs ?: []
+      logs << entry
+      state.recentLogs = logs.size() > 50 ? logs[-50..-1] : logs
+    }
   }
 }
 
 // Wrapper for log.warn that respects debugLevel setting
-private logWarn(String msg) {
-  def settingsLevel = (settings?.debugLevel as Integer) ?: 0
+private void logWarn(String msg, String module = 'App', String correlationId = null) {
+  int settingsLevel = (settings?.debugLevel as Integer) ?: 0
   if (settingsLevel > 0) {
-    log.warn msg
+    String prefix = correlationId ? "[${module}|${correlationId}]" : "[${module}]"
+    log.warn "${prefix} ${msg}"
+    if (settings?.verboseLogging) {
+      def tz = location?.timeZone ?: TimeZone.getTimeZone('UTC')
+      def entry = [ts: new Date().format("yyyy-MM-dd'T'HH:mm:ssZ", tz),
+                   level: 1, module: module, cid: correlationId, msg: msg]
+      def logs = state.recentLogs ?: []
+      logs << entry
+      state.recentLogs = logs.size() > 50 ? logs[-50..-1] : logs
+    }
   }
 }
 
@@ -1010,7 +1038,7 @@ private logDetails(String msg, details = null, int level = 3) {
 
 def isValidResponse(resp) {
   if (!resp) {
-    log 'HTTP Null response', 1
+    log(1, 'App', 'HTTP Null response')
     return false
   }
   try {
@@ -1018,27 +1046,27 @@ def isValidResponse(resp) {
     if (resp.hasProperty('hasError') && resp.hasError()) {
       // Check for authentication failures
       if (resp.getStatus() == 401 || resp.getStatus() == 403) {
-        log "Authentication error detected (${resp.getStatus()}), re-authenticating...", 2
+        log(2, 'App', "Authentication error detected (${resp.getStatus()}), re-authenticating...")
         runIn(1, 'autoReauthenticate')
         return false
       }
       // Don't log 404s at error level - they might be expected
       if (resp.getStatus() == 404) {
-        log "HTTP 404 response", 1
+        log(1, 'App', "HTTP 404 response")
       } else {
-        log "HTTP response error: ${resp.getStatus()}", 1
+        log(1, 'App', "HTTP response error: ${resp.getStatus()}")
       }
       return false
     }
     
     // If it's not an HTTP response object, check if it's a hub load exception
     if (resp instanceof Exception || resp.toString().contains('LimitExceededException')) {
-      log "Hub load exception detected in response validation", 1
+      log(1, 'App', "Hub load exception detected in response validation")
       return false
     }
     
   } catch (err) {
-    log "HTTP response validation error: ${err.message ?: err.toString()}", 1
+    log(1, 'App', "HTTP response validation error: ${err.message ?: err.toString()}")
     return false
   }
   return true
@@ -1054,7 +1082,7 @@ def getDataAsync(String uri, String callback, data = null, int retryCount = 0) {
     try {
       asynchttpGet(callback, httpParams, data)
     } catch (Exception e) {
-      log "HTTP GET exception: ${e.message}", 2
+      log(2, 'App', "HTTP GET exception: ${e.message}")
       // Decrement on exception since the request didn't actually happen
       decrementActiveRequests()
       return
@@ -1100,14 +1128,14 @@ def retryGetDataAsyncWrapper(data) {
       // Check cache first using instance-based cache
       def cachedData = getCachedRoomData(roomId)
       if (cachedData) {
-        log "Using cached room data for room ${roomId} on retry", 3
+        log(3, 'App', "Using cached room data for room ${roomId} on retry")
         processRoomTraits(device, cachedData)
         return
       }
       
       // Check if request is already pending
       if (isRequestPending(roomId)) {
-        // log "Room data request already pending for room ${roomId} on retry, skipping", 3
+        // log(3, 'App', "Room data request already pending for room ${roomId} on retry, skipping")
         return
       }
     }
@@ -1140,7 +1168,7 @@ def patchDataAsync(String uri, String callback, body, data = null, int retryCoun
     try {
       asynchttpPatch(callback, httpParams, data)
     } catch (Exception e) {
-      log "HTTP PATCH exception: ${e.message}", 2
+      log(2, 'App', "HTTP PATCH exception: ${e.message}")
       // Decrement on exception since the request didn't actually happen
       decrementActiveRequests()
       return
@@ -1166,7 +1194,7 @@ def retryPatchDataAsyncWrapper(data) {
 }
 
 def noOpHandler(resp, data) {
-  log 'noOpHandler called', 3
+  log(3, 'App', 'noOpHandler called')
 }
 
 def login() {
@@ -1175,7 +1203,7 @@ def login() {
 }
 
 def authenticate(int retryCount = 0) {
-  log 'Getting access_token from Flair using async method', 2
+  log(2, 'App', 'Getting access_token from Flair using async method')
   state.authInProgress = true
   state.remove('authError')  // Clear any previous error state
   
@@ -1224,7 +1252,7 @@ def retryAuthenticateWrapper(data) {
 def handleAuthResponse(resp, data) {
   decrementActiveRequests()  // Always decrement when response comes back
   try {
-    log "handleAuthResponse called with resp status: ${resp?.getStatus()}", 2
+    log(2, 'App', "handleAuthResponse called with resp status: ${resp?.getStatus()}")
     state.authInProgress = false
     
     if (!resp) {
@@ -1255,7 +1283,7 @@ def handleAuthResponse(resp, data) {
     if (respJson?.access_token) {
       state.flairAccessToken = respJson.access_token
       state.remove('authError')
-      log 'Authentication successful', 2
+      log(2, 'App', 'Authentication successful')
       
       // Call getStructureData async after successful auth
       runIn(2, 'getStructureDataAsync')
@@ -1269,7 +1297,7 @@ def handleAuthResponse(resp, data) {
     state.authInProgress = false
     state.authError = "Authentication processing failed: ${e.message}"
     logError "handleAuthResponse exception: ${e.message}"
-    log "Exception stack trace: ${e.getStackTrace()}", 1
+    log(1, 'App', "Exception stack trace: ${e.getStackTrace()}")
   }
 }
 
@@ -1303,7 +1331,7 @@ def appButtonHandler(String btn) {
 // Auto-authenticate when credentials are provided
 def autoAuthenticate() {
   if (settings?.clientId && settings?.clientSecret && !state.flairAccessToken) {
-    log 'Auto-authenticating with provided credentials', 2
+    log(2, 'App', 'Auto-authenticating with provided credentials')
     login()
     unschedule(login)
     runEvery1Hour(login)
@@ -1312,7 +1340,7 @@ def autoAuthenticate() {
 
 // Automatically re-authenticate when token expires
 def autoReauthenticate() {
-  log 'Token expired or invalid, re-authenticating...', 2
+  log(2, 'App', 'Token expired or invalid, re-authenticating...')
   state.remove('flairAccessToken')
   // Clear any error state
   state.remove('authError')
@@ -1321,29 +1349,29 @@ def autoReauthenticate() {
     // If authentication succeeded, reschedule hourly refresh
     unschedule(login)
     runEvery1Hour(login)
-    log 'Re-authentication successful, rescheduled hourly token refresh', 2
+    log(2, 'App', 'Re-authentication successful, rescheduled hourly token refresh')
   }
 }
 
 private void discover() {
-  log 'Discovery started', 3
+  log(3, 'App', 'Discovery started')
   atomicState.remove('ventsByRoomId')
   def structureId = getStructureId()
   // Discover vents first
   def ventsUri = "${BASE_URL}/api/structures/${structureId}/vents"
-  log "Calling vents endpoint: ${ventsUri}", 2
+  log(2, 'API', "Calling vents endpoint: ${ventsUri}", ventsUri)
   getDataAsync(ventsUri, 'handleDeviceList', [deviceType: 'vents'])
   // Then discover pucks separately - they might be at a different endpoint
   def pucksUri = "${BASE_URL}/api/structures/${structureId}/pucks"
-  log "Calling pucks endpoint: ${pucksUri}", 2
+  log(2, 'API', "Calling pucks endpoint: ${pucksUri}", pucksUri)
   getDataAsync(pucksUri, 'handleDeviceList', [deviceType: 'pucks'])
   // Also try to get pucks from rooms since they might be associated there
   def roomsUri = "${BASE_URL}/api/structures/${structureId}/rooms?include=pucks"
-  log "Calling rooms endpoint for pucks: ${roomsUri}", 2
+  log(2, 'API', "Calling rooms endpoint for pucks: ${roomsUri}", roomsUri)
   getDataAsync(roomsUri, 'handleRoomsWithPucks')
   // Try getting pucks directly without structure
   def allPucksUri = "${BASE_URL}/api/pucks"
-  log "Calling all pucks endpoint: ${allPucksUri}", 2
+  log(2, 'API', "Calling all pucks endpoint: ${allPucksUri}", allPucksUri)
   getDataAsync(allPucksUri, 'handleAllPucks')
 }
 
@@ -1351,13 +1379,13 @@ private void discover() {
 def handleAllPucks(resp, data) {
   decrementActiveRequests()  // Always decrement when response comes back
   try {
-    log "handleAllPucks called", 2
+    log(2, 'App', "handleAllPucks called")
     if (!isValidResponse(resp)) { 
-      log "handleAllPucks: Invalid response status: ${resp?.getStatus()}", 2
+      log(2, 'App', "handleAllPucks: Invalid response status: ${resp?.getStatus()}")
       return 
     }
   def respJson = resp?.getJson()
-  log "All pucks endpoint response: has data=${respJson?.data != null}, count=${respJson?.data?.size() ?: 0}", 2
+  log(2, 'App', "All pucks endpoint response: has data=${respJson?.data != null}, count=${respJson?.data?.size() ?: 0}")
   
   if (respJson?.data) {
     def puckCount = 0
@@ -1368,7 +1396,7 @@ def handleAllPucks(resp, data) {
           def puckId = puckData?.id?.toString()?.trim()
           def puckName = puckData?.attributes?.name?.toString()?.trim() ?: "Puck-${puckId}"
             
-            log "Creating puck from all pucks endpoint: ${puckName} (${puckId})", 2
+            log(2, 'App', "Creating puck from all pucks endpoint: ${puckName} (${puckId})")
             
             def device = [
               id   : puckId,
@@ -1378,34 +1406,34 @@ def handleAllPucks(resp, data) {
             
             def dev = makeRealDevice(device)
             if (dev) {
-              log "Created puck device: ${puckName}", 2
+              log(2, 'App', "Created puck device: ${puckName}")
             }
           }
         } catch (Exception e) {
-          log "Error processing puck from all pucks: ${e.message}", 1
+          log(1, 'App', "Error processing puck from all pucks: ${e.message}")
         }
       }
       if (puckCount > 0) {
-        log "Discovered ${puckCount} pucks from all pucks endpoint", 3
+        log(3, 'App', "Discovered ${puckCount} pucks from all pucks endpoint")
       }
     }
   } catch (Exception e) {
-    log "Error in handleAllPucks: ${e.message}", 1
+    log(1, 'App', "Error in handleAllPucks: ${e.message}")
   }
 }
 
 def handleRoomsWithPucks(resp, data) {
   decrementActiveRequests()  // Always decrement when response comes back
   try {
-    log "handleRoomsWithPucks called", 2
+    log(2, 'App', "handleRoomsWithPucks called")
     if (!isValidResponse(resp)) { 
-      log "handleRoomsWithPucks: Invalid response status: ${resp?.getStatus()}", 2
+      log(2, 'App', "handleRoomsWithPucks: Invalid response status: ${resp?.getStatus()}")
       return 
     }
     def respJson = resp.getJson()
     
     // Log the structure to debug
-    log "handleRoomsWithPucks response: has included=${respJson?.included != null}, included count=${respJson?.included?.size() ?: 0}, has data=${respJson?.data != null}, data count=${respJson?.data?.size() ?: 0}", 2
+    log(2, 'App', "handleRoomsWithPucks response: has included=${respJson?.included != null}, included count=${respJson?.included?.size() ?: 0}, has data=${respJson?.data != null}, data count=${respJson?.data?.size() ?: 0}")
     
     // Check if we have included pucks data
     if (respJson?.included) {
@@ -1416,7 +1444,7 @@ def handleRoomsWithPucks(resp, data) {
             puckCount++
             def puckId = it.id?.toString()?.trim()
             if (!puckId || puckId.isEmpty()) {
-              log "Skipping puck with invalid ID", 2
+              log(2, 'App', "Skipping puck with invalid ID")
               return // Skip this puck
             }
             
@@ -1428,11 +1456,11 @@ def handleRoomsWithPucks(resp, data) {
             
             // Double-check the name is not empty after all processing
             if (!puckName || puckName.isEmpty()) {
-              log "Skipping puck with empty name even after fallback", 2
+              log(2, 'App', "Skipping puck with empty name even after fallback")
               return
             }
             
-            log "About to create puck device with id: ${puckId}, name: ${puckName}", 1
+            log(1, 'App', "About to create puck device with id: ${puckId}, name: ${puckName}")
             
             def device = [
               id   : puckId,
@@ -1442,19 +1470,19 @@ def handleRoomsWithPucks(resp, data) {
             
             def dev = makeRealDevice(device)
             if (dev) {
-              log "Created puck device: ${puckName}", 2
+              log(2, 'App', "Created puck device: ${puckName}")
             }
           }
         } catch (Exception e) {
-          log "Error processing puck in loop: ${e.message}, line: ${e.stackTrace?.find()?.lineNumber}", 1
+          log(1, 'App', "Error processing puck in loop: ${e.message}, line: ${e.stackTrace?.find()?.lineNumber}")
         }
       }
       if (puckCount > 0) {
-        log "Discovered ${puckCount} pucks from rooms include", 3
+        log(3, 'App', "Discovered ${puckCount} pucks from rooms include")
       }
     }
   } catch (Exception e) {
-    log "Error in handleRoomsWithPucks: ${e.message} at line ${e.stackTrace?.find()?.lineNumber}", 1
+    log(1, 'App', "Error in handleRoomsWithPucks: ${e.message} at line ${e.stackTrace?.find()?.lineNumber}")
   }
   
   
@@ -1469,7 +1497,7 @@ def handleRoomsWithPucks(resp, data) {
               roomPuckCount++
               def puckId = puck.id?.toString()?.trim()
               if (!puckId || puckId.isEmpty()) {
-                log "Skipping puck with invalid ID in room ${room.attributes?.name}", 2
+                log(2, 'App', "Skipping puck with invalid ID in room ${room.attributes?.name}")
                 return
               }
               
@@ -1479,7 +1507,7 @@ def handleRoomsWithPucks(resp, data) {
                 puckName = "${room.attributes.name} Puck"
               }
               
-              log "Creating puck device from room reference: ${puckName} (${puckId})", 2
+              log(2, 'App', "Creating puck device from room reference: ${puckName} (${puckId})")
               
               def device = [
                 id   : puckId,
@@ -1489,40 +1517,40 @@ def handleRoomsWithPucks(resp, data) {
               
               def dev = makeRealDevice(device)
               if (dev) {
-                log "Created puck device from room reference: ${puckName}", 2
+                log(2, 'App', "Created puck device from room reference: ${puckName}")
               }
             } catch (Exception e) {
-              log "Error creating puck from room reference: ${e.message}", 1
+              log(1, 'App', "Error creating puck from room reference: ${e.message}")
             }
           }
         }
       }
       if (roomPuckCount > 0) {
-        log "Found ${roomPuckCount} puck references in rooms", 3
+        log(3, 'App', "Found ${roomPuckCount} puck references in rooms")
       }
     }
   } catch (Exception e) {
-    log "Error checking room puck relationships: ${e.message}", 1
+    log(1, 'App', "Error checking room puck relationships: ${e.message}")
   }
 }
 
 
 def handleDeviceList(resp, data) {
   decrementActiveRequests()  // Always decrement when response comes back
-  log "handleDeviceList called for ${data?.deviceType}", 2
+  log(2, 'App', "handleDeviceList called for ${data?.deviceType}")
   if (!isValidResponse(resp)) {
     // Check if this was a pucks request that returned 404
     if (resp?.hasError() && resp.getStatus() == 404 && data?.deviceType == 'pucks') {
-      log "Pucks endpoint returned 404 - this is normal, trying other methods", 2
+      log(2, 'App', "Pucks endpoint returned 404 - this is normal, trying other methods")
     } else if (data?.deviceType == 'pucks') {
-      log "Pucks endpoint failed with error: ${resp?.getStatus()}", 2
+      log(2, 'App', "Pucks endpoint failed with error: ${resp?.getStatus()}")
     }
     return 
   }
   def respJson = resp?.getJson()
   if (!respJson?.data || respJson.data.isEmpty()) {
     if (data?.deviceType == 'pucks') {
-      log "No pucks found in structure endpoint - they may be included with rooms instead", 2
+      log(2, 'App', "No pucks found in structure endpoint - they may be included with rooms instead")
     } else {
       logWarn "No devices discovered. This may occur with OAuth 1.0 credentials. " +
               "Please ensure you're using OAuth 2.0 credentials or Legacy API (OAuth 1.0) credentials."
@@ -1549,7 +1577,7 @@ def handleDeviceList(resp, data) {
       }
     }
   }
-  log "Discovered ${ventCount} vents and ${puckCount} pucks", 3
+  log(3, 'App', "Discovered ${ventCount} vents and ${puckCount} pucks")
   if (ventCount == 0 && puckCount == 0) {
     logWarn "No devices found in the structure. " +
             "This typically happens with incorrect OAuth credentials."
@@ -1585,7 +1613,7 @@ def makeRealDevice(Map device) {
 }
 
 def getDeviceData(device) {
-  log "Refresh device details for ${device}", 2
+  log(2, 'App', "Refresh device details for ${device}")
   def deviceId = device.getDeviceNetworkId()
   def roomId = device.currentValue('room-id')
   
@@ -1614,14 +1642,14 @@ def getRoomDataWithCache(device, deviceId, isPuck) {
     // Check cache first using instance-based cache
     def cachedData = getCachedRoomData(roomId)
     if (cachedData) {
-      log "Using cached room data for room ${roomId}", 3
+      log(3, 'App', "Using cached room data for room ${roomId}")
       processRoomTraits(device, cachedData)
       return
     }
     
     // Check if a request is already pending for this room
     if (isRequestPending(roomId)) {
-      // log "Room data request already pending for room ${roomId}, skipping duplicate request", 3
+      // log(3, 'App', "Room data request already pending for room ${roomId}, skipping duplicate request")
       return
     }
     
@@ -1641,7 +1669,7 @@ def getDeviceDataWithCache(device, deviceId, deviceType, callback) {
   // Check cache first using instance-based cache
   def cachedData = getCachedDeviceReading(cacheKey)
   if (cachedData) {
-    log "Using cached ${deviceType} data for device ${deviceId}", 3
+    log(3, 'App', "Using cached ${deviceType} data for device ${deviceId}")
     // Process the cached data
     if (callback == 'handlePuckGet') {
       handlePuckGet([getJson: { cachedData }], [device: device])
@@ -1651,7 +1679,7 @@ def getDeviceDataWithCache(device, deviceId, deviceType, callback) {
   
   // Check if a request is already pending
   if (isDeviceRequestPending(cacheKey)) {
-    // log "${deviceType} data request already pending for device ${deviceId}, skipping duplicate request", 3
+    // log(3, 'App', "${deviceType} data request already pending for device ${deviceId}, skipping duplicate request")
     return
   }
   
@@ -1670,7 +1698,7 @@ def getDeviceReadingWithCache(device, deviceId, deviceType, callback) {
   // Check cache first using instance-based cache
   def cachedData = getCachedDeviceReading(cacheKey)
   if (cachedData) {
-    log "Using cached ${deviceType} reading for device ${deviceId}", 3
+    log(3, 'App', "Using cached ${deviceType} reading for device ${deviceId}")
     // Process the cached data
     if (callback == 'handlePuckReadingGet') {
       handlePuckReadingGet([getJson: { cachedData }], [device: device])
@@ -1682,7 +1710,7 @@ def getDeviceReadingWithCache(device, deviceId, deviceType, callback) {
   
   // Check if a request is already pending
   if (isDeviceRequestPending(cacheKey)) {
-    // log "${deviceType} reading request already pending for device ${deviceId}, skipping duplicate request", 3
+    // log(3, 'App', "${deviceType} reading request already pending for device ${deviceId}, skipping duplicate request")
     return
   }
   
@@ -1721,21 +1749,21 @@ def handleRoomGetWithCache(resp, data) {
       if (roomId) {
         // Cache the room data using instance-based cache
         cacheRoomData(roomId, roomData)
-        log "Cached room data for room ${roomId}", 3
+        log(3, 'App', "Cached room data for room ${roomId}")
       }
       
       processRoomTraits(data.device, roomData)
     } else {
       // Log the error for debugging
-      log "Room data request failed for device ${data?.device}, status: ${resp?.getStatus()}", 2
+      log(2, 'App', "Room data request failed for device ${data?.device}, status: ${resp?.getStatus()}")
     }
   } catch (Exception e) {
-    log "Error in handleRoomGetWithCache: ${e.message}", 1
+    log(1, 'App', "Error in handleRoomGetWithCache: ${e.message}")
   } finally {
     // Always clear the pending flag, even if the request failed
     if (roomId) {
       clearPendingRequest(roomId)
-      log "Cleared pending request for room ${roomId}", 1
+      log(1, 'App', "Cleared pending request for room ${roomId}")
     }
   }
 }
@@ -1760,7 +1788,7 @@ def clearRoomCache() {
   expiredRooms.each { roomId ->
     roomCache.remove(roomId)
     roomCacheTimestamps.remove(roomId)
-    log "Cleared expired cache for room ${roomId}", 4
+    log(4, 'App', "Cleared expired cache for room ${roomId}")
   }
 }
 
@@ -1784,7 +1812,7 @@ def clearDeviceCache() {
   expiredDevices.each { deviceKey ->
     deviceCache.remove(deviceKey)
     deviceCacheTimestamps.remove(deviceKey)
-    log "Cleared expired cache for device ${deviceKey}", 4
+    log(4, 'App', "Cleared expired cache for device ${deviceKey}")
   }
 }
 
@@ -1800,9 +1828,9 @@ def cleanupPendingRequests() {
   // First, check if the active request counter is stuck
   def currentActiveRequests = atomicState.activeRequests ?: 0
   if (currentActiveRequests >= MAX_CONCURRENT_REQUESTS) {
-    log "CRITICAL: Active request counter is stuck at ${currentActiveRequests}/${MAX_CONCURRENT_REQUESTS} - resetting to 0", 1
+    log(1, 'App', "CRITICAL: Active request counter is stuck at ${currentActiveRequests}/${MAX_CONCURRENT_REQUESTS} - resetting to 0")
     atomicState.activeRequests = 0
-    log "Reset active request counter to 0", 1
+    log(1, 'App', "Reset active request counter to 0")
   }
   
   // Collect keys first to avoid concurrent modification
@@ -1819,7 +1847,7 @@ def cleanupPendingRequests() {
   }
   
   if (roomsToClean.size() > 0) {
-    log "Cleared ${roomsToClean.size()} stuck pending request flags for rooms: ${roomsToClean.join(', ')}", 2
+    log(2, 'App', "Cleared ${roomsToClean.size()} stuck pending request flags for rooms: ${roomsToClean.join(', ')}")
   }
   
   // Same for device requests
@@ -1835,7 +1863,7 @@ def cleanupPendingRequests() {
   }
   
   if (devicesToClean.size() > 0) {
-    log "Cleared ${devicesToClean.size()} stuck pending request flags for devices: ${devicesToClean.join(', ')}", 2
+    log(2, 'App', "Cleared ${devicesToClean.size()} stuck pending request flags for devices: ${devicesToClean.join(', ')}")
   }
 }
 
@@ -1857,7 +1885,7 @@ def handleDeviceGetWithCache(resp, data) {
       if (cacheKey && deviceData) {
         // Cache the device data using instance-based cache
         cacheDeviceReading(cacheKey, deviceData)
-        log "Cached device reading for ${cacheKey}", 3
+        log(3, 'App', "Cached device reading for ${cacheKey}")
       }
       
       processVentTraits(data.device, deviceData)
@@ -1866,7 +1894,7 @@ def handleDeviceGetWithCache(resp, data) {
       if (resp instanceof Exception || resp.toString().contains('LimitExceededException')) {
         logWarn "Device reading request failed due to hub load: ${resp.toString()}"
       } else {
-        log "Device reading request failed for ${cacheKey}, status: ${resp?.getStatus()}", 2
+        log(2, 'App', "Device reading request failed for ${cacheKey}, status: ${resp?.getStatus()}")
       }
     }
   } catch (Exception e) {
@@ -1875,7 +1903,7 @@ def handleDeviceGetWithCache(resp, data) {
     // Always clear the pending flag
     if (cacheKey) {
       clearDeviceRequestPending(cacheKey)
-      log "Cleared pending device request for ${cacheKey}", 1
+      log(1, 'App', "Cleared pending device request for ${cacheKey}")
     }
   }
 }
@@ -1891,7 +1919,7 @@ def handlePuckGet(resp, data) {
       def tempC = puckData.attributes['current-temperature-c']
       def tempF = (tempC * 9/5) + 32
       sendEvent(data.device, [name: 'temperature', value: tempF, unit: '°F'])
-      log "Puck temperature: ${tempF}°F", 2
+      log(2, 'App', "Puck temperature: ${tempF}°F")
     }
     if (puckData?.attributes?.'current-humidity' != null) {
       sendEvent(data.device, [name: 'humidity', value: puckData.attributes['current-humidity'], unit: '%'])
@@ -1903,7 +1931,7 @@ def handlePuckGet(resp, data) {
         battery = Math.max(0, Math.min(100, battery.round() as int))
         sendEvent(data.device, [name: 'battery', value: battery, unit: '%'])
       } catch (Exception e) {
-        log "Error calculating battery for puck: ${e.message}", 2
+        log(2, 'App', "Error calculating battery for puck: ${e.message}")
       }
     }
     ['inactive', 'created-at', 'updated-at', 'current-rssi', 'name'].each { attr ->
@@ -1926,7 +1954,7 @@ def handlePuckGetWithCache(resp, data) {
       if (cacheKey && deviceData) {
         // Cache the device data using instance-based cache
         cacheDeviceReading(cacheKey, deviceData)
-        log "Cached puck data for ${cacheKey}", 3
+        log(3, 'App', "Cached puck data for ${cacheKey}")
       }
       
       // Process using existing logic
@@ -1952,7 +1980,7 @@ def handlePuckReadingGet(resp, data) {
       def tempC = reading.attributes['room-temperature-c']
       def tempF = (tempC * 9/5) + 32
       sendEvent(data.device, [name: 'temperature', value: tempF, unit: '°F'])
-      log "Puck temperature from reading: ${tempF}°F", 2
+      log(2, 'App', "Puck temperature from reading: ${tempF}°F")
     }
     if (reading.attributes?.humidity != null) {
       sendEvent(data.device, [name: 'humidity', value: reading.attributes.humidity, unit: '%'])
@@ -1966,7 +1994,7 @@ def handlePuckReadingGet(resp, data) {
         battery = Math.max(0, Math.min(100, battery.round() as int))
         sendEvent(data.device, [name: 'battery', value: battery, unit: '%'])
       } catch (Exception e) {
-        log "Error calculating battery from reading: ${e.message}", 2
+        log(2, 'App', "Error calculating battery from reading: ${e.message}")
       }
     }
   }
@@ -1984,7 +2012,7 @@ def handlePuckReadingGetWithCache(resp, data) {
       if (cacheKey && deviceData) {
         // Cache the device data using instance-based cache
         cacheDeviceReading(cacheKey, deviceData)
-        log "Cached puck reading for ${cacheKey}", 3
+        log(3, 'App', "Cached puck reading for ${cacheKey}")
       }
       
       // Process using existing logic
@@ -2006,7 +2034,7 @@ def traitExtract(device, details, String propNameData, String propNameDriver = p
       if (unit) { eventData.unit = unit }
       sendEvent(device, eventData)
     }
-    log "Extracted: ${propNameData} = ${propValue}", 1
+    log(1, 'App', "Extracted: ${propNameData} = ${propValue}")
   } catch (err) {
     logWarn err
   }
@@ -2087,7 +2115,7 @@ def handleRemoteSensorGet(resp, data) {
   
   // Don't log 404 errors for missing sensors - this is expected
   if (resp?.hasError() && resp.getStatus() == 404) {
-    log "No remote sensor data available for ${data?.device?.getLabel() ?: 'unknown device'}", 1
+    log(1, 'App', "No remote sensor data available for ${data?.device?.getLabel() ?: 'unknown device'}")
     return
   }
   
@@ -2100,7 +2128,7 @@ def handleRemoteSensorGet(resp, data) {
     def propValue = details.data.first().attributes['occupied']
     sendEvent(data.device, [name: 'room-occupied', value: propValue])
   } catch (Exception e) {
-    log "Error parsing remote sensor JSON: ${e.message}", 2
+    log(2, 'App', "Error parsing remote sensor JSON: ${e.message}")
     return
   }
 }
@@ -2121,7 +2149,7 @@ def patchStructureData(Map attributes) {
 }
 
 def getStructureDataAsync(int retryCount = 0) {
-  log 'Getting structure data asynchronously', 2
+  log(2, 'App', 'Getting structure data asynchronously')
   def uri = "${BASE_URL}/api/structures"
   def headers = [ Authorization: "Bearer ${state.flairAccessToken}" ]
   def httpParams = [ 
@@ -2171,7 +2199,7 @@ def handleStructureResponse(resp, data) {
     def myStruct = response.data.first()
     if (myStruct?.id) {
       app.updateSetting('structureId', myStruct.id)
-      log "Structure loaded: id=${myStruct.id}, name=${myStruct.attributes?.name}", 2
+      log(2, 'App', "Structure loaded: id=${myStruct.id}, name=${myStruct.attributes?.name}")
     }
   } catch (Exception e) {
     logError "Structure data processing failed: ${e.message}"
@@ -2179,12 +2207,12 @@ def handleStructureResponse(resp, data) {
 }
 
 def getStructureData(int retryCount = 0) {
-  log 'getStructureData', 1
+  log(1, 'App', 'getStructureData')
   
   // Check concurrent request limit first
   if (!canMakeRequest()) {
     if (retryCount < MAX_API_RETRY_ATTEMPTS) {
-      log "Structure data request delayed due to concurrent limit (attempt ${retryCount + 1}/${MAX_API_RETRY_ATTEMPTS})", 2
+      log(2, 'App', "Structure data request delayed due to concurrent limit (attempt ${retryCount + 1}/${MAX_API_RETRY_ATTEMPTS})")
       // Schedule retry asynchronously to avoid blocking
       runInMillis(API_CALL_DELAY_MS, 'retryGetStructureDataWrapper', [data: [retryCount: retryCount + 1]])
       return
@@ -2220,14 +2248,14 @@ def getStructureData(int retryCount = 0) {
         return
       }
       // Log only essential fields at level 3
-      log "Structure loaded: id=${myStruct.id}, name=${myStruct.attributes.name}, mode=${myStruct.attributes.mode}", 3
+      log(3, 'App', "Structure loaded: id=${myStruct.id}, name=${myStruct.attributes.name}, mode=${myStruct.attributes.mode}")
       app.updateSetting('structureId', myStruct.id)
     }
   } catch (Exception e) {
     decrementActiveRequests()
     
     if (retryCount < MAX_API_RETRY_ATTEMPTS) {
-      log "Structure data request failed (attempt ${retryCount + 1}/${MAX_API_RETRY_ATTEMPTS}): ${e.message}", 2
+      log(2, 'App', "Structure data request failed (attempt ${retryCount + 1}/${MAX_API_RETRY_ATTEMPTS}): ${e.message}")
       // Schedule retry asynchronously
       runInMillis(API_CALL_DELAY_MS, 'retryGetStructureDataWrapper', [data: [retryCount: retryCount + 1]])
     } else {
@@ -2245,10 +2273,10 @@ def patchVentDevice(device, percentOpen) {
   def pOpen = Math.min(100, Math.max(0, percentOpen as int))
   def currentOpen = (device?.currentValue('percent-open') ?: 0).toInteger()
   if (pOpen == currentOpen) {
-    log "Keeping ${device} percent open unchanged at ${pOpen}%", 3
+    log(3, 'App', "Keeping ${device} percent open unchanged at ${pOpen}%")
     return
   }
-  log "Setting ${device} percent open from ${currentOpen} to ${pOpen}%", 3
+  log(3, 'App', "Setting ${device} percent open from ${currentOpen} to ${pOpen}%")
   def deviceId = device.getDeviceNetworkId()
   def uri = "${BASE_URL}/api/vents/${deviceId}"
   def body = [ data: [ type: 'vents', attributes: [ 'percent-open': pOpen ] ] ]
@@ -2266,9 +2294,9 @@ def handleVentPatch(resp, data) {
   decrementActiveRequests()  // Always decrement when response comes back
   if (!isValidResponse(resp) || !data) { 
     if (resp instanceof Exception || resp.toString().contains('LimitExceededException')) {
-      log "Vent patch failed due to hub load: ${resp.toString()}", 2
+      log(2, 'App', "Vent patch failed due to hub load: ${resp.toString()}")
     } else {
-      log "Vent patch failed - invalid response or data", 2
+      log(2, 'App', "Vent patch failed - invalid response or data")
     }
     return 
   }
@@ -2282,7 +2310,7 @@ def handleVentPatch(resp, data) {
   }
   
   if (!device) {
-    log "Could not get device object for vent patch processing", 2
+    log(2, 'App', "Could not get device object for vent patch processing")
     return
   }
   
@@ -2298,9 +2326,9 @@ def handleVentPatch(resp, data) {
       safeSendEvent(device, [name: 'level', value: data.targetOpen])
       def roomName = device.currentValue('room-name') ?: 'Unknown'
       appendDabActivityLog("${roomName} ${device.getDeviceNetworkId()} ${data.targetOpen}%")
-      log "Updated ${device.getLabel()} to ${data.targetOpen}%", 3
+      log(3, 'App', "Updated ${device.getLabel()} to ${data.targetOpen}%")
     } catch (Exception e) {
-      log "Error updating device state: ${e.message}", 2
+      log(2, 'App', "Error updating device state: ${e.message}")
     }
   }
 }
@@ -2309,7 +2337,7 @@ def patchRoom(device, active) {
   def roomId = device.currentValue('room-id')
   if (!roomId || active == null) { return }
   if (active == device.currentValue('room-active')) { return }
-  log "Setting active state to ${active} for '${device.currentValue('room-name')}'", 3
+  log(3, 'App', "Setting active state to ${active} for '${device.currentValue('room-name')}'")
   def uri = "${BASE_URL}/api/rooms/${roomId}"
   def body = [ data: [ type: 'rooms', attributes: [ 'active': active == 'true' ] ] ]
   patchDataAsync(uri, 'handleRoomPatch', body, [device: device])
@@ -2328,7 +2356,7 @@ def patchRoomSetPoint(device, temp) {
   if (getTemperatureScale() == 'F') {
     tempC = convertFahrenheitToCentigrade(tempC)
   }
-  log "Setting set-point to ${tempC}°C for '${device.currentValue('room-name')}'", 3
+  log(3, 'App', "Setting set-point to ${tempC}°C for '${device.currentValue('room-name')}'")
   def uri = "${BASE_URL}/api/rooms/${roomId}"
   def body = [ data: [ type: 'rooms', attributes: [ 'set-point-c': tempC ] ] ]
   patchDataAsync(uri, 'handleRoomSetPointPatch', body, [device: device])
@@ -2341,7 +2369,7 @@ def handleRoomSetPointPatch(resp, data) {
 }
 
 def thermostat1ChangeTemp(evt) {
-  log "Thermostat changed temp to: ${evt.value}", 2
+  log(2, 'App', "Thermostat changed temp to: ${evt.value}")
   def temp = settings?.thermostat1?.currentValue('temperature')
   def coolingSetpoint = settings?.thermostat1?.currentValue('coolingSetpoint') ?: 0
   def heatingSetpoint = settings?.thermostat1?.currentValue('heatingSetpoint') ?: 0
@@ -2354,13 +2382,13 @@ def thermostat1ChangeTemp(evt) {
   
   if (tempDiff >= THERMOSTAT_HYSTERESIS) {
     atomicState.lastSignificantTemp = temp
-    log "Significant temperature change detected: ${tempDiff}°C (threshold: ${THERMOSTAT_HYSTERESIS}°C)", 2
+    log(2, 'App', "Significant temperature change detected: ${tempDiff}°C (threshold: ${THERMOSTAT_HYSTERESIS}°C)")
     
     if (isThermostatAboutToChangeState(hvacMode, thermostatSetpoint, temp)) {
       runInMillis(INITIALIZATION_DELAY_MS, 'initializeRoomStates', [data: hvacMode])
     }
   } else {
-    log "Temperature change ${tempDiff}°C is below hysteresis threshold ${THERMOSTAT_HYSTERESIS}°C - ignoring", 3
+    log(3, 'App', "Temperature change ${tempDiff}°C is below hysteresis threshold ${THERMOSTAT_HYSTERESIS}°C - ignoring")
   }
 }
 
@@ -2374,18 +2402,18 @@ def isThermostatAboutToChangeState(String hvacMode, BigDecimal setpoint, BigDeci
   }
   if (atomicState.tempDiffsInsideThreshold == true) { return false }
   atomicState.tempDiffsInsideThreshold = true
-  log "Pre-adjusting vents for upcoming HVAC start. [mode=${hvacMode}, setpoint=${setpoint}, temp=${temp}]", 3
+  log(3, 'App', "Pre-adjusting vents for upcoming HVAC start. [mode=${hvacMode}, setpoint=${setpoint}, temp=${temp}]")
   return true
 }
 
 def thermostat1ChangeStateHandler(evt) {
-  log "Thermostat changed state to: ${evt.value}", 3
+  log(3, 'App', "Thermostat changed state to: ${evt.value}")
   def hvacMode = evt.value in [PENDING_COOL, PENDING_HEAT] ? (evt.value == PENDING_COOL ? COOLING : HEATING) : evt.value
   switch (hvacMode) {
     case COOLING:
     case HEATING:
       if (atomicState.thermostat1State) {
-        log "initializeRoomStates already executed (${evt.value})", 3
+        log(3, 'App', "initializeRoomStates already executed (${evt.value})")
         return
       }
       atomicStateUpdate('thermostat1State', 'mode', hvacMode)
@@ -2417,7 +2445,7 @@ def thermostat1ChangeStateHandler(evt) {
         atomicState.remove('thermostat1State')
       }
       if (settings.fanOnlyOpenAllVents && isFanActive(evt.value) && atomicState.ventsByRoomId) {
-        log 'Fan-only mode detected - opening all vents to 100%', 2
+        log(2, 'App', 'Fan-only mode detected - opening all vents to 100%')
         openAllVents(atomicState.ventsByRoomId, MAX_PERCENTAGE_OPEN as int)
       }
 
@@ -2473,7 +2501,7 @@ def updateHvacStateFromDuctTemps() {
 }
 
 def reBalanceVents() {
-  log 'Rebalancing Vents!!!', 3
+  log(3, 'App', 'Rebalancing Vents!!!')
   appendDabActivityLog("Rebalancing vents")
   def params = [
     ventIdsByRoomId: atomicState.ventsByRoomId,
@@ -2504,7 +2532,7 @@ def evaluateRebalancingVents() {
         if (!hasRoomReachedSetpoint(hvacMode, setPoint, roomTemp, REBALANCING_TOLERANCE)) {
           continue
         }
-        log "Rebalancing Vents - '${vent.currentValue('room-name')}' is at ${roomTemp}° (target: ${setPoint})", 3
+        log(3, 'App', "Rebalancing Vents - '${vent.currentValue('room-name')}' is at ${roomTemp}° (target: ${setPoint})")
         reBalanceVents()
         return // Exit after first rebalancing to avoid multiple adjustments per evaluation
       } catch (err) {
@@ -2575,13 +2603,13 @@ def finalizeRoomStates(data) {
   
   // Handle edge case when HVAC was already running during code deployment
   if (!data.startedRunning || !data.hvacMode) {
-    log "Skipping room state finalization - HVAC cycle started before code deployment", 2
+    log(2, 'App', "Skipping room state finalization - HVAC cycle started before code deployment")
     return
   }
-  log 'Start - Finalizing room states', 3
+  log(3, 'App', 'Start - Finalizing room states')
   def totalRunningMinutes = (data.finishedRunning - data.startedRunning) / (1000 * 60)
   def totalCycleMinutes = (data.finishedRunning - data.startedCycle) / (1000 * 60)
-  log "HVAC ran for ${totalRunningMinutes} minutes", 3
+  log(3, 'App', "HVAC ran for ${totalRunningMinutes} minutes")
 
   atomicState.maxHvacRunningTime = roundBigDecimal(
       rollingAverage(atomicState.maxHvacRunningTime ?: totalRunningMinutes, totalRunningMinutes), 6)
@@ -2595,7 +2623,7 @@ def finalizeRoomStates(data) {
       for (ventId in ventIds) {
         def vent = getChildDevice(ventId)
         if (!vent) {
-          log "Failed getting vent Id ${ventId}", 3
+          log(3, 'App', "Failed getting vent Id ${ventId}")
           continue
         }
         
@@ -2607,7 +2635,7 @@ def finalizeRoomStates(data) {
           // Use the already calculated rate for this room
           def rate = roomRates[roomName]
           sendEvent(vent, [name: ratePropName, value: rate])
-          log "Applying same ${ratePropName} (${roundBigDecimal(rate)}) to additional vent in '${roomName}'", 3
+          log(3, 'App', "Applying same ${ratePropName} (${roundBigDecimal(rate)}) to additional vent in '${roomName}'")
           continue
         }
         
@@ -2619,7 +2647,7 @@ def finalizeRoomStates(data) {
         def newRate = calculateRoomChangeRate(lastStartTemp, currentTemp, totalCycleMinutes, percentOpen, currentRate)
         
         if (newRate <= 0) {
-          log "New rate for ${roomName} is ${newRate}", 3
+          log(3, 'App', "New rate for ${roomName} is ${newRate}")
           
           // Check if room is already at or beyond setpoint
           def isAtSetpoint = hasRoomReachedSetpoint(data.hvacMode, 
@@ -2627,19 +2655,19 @@ def finalizeRoomStates(data) {
           
           if (isAtSetpoint && currentRate > 0) {
             // Room is already at setpoint - maintain last known efficiency
-            log "${roomName} is already at setpoint, maintaining last known efficiency rate: ${currentRate}", 3
+            log(3, 'App', "${roomName} is already at setpoint, maintaining last known efficiency rate: ${currentRate}")
             newRate = currentRate  // Keep existing rate
           } else if (percentOpen > 0) {
             // Vent was open but no temperature change - use minimum rate
             newRate = MIN_TEMP_CHANGE_RATE
-            log "Setting minimum rate for ${roomName} - no temperature change detected with ${percentOpen}% open vent", 3
+            log(3, 'App', "Setting minimum rate for ${roomName} - no temperature change detected with ${percentOpen}% open vent")
           } else if (currentRate == 0) {
             // Room has zero efficiency and vent was closed - set baseline efficiency
             def maxRate = data.hvacMode == COOLING ? 
                 atomicState.maxCoolingRate ?: MAX_TEMP_CHANGE_RATE : 
                 atomicState.maxHeatingRate ?: MAX_TEMP_CHANGE_RATE
             newRate = maxRate * 0.1  // 10% of maximum as baseline
-            log "Setting baseline efficiency for ${roomName} (10% of max rate: ${newRate})", 3
+            log(3, 'App', "Setting baseline efficiency for ${roomName} (10% of max rate: ${newRate})")
           } else {
             continue  // Skip if vent was closed and room has existing efficiency
           }
@@ -2648,7 +2676,7 @@ def finalizeRoomStates(data) {
         def rate = rollingAverage(currentRate, newRate, percentOpen / 100, 4)
         def cleanedRate = cleanDecimalForJson(rate)
         sendEvent(vent, [name: ratePropName, value: cleanedRate])
-        log "Updating ${roomName}'s ${ratePropName} to ${roundBigDecimal(cleanedRate)}", 3
+        log(3, 'App', "Updating ${roomName}'s ${ratePropName} to ${roundBigDecimal(cleanedRate)}")
 
         // Store the calculated rate for this room
         roomRates[roomName] = cleanedRate
@@ -2660,27 +2688,27 @@ def finalizeRoomStates(data) {
             def maxCoolRate = atomicState.maxCoolingRate ?: 0
             if (cleanedRate > maxCoolRate) {
               atomicState.maxCoolingRate = cleanDecimalForJson(cleanedRate)
-              log "Updated maximum cooling rate to ${cleanedRate}", 3
+              log(3, 'App', "Updated maximum cooling rate to ${cleanedRate}")
             }
           } else if (data.hvacMode == HEATING) {
             def maxHeatRate = atomicState.maxHeatingRate ?: 0
             if (cleanedRate > maxHeatRate) {
               atomicState.maxHeatingRate = cleanDecimalForJson(cleanedRate)
-              log "Updated maximum heating rate to ${cleanedRate}", 3
+              log(3, 'App', "Updated maximum heating rate to ${cleanedRate}")
             }
           }
         }
       }
     }
   } else {
-    log "Could not calculate room states as it ran for ${totalCycleMinutes} minutes and needs to run for at least ${MIN_MINUTES_TO_SETPOINT} minutes", 3
+    log(3, 'App', "Could not calculate room states as it ran for ${totalCycleMinutes} minutes and needs to run for at least ${MIN_MINUTES_TO_SETPOINT} minutes")
   }
-  log 'End - Finalizing room states', 3
+  log(3, 'App', 'End - Finalizing room states')
 }
 
 def recordStartingTemperatures() {
   if (!atomicState.ventsByRoomId) { return }
-  log "Recording starting temperatures for all rooms", 2
+  log(2, 'App', "Recording starting temperatures for all rooms")
   atomicState.ventsByRoomId.each { roomId, ventIds ->
     for (ventId in ventIds) {
       try {
@@ -2690,7 +2718,7 @@ def recordStartingTemperatures() {
         }
         BigDecimal currentTemp = getRoomTemp(vent)
         sendEvent(vent, [name: 'room-starting-temperature-c', value: currentTemp])
-        log "Starting temperature for '${vent.currentValue('room-name')}': ${currentTemp}°C", 2
+        log(2, 'App', "Starting temperature for '${vent.currentValue('room-name')}': ${currentTemp}°C")
       } catch (err) {
         logError err
       }
@@ -2700,10 +2728,10 @@ def recordStartingTemperatures() {
 
 def initializeRoomStates(String hvacMode) {
   if (!settings.dabEnabled) { return }
-  log "Initializing room states - hvac mode: ${hvacMode}", 3
+  log(3, 'App', "Initializing room states - hvac mode: ${hvacMode}")
   if (!atomicState.ventsByRoomId) { return }
   if (settings.fanOnlyOpenAllVents && isFanActive()) {
-    log 'Fan-only mode active - skipping DAB initialization', 2
+    log(2, 'App', 'Fan-only mode active - skipping DAB initialization')
     return
   }
 
@@ -2727,19 +2755,19 @@ def initializeRoomStates(String hvacMode) {
   def maxRunningTime = atomicState.maxHvacRunningTime ?: MAX_MINUTES_TO_SETPOINT
   def longestTimeToTarget = calculateLongestMinutesToTarget(rateAndTempPerVentId, hvacMode, setpoint, maxRunningTime, settings.thermostat1CloseInactiveRooms)
   if (longestTimeToTarget < 0) {
-    log "All vents already reached setpoint (${setpoint})", 3
+    log(3, 'App', "All vents already reached setpoint (${setpoint})")
     longestTimeToTarget = maxRunningTime
   }
   if (longestTimeToTarget == 0) {
-    log "Opening all vents (setpoint: ${setpoint})", 3
+    log(3, 'App', "Opening all vents (setpoint: ${setpoint})")
     openAllVents(atomicState.ventsByRoomId, MAX_PERCENTAGE_OPEN as int)
     return
   }
-  log "Initializing room states - setpoint: ${setpoint}, longestTimeToTarget: ${roundBigDecimal(longestTimeToTarget)}", 3
+  log(3, 'App', "Initializing room states - setpoint: ${setpoint}, longestTimeToTarget: ${roundBigDecimal(longestTimeToTarget)}")
 
   def calcPercentOpen = calculateOpenPercentageForAllVents(rateAndTempPerVentId, hvacMode, setpoint, longestTimeToTarget, settings.thermostat1CloseInactiveRooms)
   if (!calcPercentOpen) {
-    log "No vents are being changed (setpoint: ${setpoint})", 3
+    log(3, 'App', "No vents are being changed (setpoint: ${setpoint})")
     return
   }
 
@@ -2781,13 +2809,13 @@ def adjustVentOpeningsToEnsureMinimumAirflowTarget(rateAndTempPerVentId, String 
 
   def combinedFlowPercentage = (100 * sumPercentages) / (totalDeviceCount * 100)
   if (combinedFlowPercentage >= MIN_COMBINED_VENT_FLOW) {
-    log "Combined vent flow percentage (${combinedFlowPercentage}%) is greater than ${MIN_COMBINED_VENT_FLOW}%", 3
+    log(3, 'App', "Combined vent flow percentage (${combinedFlowPercentage}%) is greater than ${MIN_COMBINED_VENT_FLOW}%")
     return calculatedPercentOpen
   }
-  log "Combined Vent Flow Percentage (${combinedFlowPercentage}) is lower than ${MIN_COMBINED_VENT_FLOW}%", 3
+  log(3, 'App', "Combined Vent Flow Percentage (${combinedFlowPercentage}) is lower than ${MIN_COMBINED_VENT_FLOW}%")
   def targetPercentSum = MIN_COMBINED_VENT_FLOW * totalDeviceCount
   def diffPercentageSum = targetPercentSum - sumPercentages
-  log "sumPercentages=${sumPercentages}, targetPercentSum=${targetPercentSum}, diffPercentageSum=${diffPercentageSum}", 2
+  log(2, 'App', "sumPercentages=${sumPercentages}, targetPercentSum=${targetPercentSum}, diffPercentageSum=${diffPercentageSum}")
   int iterations = 0
   while (diffPercentageSum > 0 && iterations++ < MAX_ITERATIONS) {
     for (item in rateAndTempPerVentId) {
@@ -2807,7 +2835,7 @@ def adjustVentOpeningsToEnsureMinimumAirflowTarget(rateAndTempPerVentId, String 
           percentOpenVal = MAX_PERCENTAGE_OPEN
         }
         calculatedPercentOpen[ventId] = percentOpenVal
-        log "Adjusting % open from ${roundBigDecimal(percentOpenVal - increment)}% to ${roundBigDecimal(percentOpenVal)}%", 2
+        log(2, 'App', "Adjusting % open from ${roundBigDecimal(percentOpenVal - increment)}% to ${roundBigDecimal(percentOpenVal)}%")
         diffPercentageSum = diffPercentageSum - increment
         if (diffPercentageSum <= 0) { break }
       }
@@ -2832,7 +2860,7 @@ def getAttribsPerVentId(ventsByRoomId, String hvacMode) {
         // Log rooms with zero efficiency for debugging
         if (rate == 0) {
           def tempSource = settings."vent${ventId}Thermostat" ? "Puck ${settings."vent${ventId}Thermostat".getLabel()}" : "Room API"
-          log "Room '${roomName}' has zero ${hvacMode} efficiency rate, temp=${roomTemp}°C from ${tempSource}", 2
+          log(2, 'App', "Room '${roomName}' has zero ${hvacMode} efficiency rate, temp=${roomTemp}°C from ${tempSource}")
         }
         
         rateAndTemp[ventId] = [ rate: rate, temp: roomTemp, active: isActive, name: roomName ]
@@ -2850,9 +2878,9 @@ def calculateOpenPercentageForAllVents(rateAndTempPerVentId, String hvacMode, Bi
     try {
       def percentageOpen = MIN_PERCENTAGE_OPEN
       if (closeInactive && !stateVal.active) {
-        log "Closing vent on inactive room: ${stateVal.name}", 3
+        log(3, 'App', "Closing vent on inactive room: ${stateVal.name}")
       } else if (stateVal.rate < MIN_TEMP_CHANGE_RATE) {
-        log "Opening vent at max since change rate is too low: ${stateVal.name}", 3
+        log(3, 'App', "Opening vent at max since change rate is too low: ${stateVal.name}")
         percentageOpen = MAX_PERCENTAGE_OPEN
       } else {
         percentageOpen = calculateVentOpenPercentage(stateVal.name, stateVal.temp, setpoint, hvacMode, stateVal.rate, longestTime)
@@ -2868,7 +2896,7 @@ def calculateOpenPercentageForAllVents(rateAndTempPerVentId, String hvacMode, Bi
 def calculateVentOpenPercentage(String roomName, BigDecimal startTemp, BigDecimal setpoint, String hvacMode, BigDecimal maxRate, BigDecimal longestTime) {
   if (hasRoomReachedSetpoint(hvacMode, setpoint, startTemp)) {
     def msg = hvacMode == COOLING ? 'cooler' : 'warmer'
-    log "'${roomName}' is already ${msg} (${startTemp}) than setpoint (${setpoint})", 3
+    log(3, 'App', "'${roomName}' is already ${msg} (${startTemp}) than setpoint (${setpoint})")
     return MIN_PERCENTAGE_OPEN
   }
   BigDecimal percentageOpen = MAX_PERCENTAGE_OPEN
@@ -2884,7 +2912,7 @@ def calculateVentOpenPercentage(String roomName, BigDecimal startTemp, BigDecima
     // Ensure percentageOpen stays within defined limits.
     percentageOpen = percentageOpen < MIN_PERCENTAGE_OPEN ? MIN_PERCENTAGE_OPEN :
                            (percentageOpen > MAX_PERCENTAGE_OPEN ? MAX_PERCENTAGE_OPEN : percentageOpen)
-    log "changing percentage open for ${roomName} to ${percentageOpen}% (maxRate=${roundBigDecimal(maxRate)})", 3
+    log(3, 'App', "changing percentage open for ${roomName} to ${percentageOpen}% (maxRate=${roundBigDecimal(maxRate)})")
   }
   return percentageOpen
 }
@@ -2896,9 +2924,9 @@ def calculateLongestMinutesToTarget(rateAndTempPerVentId, String hvacMode, BigDe
     try {
       def minutesToTarget = -1
       if (closeInactive && !stateVal.active) {
-        log "'${stateVal.name}' is inactive", 3
+        log(3, 'App', "'${stateVal.name}' is inactive")
       } else if (hasRoomReachedSetpoint(hvacMode, setpoint, stateVal.temp)) {
-        log "'${stateVal.name}' has already reached setpoint", 3
+        log(3, 'App', "'${stateVal.name}' has already reached setpoint")
       } else if (stateVal.rate > 0) {
         minutesToTarget = Math.abs(setpoint - stateVal.temp) / stateVal.rate
         // Check for unrealistic time estimates due to minimal temperature change
@@ -2916,7 +2944,7 @@ def calculateLongestMinutesToTarget(rateAndTempPerVentId, String hvacMode, BigDe
         minutesToTarget = maxRunningTime
       }
       longestTime = Math.max(longestTime, minutesToTarget.doubleValue())
-      log "Room '${stateVal.name}' temp: ${stateVal.temp}", 3
+      log(3, 'App', "Room '${stateVal.name}' temp: ${stateVal.temp}")
     } catch (err) {
       logError err
     }
@@ -2928,7 +2956,7 @@ def calculateLongestMinutesToTarget(rateAndTempPerVentId, String hvacMode, BigDe
 def calculateRoomChangeRate(def lastStartTemp, def currentTemp, def totalMinutes, def percentOpen, def currentRate) {
   // Null safety checks
   if (lastStartTemp == null || currentTemp == null || totalMinutes == null || percentOpen == null || currentRate == null) {
-    log "calculateRoomChangeRate: null parameter detected", 3
+    log(3, 'App', "calculateRoomChangeRate: null parameter detected")
     return -1
   }
   
@@ -2941,25 +2969,25 @@ def calculateRoomChangeRate(def lastStartTemp, def currentTemp, def totalMinutes
       currentRate as BigDecimal
     )
   } catch (Exception e) {
-    log "calculateRoomChangeRate casting error: ${e.message}", 3
+    log(3, 'App', "calculateRoomChangeRate casting error: ${e.message}")
     return -1
   }
 }
 
 def calculateRoomChangeRate(BigDecimal lastStartTemp, BigDecimal currentTemp, BigDecimal totalMinutes, int percentOpen, BigDecimal currentRate) {
   if (totalMinutes < MIN_MINUTES_TO_SETPOINT) {
-    log "Insufficient number of minutes required to calculate change rate (${totalMinutes} should be greater than ${MIN_MINUTES_TO_SETPOINT})", 3
+    log(3, 'App', "Insufficient number of minutes required to calculate change rate (${totalMinutes} should be greater than ${MIN_MINUTES_TO_SETPOINT})")
     return -1
   }
   
   // Skip rate calculation if HVAC hasn't run long enough for meaningful temperature changes
   if (totalMinutes < MIN_RUNTIME_FOR_RATE_CALC) {
-    log "HVAC runtime too short for rate calculation: ${totalMinutes} minutes < ${MIN_RUNTIME_FOR_RATE_CALC} minutes minimum", 3
+    log(3, 'App', "HVAC runtime too short for rate calculation: ${totalMinutes} minutes < ${MIN_RUNTIME_FOR_RATE_CALC} minutes minimum")
     return -1
   }
   
   if (percentOpen <= MIN_PERCENTAGE_OPEN) {
-    log "Vent was opened less than ${MIN_PERCENTAGE_OPEN}% (${percentOpen}), therefore it is being excluded", 3
+    log(3, 'App', "Vent was opened less than ${MIN_PERCENTAGE_OPEN}% (${percentOpen}), therefore it is being excluded")
     return -1
   }
   
@@ -2967,11 +2995,11 @@ def calculateRoomChangeRate(BigDecimal lastStartTemp, BigDecimal currentTemp, Bi
   
   // Check if temperature change is within sensor noise/accuracy range
   if (diffTemps < MIN_DETECTABLE_TEMP_CHANGE) {
-    log "Temperature change (${diffTemps}°C) is below minimum detectable threshold (${MIN_DETECTABLE_TEMP_CHANGE}°C) - likely sensor noise", 2
+    log(2, 'App', "Temperature change (${diffTemps}°C) is below minimum detectable threshold (${MIN_DETECTABLE_TEMP_CHANGE}°C) - likely sensor noise")
     
     // If no meaningful temperature change but vent was significantly open, assign minimum efficiency
     if (percentOpen >= 30) {
-      log "Vent was ${percentOpen}% open but no meaningful temperature change detected - assigning minimum efficiency", 2
+      log(2, 'App', "Vent was ${percentOpen}% open but no meaningful temperature change detected - assigning minimum efficiency")
       return MIN_TEMP_CHANGE_RATE
     }
     return -1
@@ -2979,7 +3007,7 @@ def calculateRoomChangeRate(BigDecimal lastStartTemp, BigDecimal currentTemp, Bi
   
   // Account for sensor accuracy when detecting minimal changes
   if (diffTemps < TEMP_SENSOR_ACCURACY) {
-    log "Temperature change (${diffTemps}°C) is within sensor accuracy range (±${TEMP_SENSOR_ACCURACY}°C) - adjusting calculation", 2
+    log(2, 'App', "Temperature change (${diffTemps}°C) is within sensor accuracy range (±${TEMP_SENSOR_ACCURACY}°C) - adjusting calculation")
     // Use a minimum reliable change for calculation to avoid division by near-zero
     diffTemps = Math.max(diffTemps, MIN_DETECTABLE_TEMP_CHANGE)
   }
@@ -2989,10 +3017,10 @@ def calculateRoomChangeRate(BigDecimal lastStartTemp, BigDecimal currentTemp, Bi
   BigDecimal maxRate = rate.max(currentRate)
   BigDecimal approxRate = maxRate != 0 ? (rate / maxRate) / pOpen : 0
   if (approxRate > MAX_TEMP_CHANGE_RATE) {
-    log "Change rate (${roundBigDecimal(approxRate)}) is greater than ${MAX_TEMP_CHANGE_RATE}, therefore it is being excluded", 3
+    log(3, 'App', "Change rate (${roundBigDecimal(approxRate)}) is greater than ${MAX_TEMP_CHANGE_RATE}, therefore it is being excluded")
     return -1
   } else if (approxRate < MIN_TEMP_CHANGE_RATE) {
-    log "Change rate (${roundBigDecimal(approxRate)}) is lower than ${MIN_TEMP_CHANGE_RATE}, adjusting to minimum (startTemp=${lastStartTemp}, currentTemp=${currentTemp}, percentOpen=${percentOpen}%)", 3
+    log(3, 'App', "Change rate (${roundBigDecimal(approxRate)}) is lower than ${MIN_TEMP_CHANGE_RATE}, adjusting to minimum (startTemp=${lastStartTemp}, currentTemp=${currentTemp}, percentOpen=${percentOpen}%)")
     // Return minimum rate instead of excluding to prevent zero efficiency
     return MIN_TEMP_CHANGE_RATE
   }
@@ -3004,14 +3032,14 @@ def calculateRoomChangeRate(BigDecimal lastStartTemp, BigDecimal currentTemp, Bi
 // ------------------------------
 
 def updateDevicePollingInterval(Integer intervalMinutes) {
-  log "Updating device polling interval to ${intervalMinutes} minutes", 3
+  log(3, 'App', "Updating device polling interval to ${intervalMinutes} minutes")
   
   // Update all child vents
   getChildDevices()?.findAll { it.typeName == 'Flair vents' }?.each { device ->
     try {
       device.updateParentPollingInterval(intervalMinutes)
     } catch (Exception e) {
-      log "Error updating polling interval for vent ${device.getLabel()}: ${e.message}", 2
+      log(2, 'App', "Error updating polling interval for vent ${device.getLabel()}: ${e.message}")
     }
   }
   
@@ -3020,12 +3048,12 @@ def updateDevicePollingInterval(Integer intervalMinutes) {
     try {
       device.updateParentPollingInterval(intervalMinutes)
     } catch (Exception e) {
-      log "Error updating polling interval for puck ${device.getLabel()}: ${e.message}", 2
+      log(2, 'App', "Error updating polling interval for puck ${device.getLabel()}: ${e.message}")
     }
   }
   
   atomicState.currentPollingInterval = intervalMinutes
-  log "Updated polling interval for ${getChildDevices()?.size() ?: 0} devices", 3
+  log(3, 'App', "Updated polling interval for ${getChildDevices()?.size() ?: 0} devices")
 }
 
 // ------------------------------
@@ -3034,7 +3062,7 @@ def updateDevicePollingInterval(Integer intervalMinutes) {
 
 def handleExportEfficiencyData() {
   try {
-    log "Starting efficiency data export", 2
+    log(2, 'App', "Starting efficiency data export")
     
     // Collect efficiency data from all vents
     def efficiencyData = exportEfficiencyData()
@@ -3049,7 +3077,7 @@ def handleExportEfficiencyData() {
     // Store the JSON data for display
     state.exportedJsonData = jsonData
     
-    log "Export completed successfully for ${roomCount} rooms", 2
+    log(2, 'App', "Export completed successfully for ${roomCount} rooms")
     
   } catch (Exception e) {
     def errorMsg = "Export failed: ${e.message}"
@@ -3061,7 +3089,7 @@ def handleExportEfficiencyData() {
 
 def handleImportEfficiencyData() {
   try {
-    log "Starting efficiency data import", 2
+    log(2, 'App', "Starting efficiency data import")
     
     // Clear previous status
     state.remove('importStatus')
@@ -3093,7 +3121,7 @@ def handleImportEfficiencyData() {
       // Clear the input field after successful import
       app.updateSetting('importJsonData', '')
       
-      log "Import completed: ${result.roomsUpdated} rooms updated, ${result.roomsSkipped} skipped", 2
+      log(2, 'App', "Import completed: ${result.roomsUpdated} rooms updated, ${result.roomsSkipped} skipped")
       
     } else {
       state.importStatus = "✗ Import failed: ${result.error}"
@@ -3111,10 +3139,10 @@ def handleImportEfficiencyData() {
 
 def handleClearExportData() {
   try {
-    log "Clearing export data", 2
+    log(2, 'App', "Clearing export data")
     state.remove('exportStatus')
     state.remove('exportedJsonData')
-    log "Export data cleared successfully", 2
+    log(2, 'App', "Export data cleared successfully")
   } catch (Exception e) {
     logError "Failed to clear export data: ${e.message}"
   }
@@ -3217,7 +3245,7 @@ def applyImportedEfficiencies(efficiencyData) {
     atomicState.maxCoolingRate = efficiencyData.globalRates.maxCoolingRate
     atomicState.maxHeatingRate = efficiencyData.globalRates.maxHeatingRate
     results.globalUpdated = true
-    log "Updated global rates: cooling=${efficiencyData.globalRates.maxCoolingRate}, heating=${efficiencyData.globalRates.maxHeatingRate}", 2
+    log(2, 'App', "Updated global rates: cooling=${efficiencyData.globalRates.maxCoolingRate}, heating=${efficiencyData.globalRates.maxHeatingRate}")
   }
   
   // Update room efficiencies
@@ -3228,11 +3256,11 @@ def applyImportedEfficiencies(efficiencyData) {
       sendEvent(device, [name: 'room-cooling-rate', value: roomData.coolingRate])
       sendEvent(device, [name: 'room-heating-rate', value: roomData.heatingRate])
       results.roomsUpdated++
-      log "Updated efficiency for '${roomData.roomName}': cooling=${roomData.coolingRate}, heating=${roomData.heatingRate}", 2
+      log(2, 'App', "Updated efficiency for '${roomData.roomName}': cooling=${roomData.coolingRate}, heating=${roomData.heatingRate}")
     } else {
       results.roomsSkipped++
       results.errors << "Room not found: ${roomData.roomName} (${roomData.roomId})"
-      log "Skipped room '${roomData.roomName}' - no matching device found", 2
+      log(2, 'App', "Skipped room '${roomData.roomName}' - no matching device found")
     }
   }
   
@@ -3266,7 +3294,7 @@ def efficiencyDataPage() {
       def efficiencyData = exportEfficiencyData()
       exportJsonData = generateEfficiencyJSON(efficiencyData)
     } catch (Exception e) {
-      log "Error generating export data: ${e.message}", 2
+      log(2, 'App', "Error generating export data: ${e.message}")
     }
   }
   
