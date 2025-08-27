@@ -186,7 +186,7 @@ class EfficiencyImportEdgeCasesTest extends Specification {
     def "test validation with missing required fields"() {
         given: "JSON data missing required structure"
         def invalidData = [
-            exportMetadata: [version: '0.22'],
+            exportMetadata: [version: '0.24'],
             efficiencyData: [
                 globalRates: [:], // Missing required rates
                 roomEfficiencies: [
@@ -321,7 +321,7 @@ class EfficiencyImportEdgeCasesTest extends Specification {
     def "test import with missing global rates section"() {
         given: "JSON data without global rates"
         def jsonData = [
-            exportMetadata: [version: '0.22', exportDate: '2025-06-26T15:00:00Z'],
+            exportMetadata: [version: '0.24', exportDate: '2025-06-26T15:00:00Z'],
             efficiencyData: [
                 roomEfficiencies: [
                     [roomId: 'room-123', roomName: 'Living Room', ventId: 'device-1', coolingRate: 0.6, heatingRate: 0.8]
@@ -373,7 +373,7 @@ class EfficiencyImportEdgeCasesTest extends Specification {
     private createValidBackupJson(roomData) {
         return [
             exportMetadata: [
-                version: '0.22',
+                version: '0.24',
                 exportDate: '2025-06-26T15:00:00Z',
                 structureId: 'test-structure'
             ],
