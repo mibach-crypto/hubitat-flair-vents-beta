@@ -125,6 +125,12 @@ import java.net.URLEncoder
 // Maximum number of retry attempts for async API calls.
 @Field static final Integer MAX_API_RETRY_ATTEMPTS = 5
 
+// Number of consecutive failures before temporarily blocking an endpoint.
+@Field static final Integer CIRCUIT_BREAKER_THRESHOLD = 3
+
+// Duration to pause requests for an endpoint once the circuit breaker is opened (in ms).
+@Field static final Integer CIRCUIT_BREAKER_TIMEOUT_MS = 1000 * 30
+
 // ------------------------------
 // End Constants
 // ------------------------------
@@ -1044,15 +1050,95 @@ def isValidResponse(resp) {
   return true
 }
 
-// Updated getDataAsync to accept a String callback name with simple throttling.
-def getDataAsync(String uri, String callback, data = null, int retryCount = 0) {
+private initEndpointTracking() {
+  if (state.endpointFailures == null) { state.endpointFailures = [:] }
+  if (state.circuitOpenUntil == null) { state.circuitOpenUntil = [:] }
+}
+
+private long computeBackoff(int retryCount) {
+  long base = API_CALL_DELAY_MS
+  long expo = base * (Math.pow(2, retryCount) as long)
+  long jitter = (long)(Math.random() * base)
+  return expo + jitter
+}
+
+private void scheduleRetry(String uri, String callback, data, int retryCount, boolean authRetry = false, long delayMs = -1) {
+  if (retryCount < MAX_API_RETRY_ATTEMPTS) {
+    long wait = delayMs > 0 ? delayMs : computeBackoff(retryCount)
+    def retryData = [uri: uri, callback: callback, retryCount: retryCount + 1, authRetry: authRetry]
+    if (data?.device && uri.contains('/room')) {
+      retryData.data = [deviceId: data.device.getDeviceNetworkId()]
+    } else {
+      retryData.data = data
+    }
+    runInMillis(wait, 'retryGetDataAsyncWrapper', [data: retryData])
+  } else {
+    logError "getDataAsync failed after ${MAX_API_RETRY_ATTEMPTS} retries for URI: ${uri}"
+  }
+}
+
+def asyncHttpGetWrapper(resp, requestData) {
+  decrementActiveRequests()
+  initEndpointTracking()
+
+  def uri = requestData.uri
+  def callback = requestData.callback
+  def data = requestData.data
+  int retryCount = requestData.retryCount ?: 0
+  boolean authRetry = requestData.authRetry ?: false
+
+  int status = resp?.getStatus() ?: 0
+
+  if (status == 401 && !authRetry) {
+    logWarn "401 response for ${uri}; re-authenticating"
+    authenticate()
+    scheduleRetry(uri, callback, data, retryCount, true)
+    return
+  }
+
+  if (status >= 500) {
+    def failures = (state.endpointFailures[uri] ?: 0) + 1
+    state.endpointFailures[uri] = failures
+    if (failures >= CIRCUIT_BREAKER_THRESHOLD) {
+      state.circuitOpenUntil[uri] = now() + CIRCUIT_BREAKER_TIMEOUT_MS
+      state.endpointFailures[uri] = 0
+      logWarn "Circuit breaker opened for ${uri} after ${failures} failures"
+      scheduleRetry(uri, callback, data, retryCount, authRetry, CIRCUIT_BREAKER_TIMEOUT_MS)
+      return
+    } else {
+      scheduleRetry(uri, callback, data, retryCount, authRetry)
+      return
+    }
+  }
+
+  // Reset failure count on success
+  state.endpointFailures[uri] = 0
+
+  if (callback) {
+    this."${callback}"(resp, data)
+  }
+}
+
+// Updated getDataAsync with exponential backoff, jitter, and circuit breaker support.
+def getDataAsync(String uri, String callback, data = null, int retryCount = 0, boolean authRetry = false) {
+  initEndpointTracking()
+
+  // Respect circuit breaker if the endpoint is temporarily blocked
+  def openUntil = state.circuitOpenUntil[uri]
+  if (openUntil && now() < openUntil) {
+    def delay = openUntil - now()
+    logWarn "Circuit breaker open for ${uri}, delaying request by ${delay}ms"
+    scheduleRetry(uri, callback, data, retryCount, authRetry, delay)
+    return
+  }
+
   if (canMakeRequest()) {
     incrementActiveRequests()
     def headers = [ Authorization: "Bearer ${state.flairAccessToken}" ]
     def httpParams = [ uri: uri, headers: headers, contentType: CONTENT_TYPE, timeout: HTTP_TIMEOUT_SECS ]
-    
+
     try {
-      asynchttpGet(callback, httpParams, data)
+      asynchttpGet('asyncHttpGetWrapper', httpParams, [uri: uri, callback: callback, data: data, retryCount: retryCount, authRetry: authRetry])
     } catch (Exception e) {
       log "HTTP GET exception: ${e.message}", 2
       // Decrement on exception since the request didn't actually happen
@@ -1060,17 +1146,7 @@ def getDataAsync(String uri, String callback, data = null, int retryCount = 0) {
       return
     }
   } else {
-    if (retryCount < MAX_API_RETRY_ATTEMPTS) {
-      def retryData = [uri: uri, callback: callback, retryCount: retryCount + 1]
-      if (data?.device && uri.contains('/room')) {
-        retryData.data = [deviceId: data.device.getDeviceNetworkId()]
-      } else {
-        retryData.data = data
-      }
-      runInMillis(API_CALL_DELAY_MS, 'retryGetDataAsyncWrapper', [data: retryData])
-    } else {
-      logError "getDataAsync failed after ${MAX_API_RETRY_ATTEMPTS} retries for URI: ${uri}"
-    }
+    scheduleRetry(uri, callback, data, retryCount, authRetry)
   }
 }
 
@@ -1104,19 +1180,21 @@ def retryGetDataAsyncWrapper(data) {
         processRoomTraits(device, cachedData)
         return
       }
-      
+
       // Check if request is already pending
       if (isRequestPending(roomId)) {
         // log "Room data request already pending for room ${roomId} on retry, skipping", 3
         return
       }
+
+      markRequestPending(roomId)
     }
-    
+
     // Re-route through cache check
     getRoomDataWithCache(device, deviceId, isPuck)
   } else {
     // Normal retry for non-room requests
-    getDataAsync(data.uri, data.callback, data.data, data.retryCount)
+    getDataAsync(data.uri, data.callback, data.data, data.retryCount, data.authRetry)
   }
 }
 

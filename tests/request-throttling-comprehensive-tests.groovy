@@ -365,6 +365,28 @@ class RequestThrottlingComprehensiveTest extends Specification {
     script.atomicState.activeRequests == 2 // Should be incremented
   }
 
+  def "asyncHttpGetWrapper opens circuit breaker after repeated 5xx"() {
+    setup:
+    final log = new CapturingLog()
+    AppExecutor executorApi = Mock(AppExecutor) {
+      _ * getState() >> [flairAccessToken: 'test-token']
+      _ * getLog() >> log
+      _ * getAtomicState() >> [activeRequests: 0]
+    }
+    def sandbox = new HubitatAppSandbox(APP_FILE)
+    def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
+    script.state = [flairAccessToken: 'test-token', endpointFailures: [:], circuitOpenUntil: [:]]
+    script.atomicState = [activeRequests: 0]
+    script.metaClass.runInMillis = { long ms, String method, Map params -> }
+    def resp = [getStatus: { -> 500 }, hasError: { -> true }] as Object
+
+    when:
+    3.times { script.asyncHttpGetWrapper(resp, [uri: 'test', callback: 'noOpHandler', data: null, retryCount: it]) }
+
+    then:
+    script.state.circuitOpenUntil['test'] != null
+  }
+
   def "patchDataAsync processes request when under limit"() {
     setup:
     final log = new CapturingLog()
