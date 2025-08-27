@@ -34,6 +34,7 @@ import java.net.URLEncoder
 @Field static final Long DEVICE_CACHE_DURATION_MS = 30000 // 30 second cache duration for device readings
 @Field static final Integer MAX_CACHE_SIZE = 50 // Maximum cache entries per instance
 @Field static final Integer DEFAULT_HISTORY_RETENTION_DAYS = 10 // Default days to retain DAB history
+@Field static final Integer DAILY_SUMMARY_PAGE_SIZE = 30 // Entries per page for daily summary
 
 // Content-Type header for API requests.
 @Field static final String CONTENT_TYPE = 'application/json'
@@ -149,6 +150,7 @@ preferences {
   page(name: 'dabRatesTablePage')
   page(name: 'dabActivityLogPage')
   page(name: 'dabProgressPage')
+  page(name: 'dabDailySummaryPage')
 }
 
 def mainPage() {
@@ -252,6 +254,12 @@ def mainPage() {
             href name: 'dabProgressLink', title: '📈 View DAB Progress',
                  description: 'Track DAB progress by date and hour',
                  page: 'dabProgressPage'
+          }
+          // Daily DAB Summary Link
+          section {
+            href name: 'dabDailySummaryLink', title: '📅 View Daily DAB Summary',
+                 description: 'Daily airflow averages per room and mode',
+                 page: 'dabDailySummaryPage'
           }
           // DAB Activity Log Link
           section {
@@ -415,8 +423,11 @@ def initialize() {
     updateHvacStateFromDuctTemps()
     unschedule('updateHvacStateFromDuctTemps')
     runEvery1Minute('updateHvacStateFromDuctTemps')
+    unschedule('aggregateDailyDabStats')
+    runEvery1Day('aggregateDailyDabStats')
   } else {
     unschedule('updateHvacStateFromDuctTemps')
+    unschedule('aggregateDailyDabStats')
   }
   // Schedule periodic cleanup of instance caches and pending requests
   runEvery5Minutes('cleanupPendingRequests')
@@ -2566,6 +2577,33 @@ def appendHourlyRate(String roomId, String hvacMode, Integer hour, BigDecimal ra
   atomicState?.lastHvacMode = hvacMode
 }
 
+// Aggregate previous day's hourly rates into daily averages
+def aggregateDailyDabStats() {
+  def history = atomicState?.dabHistory ?: [:]
+  if (!history) { return }
+  String tzId = location?.timeZone ?: TimeZone.getTimeZone('UTC')
+  String targetDate = (new Date() - 1).format('yyyy-MM-dd', tzId)
+  def stats = atomicState?.dabDailyStats ?: [:]
+  history.each { roomId, modeMap ->
+    modeMap.each { hvacMode, entries ->
+      def dailyRates = entries.findAll { it.date == targetDate }*.rate.collect { it as BigDecimal }
+      if (dailyRates && dailyRates.size() > 0) {
+        BigDecimal avg = cleanDecimalForJson(dailyRates.sum() / dailyRates.size())
+        def roomStats = stats[roomId] ?: [:]
+        def modeStats = roomStats[hvacMode] ?: []
+        modeStats = modeStats.findAll { it.date != targetDate }
+        modeStats << [date: targetDate, avg: avg]
+        Integer retention = (settings?.dabHistoryRetentionDays ?: DEFAULT_HISTORY_RETENTION_DAYS) as Integer
+        String cutoff = (new Date() - retention).format('yyyy-MM-dd', tzId)
+        modeStats = modeStats.findAll { it.date >= cutoff }
+        roomStats[hvacMode] = modeStats
+        stats[roomId] = roomStats
+      }
+    }
+  }
+  atomicState.dabDailyStats = stats
+}
+
 def appendDabActivityLog(String message) {
   def list = atomicState?.dabActivityLog ?: []
   String ts = new Date().format('yyyy-MM-dd HH:mm:ss', location?.timeZone ?: TimeZone.getTimeZone('UTC'))
@@ -3526,6 +3564,18 @@ def dabProgressPage() {
   }
 }
 
+def dabDailySummaryPage() {
+  dynamicPage(name: 'dabDailySummaryPage', title: '📅 Daily DAB Summary', install: false, uninstall: false) {
+    section {
+      input name: 'dailySummaryPage', type: 'number', title: 'Page', required: false, defaultValue: 1, submitOnChange: true
+      paragraph buildDabDailySummaryTable()
+    }
+    section {
+      href name: 'backToMain', title: '← Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+    }
+  }
+}
+
 String buildDabChart() {
   def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
   if (vents.isEmpty()) {
@@ -3676,6 +3726,39 @@ String buildDabProgressTable() {
       html << "<td style='text-align:right;padding:4px;'>${roundBigDecimal(avg)}</td>"
     }
     html << '</tr>'
+  }
+  html << '</table>'
+  html.toString()
+}
+
+String buildDabDailySummaryTable() {
+  def stats = atomicState?.dabDailyStats ?: [:]
+  if (!stats) { return '<p>No daily statistics available.</p>' }
+  def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+  Map roomNames = vents.collectEntries { v -> [(v.currentValue('room-id') ?: v.getId()): (v.currentValue('room-name') ?: v.getLabel())] }
+  def records = []
+  stats.each { roomId, modeMap ->
+    modeMap.each { hvacMode, list ->
+      list.each { rec ->
+        records << [date: rec.date, room: roomNames[roomId] ?: roomId, mode: hvacMode, avg: rec.avg]
+      }
+    }
+  }
+  if (!records) { return '<p>No daily statistics available.</p>' }
+  records.sort { a, b -> b.date <=> a.date }
+  int page = (settings?.dailySummaryPage ?: 1) as int
+  int totalPages = ((records.size() - 1) / DAILY_SUMMARY_PAGE_SIZE) + 1
+  if (page < 1) { page = 1 }
+  if (page > totalPages) { page = totalPages }
+  int start = (page - 1) * DAILY_SUMMARY_PAGE_SIZE
+  int end = Math.min(start + DAILY_SUMMARY_PAGE_SIZE, records.size())
+  def pageRecords = records.subList(start, end)
+  def html = new StringBuilder()
+  html << "<p>Page ${page} of ${totalPages}</p>"
+  html << "<table style='width:100%;border-collapse:collapse;'>"
+  html << "<tr><th style='text-align:left;padding:4px;'>Date</th><th style='text-align:left;padding:4px;'>Room</th><th style='text-align:left;padding:4px;'>Mode</th><th style='text-align:right;padding:4px;'>Avg</th></tr>"
+  pageRecords.each { r ->
+    html << "<tr><td style='text-align:left;padding:4px;'>${r.date}</td><td style='text-align:left;padding:4px;'>${r.room}</td><td style='text-align:left;padding:4px;'>${r.mode}</td><td style='text-align:right;padding:4px;'>${roundBigDecimal(r.avg)}</td></tr>"
   }
   html << '</table>'
   html.toString()
