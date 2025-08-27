@@ -1,6 +1,6 @@
 /**
  *  Hubitat Flair Vents Integration
- *  Version 0.237
+ *  Version 0.238
  *
  *  Copyright 2024 Jaime Botero. All Rights Reserved
  *
@@ -145,6 +145,7 @@ preferences {
   page(name: 'mainPage')
   page(name: 'efficiencyDataPage')
   page(name: 'dabChartPage')
+  page(name: 'dabRatesTablePage')
   page(name: 'dabActivityLogPage')
 }
 
@@ -232,6 +233,12 @@ def mainPage() {
             href name: 'dabChartLink', title: '📊 View Hourly DAB Rates',
                  description: 'Visualize 24-hour average airflow rates for each room',
                  page: 'dabChartPage'
+          }
+          // Hourly DAB Rates Table Link
+          section {
+            href name: 'dabRatesTableLink', title: '📋 View DAB Rates Table',
+                 description: 'Tabular hourly DAB calculations for each room',
+                 page: 'dabRatesTablePage'
           }
           // DAB Activity Log Link
           section {
@@ -3365,6 +3372,19 @@ def dabActivityLogPage() {
   }
 }
 
+def dabRatesTablePage() {
+  dynamicPage(name: 'dabRatesTablePage', title: '📋 Hourly DAB Rates Table', install: false, uninstall: false) {
+    section {
+      input name: 'tableHvacMode', type: 'enum', title: 'HVAC Mode', required: false, submitOnChange: true,
+            options: [(COOLING): 'Cooling', (HEATING): 'Heating', 'both': 'Both']
+      paragraph buildDabRatesTable()
+    }
+    section {
+      href name: 'backToMain', title: '← Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+    }
+  }
+}
+
 def dabChartPage() {
   dynamicPage(name: 'dabChartPage', title: '📊 Hourly DAB Rates', install: false, uninstall: false) {
     section {
@@ -3427,6 +3447,44 @@ String buildDabChart() {
   def configJson = JsonOutput.toJson(config)
   def encoded = configJson.bytes.encodeBase64().toString()
   "<img src='https://quickchart.io/chart?b64=${encoded}' style='max-width:100%'>"
+}
+
+String buildDabRatesTable() {
+  def vents = getChildDevices().findAll { it.hasAttribute('percent-open') }
+  if (!vents || vents.size() == 0) {
+    return '<p>No vent data available.</p>'
+  }
+  String hvacMode = settings?.tableHvacMode ?: getThermostat1Mode() ?: atomicState?.lastHvacMode
+  if (!hvacMode || hvacMode in ['auto', 'manual']) {
+    hvacMode = atomicState?.lastHvacMode
+  }
+  hvacMode = hvacMode ?: COOLING
+  def hours = (0..23)
+  def html = new StringBuilder()
+  html << "<table style='width:100%;border-collapse:collapse;'>"
+  html << "<tr><th style='text-align:left;padding:4px;'>Room</th>"
+  hours.each { hr -> html << "<th style='text-align:right;padding:4px;'>${hr}</th>" }
+  html << '</tr>'
+  vents.each { vent ->
+    def roomId = vent.currentValue('room-id') ?: vent.getId()
+    def roomName = vent.currentValue('room-name') ?: vent.getLabel()
+    html << "<tr><td style='text-align:left;padding:4px;'>${roomName}</td>"
+    hours.each { hr ->
+      def value
+      if (hvacMode == 'both') {
+        def cooling = atomicState?.hourlyRates?.get(roomId)?.get(COOLING)?.get(hr) ?: []
+        def heating = atomicState?.hourlyRates?.get(roomId)?.get(HEATING)?.get(hr) ?: []
+        def combined = (cooling + heating).collect { it as BigDecimal }
+        value = combined ? cleanDecimalForJson(combined.sum() / combined.size()) : 0.0
+      } else {
+        value = getAverageHourlyRate(roomId, hvacMode, hr) ?: 0.0
+      }
+      html << "<td style='text-align:right;padding:4px;'>${roundBigDecimal(value)}</td>"
+    }
+    html << '</tr>'
+  }
+  html << '</table>'
+  html.toString()
 }
 
 // ------------------------------
