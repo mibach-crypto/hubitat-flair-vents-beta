@@ -2647,10 +2647,12 @@ def recordStartingTemperatures() {
   if (!atomicState.ventsByRoomId) { return }
   log "Recording starting temperatures for all rooms", 2
   atomicState.ventsByRoomId.each { roomId, ventIds ->
-    ventIds.each { ventId ->
+    for (ventId in ventIds) {
       try {
         def vent = getChildDevice(ventId)
-        if (!vent) { return }
+        if (!vent) {
+          continue
+        }
         BigDecimal currentTemp = getRoomTemp(vent)
         sendEvent(vent, [name: 'room-starting-temperature-c', value: currentTemp])
         log "Starting temperature for '${vent.currentValue('room-name')}': ${currentTemp}°C", 2
