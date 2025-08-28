@@ -2910,6 +2910,31 @@ def initializeDabHistory() {
     if (hist instanceof Map) {
       if (hist.entries == null) { hist.entries = [] }
       if (hist.hourlyRates == null) { hist.hourlyRates = [:] }
+      // Build hourly index if missing and we have entries
+      if ((hist.hourlyRates == null || hist.hourlyRates.isEmpty()) && hist.entries && hist.entries.size() > 0) {
+        def index = [:]
+        try {
+          Integer retention = (settings?.dabHistoryRetentionDays ?: DEFAULT_HISTORY_RETENTION_DAYS) as Integer
+          Long cutoff = now() - retention * 24L * 60L * 60L * 1000L
+          hist.entries.each { e ->
+            try {
+              Long ts = e[0] as Long; if (ts < cutoff) { return }
+              String r = e[1]; String m = e[2]; Integer h = (e[3] as Integer)
+              BigDecimal rate = e[4] as BigDecimal
+              def room = index[r] ?: [:]
+              def mode = room[m] ?: [:]
+              def list = (mode[h] ?: []) as List
+              list << rate
+              // Trim list to retention size
+              if (list.size() > retention) { list = list[-retention..-1] }
+              mode[h] = list
+              room[m] = mode
+              index[r] = room
+            } catch (ignore) { }
+          }
+          hist.hourlyRates = index
+        } catch (ignore) { }
+      }
       atomicState.dabHistory = hist
     }
   } catch (Exception e) {
