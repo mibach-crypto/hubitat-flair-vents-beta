@@ -3133,8 +3133,46 @@ def reindexDabHistory() {
       atomicState.dabHistory = hist
     }
   } catch (ignore) { }
-  // Recompute yesterday daily stats so summary shows data immediately next day
-  try { aggregateDailyDabStats() } catch (ignore) { }
+  // Recompute daily stats for all days within retention
+  try {
+    def tz = location?.timeZone ?: TimeZone.getTimeZone('UTC')
+    def byDay = [:] // room -> mode -> dateStr -> List<BigDecimal>
+    entries.each { e ->
+      try {
+        Long ts = e[0] as Long
+        if (ts < cutoff) { return }
+        String r = e[1]; String m = e[2]
+        BigDecimal rate = (e[4] as BigDecimal)
+        String dateStr = new Date(ts).format('yyyy-MM-dd', tz)
+        def roomMap = byDay[r] ?: [:]
+        def modeMap = roomMap[m] ?: [:]
+        def list = (modeMap[dateStr] ?: []) as List
+        list << rate
+        modeMap[dateStr] = list
+        roomMap[m] = modeMap
+        byDay[r] = roomMap
+      } catch (ignore) { }
+    }
+    def stats = [:]
+    byDay.each { roomId, modeMap ->
+      def roomStats = stats[roomId] ?: [:]
+      modeMap.each { hvacMode, dateMap ->
+        def modeStats = []
+        dateMap.keySet().sort().each { ds ->
+          def list = dateMap[ds]
+          if (list && list.size() > 0) {
+            BigDecimal sum = 0.0
+            list.each { sum += it as BigDecimal }
+            BigDecimal avg = cleanDecimalForJson(sum / list.size())
+            modeStats << [date: ds, avg: avg]
+          }
+        }
+        roomStats[hvacMode] = modeStats
+      }
+      stats[roomId] = roomStats
+    }
+    atomicState.dabDailyStats = stats
+  } catch (ignore) { }
   return [entries: entries?.size() ?: 0, rooms: rooms]
 }
 
