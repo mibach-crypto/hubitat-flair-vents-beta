@@ -155,6 +155,7 @@ preferences {
   page(name: 'dabActivityLogPage')
   page(name: 'dabHistoryPage')
   page(name: 'dabProgressPage')
+  page(name: 'quickControlsPage')
   page(name: 'diagnosticsPage')
 }
 
@@ -280,6 +281,15 @@ def mainPage() {
               try { syncVentTiles() } catch (e) { logError "Tile sync failed: ${e?.message}" } finally { app.updateSetting('syncVentTiles','') }
             }
           }
+
+          // Data smoothing and robustness (optional)
+          section('DAB Data Smoothing (optional)') {
+            input name: 'enableEwma', type: 'bool', title: 'Use EWMA smoothing for hourly averages', defaultValue: false, submitOnChange: true
+            input name: 'ewmaHalfLifeDays', type: 'number', title: 'EWMA half-life (days per hour-slot)', defaultValue: 3, submitOnChange: true
+            input name: 'enableOutlierRejection', type: 'bool', title: 'Robust outlier handling (MAD)', defaultValue: true, submitOnChange: true
+            input name: 'outlierThresholdMad', type: 'number', title: 'Outlier threshold (k × MAD)', defaultValue: 3, submitOnChange: true
+            input name: 'outlierMode', type: 'enum', title: 'Outlier mode', options: ['reject':'Reject', 'clip':'Clip to bound'], defaultValue: 'clip', submitOnChange: true
+          }
           
           // Efficiency Data Management Link
           section {
@@ -353,6 +363,12 @@ def mainPage() {
           }
           if (state.dabHistoryCheckStatus) {
             paragraph state.dabHistoryCheckStatus
+          }
+          // Quick Controls Link
+          section {
+            href name: 'quickControlsLink', title: '\u26A1 Quick Controls',
+                 description: 'Rapid per-room manual control and bulk actions',
+                 page: 'quickControlsPage'
           }
         }
       }
@@ -2952,6 +2968,79 @@ def getHourlyRates(String roomId, String hvacMode, Integer hour) {
   }
 }
 
+// -------------
+// EWMA + MAD helpers
+// -------------
+private BigDecimal getEwmaRate(String roomId, String hvacMode, Integer hour) {
+  try { return (atomicState?.dabEwma?.get(roomId)?.get(hvacMode)?.get(hour as Integer)) as BigDecimal } catch (ignore) { return null }
+}
+
+private BigDecimal updateEwmaRate(String roomId, String hvacMode, Integer hour, BigDecimal newRate) {
+  try {
+    def map = atomicState?.dabEwma ?: [:]
+    def room = map[roomId] ?: [:]
+    def mode = room[hvacMode] ?: [:]
+    BigDecimal prev = (mode[hour as Integer]) as BigDecimal
+    BigDecimal alpha = computeEwmaAlpha()
+    BigDecimal updated = (prev == null) ? newRate : (alpha * newRate + (1 - alpha) * prev)
+    mode[hour as Integer] = cleanDecimalForJson(updated)
+    room[hvacMode] = mode
+    map[roomId] = room
+    atomicState.dabEwma = map
+    return mode[hour as Integer] as BigDecimal
+  } catch (ignore) { return newRate }
+}
+
+private BigDecimal computeEwmaAlpha() {
+  try {
+    BigDecimal hlDays = (settings?.ewmaHalfLifeDays ?: 3) as BigDecimal
+    if (hlDays <= 0) { return 1.0 }
+    // One observation per day per hour-slot => N = half-life in days
+    BigDecimal N = hlDays
+    BigDecimal alpha = 1 - Math.pow(2.0, (-1.0 / N.toDouble()))
+    return (alpha as BigDecimal)
+  } catch (ignore) { return 0.2 }
+}
+
+private Map assessOutlierForHourly(String roomId, String hvacMode, Integer hour, BigDecimal candidate) {
+  def decision = [action: 'accept']
+  try {
+    def list = getHourlyRates(roomId, hvacMode, hour) ?: []
+    if (!list || list.size() < 4) { return decision }
+    // Median
+    def sorted = list.collect { it as BigDecimal }.sort()
+    BigDecimal median = sorted[sorted.size().intdiv(2)]
+    // MAD
+    def deviations = sorted.collect { (it - median).abs() }
+    def devSorted = deviations.sort()
+    BigDecimal mad = devSorted[devSorted.size().intdiv(2)]
+    BigDecimal k = ((settings?.outlierThresholdMad ?: 3) as BigDecimal)
+    if (mad == 0) {
+      // Fallback: standard deviation
+      BigDecimal mean = (sorted.sum() as BigDecimal) / sorted.size()
+      BigDecimal var = 0.0
+      sorted.each { var += (it - mean) * (it - mean) }
+      var = var / Math.max(1, sorted.size() - 1)
+      BigDecimal sd = Math.sqrt(var as double)
+      if (sd == 0) { return decision }
+      if ((candidate - mean).abs() > (k * sd)) {
+        if (settings?.outlierMode == 'reject') return [action:'reject']
+        BigDecimal bound = mean + (candidate > mean ? k * sd : -(k * sd))
+        return [action:'clip', value: bound]
+      }
+    } else {
+      // Robust scaled MAD ~ sigma
+      BigDecimal scale = 1.4826 * mad
+      if ((candidate - median).abs() > (k * scale)) {
+        if (settings?.outlierMode == 'reject') return [action:'reject']
+        BigDecimal bound = median + (candidate > median ? k * scale : -(k * scale))
+        return [action:'clip', value: bound]
+      }
+    }
+  } catch (ignore) { }
+  return decision
+}
+
 // Ensure DAB history structures are present and normalize legacy formats
 def initializeDabHistory() {
   try {
@@ -3008,6 +3097,11 @@ def initializeDabHistory() {
 // and retrieval.
 def getAverageHourlyRate(String roomId, String hvacMode, Integer hour) {
   initializeDabHistory()
+  // Prefer EWMA if enabled and available
+  if (settings?.enableEwma) {
+    def ew = getEwmaRate(roomId, hvacMode, hour)
+    if (ew != null) { return cleanDecimalForJson(ew as BigDecimal) }
+  }
   def hist = atomicState?.dabHistory
   def rates = []
   try {
@@ -3337,13 +3431,32 @@ def finalizeRoomStates(data) {
         
         def rate = rollingAverage(currentRate, newRate, percentOpen / 100, 4)
         def cleanedRate = cleanDecimalForJson(rate)
+
+        // Robust outlier handling and EWMA smoothing before persisting
+        BigDecimal persistedRate = cleanedRate
+        try {
+          if (settings?.enableOutlierRejection) {
+            def decision = assessOutlierForHourly(roomId, data.hvacMode, hour, cleanedRate)
+            if (decision?.action == 'reject') {
+              // Skip persisting, but still update device attribute below
+              persistedRate = null
+            } else if (decision?.action == 'clip' && decision?.value != null) {
+              persistedRate = cleanDecimalForJson(decision.value as BigDecimal)
+            }
+          }
+          if (persistedRate != null && settings?.enableEwma) {
+            persistedRate = updateEwmaRate(roomId, data.hvacMode, hour, persistedRate as BigDecimal)
+          }
+        } catch (ignore) { }
         sendEvent(vent, [name: ratePropName, value: cleanedRate])
         log(3, 'App', "Updating ${roomName}'s ${ratePropName} to ${roundBigDecimal(cleanedRate)}")
 
         // Store the calculated rate for this room
         roomRates[roomName] = cleanedRate
-        appendHourlyRate(roomId, data.hvacMode, hour, cleanedRate)
-        appendDabHistory(roomId, data.hvacMode, hour, cleanedRate)
+        if (persistedRate != null) {
+          appendHourlyRate(roomId, data.hvacMode, hour, persistedRate)
+          appendDabHistory(roomId, data.hvacMode, hour, persistedRate)
+        }
         
         // Track maximum rates for baseline calculations
         if (cleanedRate > 0) {
@@ -4677,4 +4790,71 @@ def asyncHttpGetWrapper(hubitat.scheduling.AsyncResponse response, Map data) {
   } catch (Exception e) {
     try { log(1, 'HTTP', "Async GET callback error: ${e?.message}") } catch (ignore) { }
   }
+}
+
+def quickControlsPage() {
+  dynamicPage(name: 'quickControlsPage', title: '\u26A1 Quick Controls', install: false, uninstall: false) {
+    section('Per-Room Percent') {
+      def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+      vents.each { v ->
+        Integer cur = (v.currentValue('percent-open') ?: v.currentValue('level') ?: 0) as int
+        def vid = v.getDeviceNetworkId()
+        paragraph "<b>${v.getLabel()}</b> — Current: ${cur}%"
+        input name: "qc_${vid}_percent", type: 'number', title: 'Set percent', required: false, submitOnChange: false
+      }
+      input name: 'applyQuickControlsNow', type: 'button', title: 'Apply All Changes', submitOnChange: true
+    }
+    section('Bulk Actions') {
+      input name: 'openAll', type: 'button', title: 'Open All 100%', submitOnChange: true
+      input name: 'closeAll', type: 'button', title: 'Close All (to floor)', submitOnChange: true
+      input name: 'setManualAll', type: 'button', title: 'Set Manual for all edited vents', submitOnChange: true
+      input name: 'setAutoAll', type: 'button', title: 'Set Auto for all vents', submitOnChange: true
+    }
+    section('Actions') {
+      if (settings?.applyQuickControlsNow) { applyQuickControls(); app.updateSetting('applyQuickControlsNow','') }
+      if (settings?.openAll) { openAllSelected(100); app.updateSetting('openAll','') }
+      if (settings?.closeAll) { openAllSelected(settings?.allowFullClose ? 0 : (settings?.minVentFloorPercent ?: 0)); app.updateSetting('closeAll','') }
+      if (settings?.setManualAll) { manualAllEditedVents(); app.updateSetting('setManualAll','') }
+      if (settings?.setAutoAll) { clearAllManualOverrides(); app.updateSetting('setAutoAll','') }
+    }
+    section {
+      href name: 'backToMain', title: '\u2795 Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+    }
+  }
+}
+
+private void applyQuickControls() {
+  def keys = settings?.keySet()?.findAll { (it as String).startsWith('qc_') && (it as String).endsWith('_percent') } ?: []
+  def overrides = atomicState?.manualOverrides ?: [:]
+  keys.each { k ->
+    def vid = (k as String).replace('qc_','').replace('_percent','')
+    def v = getChildDevice(vid)
+    if (!v) { return }
+    def val = settings[k]
+    if (val != null && val != '') {
+      Integer pct = (val as Integer)
+      overrides[vid] = pct
+      patchVent(v, pct)
+      app.updateSetting(k, '')
+    }
+  }
+  atomicState.manualOverrides = overrides
+  refreshVentTiles()
+}
+
+private void openAllSelected(Integer pct) {
+  def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+  vents.each { v -> patchVent(v, pct) }
+}
+
+private void manualAllEditedVents() {
+  def keys = settings?.keySet()?.findAll { (it as String).startsWith('qc_') && (it as String).endsWith('_percent') } ?: []
+  def overrides = atomicState?.manualOverrides ?: [:]
+  keys.each { k ->
+    def vid = (k as String).replace('qc_','').replace('_percent','')
+    def val = settings[k]
+    if (val != null && val != '') { overrides[vid] = (val as Integer) }
+  }
+  atomicState.manualOverrides = overrides
+  refreshVentTiles()
 }
