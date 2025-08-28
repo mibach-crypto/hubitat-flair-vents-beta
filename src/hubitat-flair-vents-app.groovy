@@ -3076,6 +3076,33 @@ def reindexDabHistory() {
   initializeDabHistory()
   def hist = atomicState?.dabHistory
   def entries = (hist instanceof List) ? hist : (hist?.entries ?: [])
+  // If no flat entries are present, try to derive from legacy per-room structure
+  if ((!entries || entries.size() == 0) && (hist instanceof Map)) {
+    try {
+      def legacy = []
+      def tz = location?.timeZone ?: TimeZone.getTimeZone('UTC')
+      hist.each { k, v ->
+        if (k in ['entries','hourlyRates']) { return }
+        if (v instanceof Map) {
+          v.each { hvacMode, list ->
+            if (list instanceof List) {
+              list.each { rec ->
+                try {
+                  if (rec instanceof Map && rec.date && rec.hour != null && rec.rate != null) {
+                    Date d = Date.parse('yyyy-MM-dd HH', "${rec.date} ${rec.hour}")
+                    legacy << [d.getTime(), k.toString(), hvacMode.toString(), (rec.hour as Integer), (rec.rate as BigDecimal)]
+                  }
+                } catch (ignore) { }
+              }
+            }
+          }
+        }
+      }
+      if (legacy && legacy.size() > 0) {
+        entries = legacy
+      }
+    } catch (ignore) { }
+  }
   Integer retention = (settings?.dabHistoryRetentionDays ?: DEFAULT_HISTORY_RETENTION_DAYS) as Integer
   Long cutoff = now() - retention * 24L * 60L * 60L * 1000L
   // Rebuild index from scratch
