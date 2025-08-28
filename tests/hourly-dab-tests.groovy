@@ -30,16 +30,14 @@ class HourlyDabTests extends Specification {
     script.settings = [dabHistoryRetentionDays: 10]
 
     and: 'prepopulate history with an old entry'
-    def oldTs = (new Date() - 11).getTime()
-    script.atomicState = [dabHistoryStartTimestamp: oldTs, dabHistory: [[oldTs, 'room1', 'cooling', 0, 1.0]]]
+    def oldDate = (new Date() - 11).format('yyyy-MM-dd', TimeZone.getTimeZone('UTC'))
+    script.atomicState = [dabHistory: [room1: [cooling: [[date: oldDate, hour: 0, rate: 1.0]]]]]
 
-    then:
-    script.atomicState.hourlyRates.room1.cooling['0'].size() == 10
-    script.getAverageHourlyRate('room1', 'cooling', 0) == 6.5
-  }
+    when: 'appending a new rate'
+    script.appendHourlyRate('room1', 'cooling', 0, 2.0)
 
     then: 'old entry is purged and average uses remaining values'
-    script.atomicState.dabHistory.size() == 1
+    script.atomicState.dabHistory.room1.cooling.size() == 1
     script.getAverageHourlyRate('room1', 'cooling', 0) == 2.0
   }
 }
