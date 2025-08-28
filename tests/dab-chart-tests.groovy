@@ -117,7 +117,8 @@ class DabChartTests extends Specification {
     )
     script.metaClass.getChildDevices = { -> [vent] }
     script.metaClass.getThermostat1Mode = { -> null }
-    script.metaClass.getSettings = { [chartHvacMode: 'both'] }
+    // Provide chart mode via atomicState mirror to avoid strict settings reads
+    script.metaClass.getAtomicState = { -> [chartHvacMode: 'both'] }
     script.appendHourlyRate('room-1', 'cooling', 0, 1.0)
     script.appendHourlyRate('room-1', 'heating', 0, 3.0)
 

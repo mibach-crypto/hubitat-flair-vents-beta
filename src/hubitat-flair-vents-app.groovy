@@ -3116,19 +3116,13 @@ private Integer getRetentionDays() {
 // CI-safe read for DAB enabled toggle
 private boolean isDabEnabled() {
   try {
-    // Prefer explicit CI/test-provided settings map if available
-    try {
-      def ci = this.invokeMethod('getSettings', null)
-      if (ci != null && ci instanceof Map && ci.containsKey('dabEnabled')) {
-        return ci.dabEnabled == true
-      }
-    } catch (ignore) { }
-    // Fall back to Hubitat settings container (only registered inputs)
+    // Read from registered inputs
     def st = null
     try { st = settings } catch (ignore) { }
     def val = st?.dabEnabled
     if (val != null) { return val == true }
   } catch (ignore) { }
+  // Fallback to mirrored state (used by CI/tests)
   return (atomicState?.dabEnabled == true)
 }
 
@@ -4669,18 +4663,16 @@ def dabDailySummaryPage() {
 
 String buildDabChart() {
   def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
-  // CI-safe: prefer explicitly selected chart mode from settings; fall back to thermostat/last mode
+  // Prefer explicitly selected chart mode from settings; fall back to mirrors/thermostat/last mode
   String hvacMode
   try {
     def st = null
     try { st = settings } catch (ignore) { }
-    if (!st) {
-      try { st = this.invokeMethod('getSettings', null) } catch (ignore) { }
-    }
     hvacMode = st?.chartHvacMode as String
   } catch (ignore) {
     hvacMode = null
   }
+  if (!hvacMode) { try { hvacMode = (atomicState?.chartHvacMode as String) } catch (ignore) { } }
   if (!hvacMode) { hvacMode = getThermostat1Mode() ?: atomicState?.lastHvacMode }
   if (hvacMode) { hvacMode = hvacMode.toString().toLowerCase() }
   if (!hvacMode || hvacMode in ['auto', 'manual']) { hvacMode = atomicState?.lastHvacMode }
