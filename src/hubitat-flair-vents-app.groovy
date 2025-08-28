@@ -3383,17 +3383,64 @@ def reindexDabHistory() {
 }
 
 def appendDabActivityLog(String message) {
-  def list = atomicState?.dabActivityLog ?: []
-  String ts = new Date().format('yyyy-MM-dd HH:mm:ss', location?.timeZone ?: TimeZone.getTimeZone('UTC'))
+  def tz = location?.timeZone ?: TimeZone.getTimeZone('UTC')
+  String ts = new Date().format('yyyy-MM-dd HH:mm:ss', tz)
   Long start = atomicState?.dabHistoryStartTimestamp
   if (!start) {
     start = now()
-    atomicState.dabHistoryStartTimestamp = start
+    try { atomicState.dabHistoryStartTimestamp = start } catch (ignore) { }
   }
-  String startStr = new Date(start).format('yyyy-MM-dd HH:mm:ss', location?.timeZone ?: TimeZone.getTimeZone('UTC'))
+  String startStr = new Date(start).format('yyyy-MM-dd HH:mm:ss', tz)
+
+  // Maintain legacy string log
+  def list = atomicState?.dabActivityLog ?: []
   list << "${ts} (since ${startStr}) - ${message}"
   if (list.size() > 100) { list = list[-100..-1] }
   atomicState.dabActivityLog = list
+
+  // Maintain structured archive for tests/export
+  def archive = atomicState?.dabHistoryArchive ?: []
+  archive << [type: 'activity', ts: ts, since: startStr, message: message]
+  if (archive.size() > 1000) { archive = archive[-1000..-1] }
+  try { atomicState.dabHistoryArchive = archive } catch (ignore) { }
+}
+
+// Read combined DAB history archive (structured). Falls back to in-memory activity log.
+def readDabHistoryArchive() {
+  def archive = atomicState?.dabHistoryArchive ?: []
+  if (archive && archive instanceof List && archive.size() > 0) { return archive }
+  def list = atomicState?.dabActivityLog ?: []
+  if (list && list instanceof List) {
+    try {
+      return list.collect { String s ->
+        def msg = s.contains(' - ') ? s.split(' - ', 2)[1] : s
+        [type: 'activity', message: msg]
+      }
+    } catch (ignore) { }
+  }
+  return []
+}
+
+// Verify legacy date->hour history completeness; log missing hours.
+def checkDabHistoryIntegrity() {
+  try {
+    def hist = atomicState?.dabHistory
+    if (!(hist instanceof Map)) { return }
+    // Detect legacy map keyed by date strings
+    hist.each { k, v ->
+      if (!(k in ['entries','hourlyRates']) && (v instanceof Map)) {
+        String dateStr = k.toString()
+        def hoursMap = v
+        (0..23).each { hr ->
+          if (!hoursMap.containsKey(hr)) {
+            String msg = "Integrity: date ${dateStr} missing hour ${hr}"
+            logWarn msg, 'DAB'
+            appendDabActivityLog msg
+          }
+        }
+      }
+    }
+  } catch (ignore) { }
 }
 
 def recordHistoryError(String message) {
