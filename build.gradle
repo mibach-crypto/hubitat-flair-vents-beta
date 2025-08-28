@@ -128,10 +128,10 @@ jacocoTestCoverageVerification {
 repositories {
     mavenCentral()
 
-    // hubitat_ci repository
-    maven {
-        url 'https://biocomp.pkgs.visualstudio.com/HubitatCiRelease/_packaging/hubitat_ci_feed@Release/maven/v1'
-    }
+    // Optional Azure DevOps feed (not required when using Maven Central artifact)
+    // maven {
+    //     url 'https://biocomp.pkgs.visualstudio.com/HubitatCiRelease/_packaging/hubitat_ci_feed@Release/maven/v1'
+    // }
 }
 
 dependencies {
@@ -142,7 +142,8 @@ dependencies {
 
     testImplementation 'org.codehaus.groovy:groovy-all:2.5.4' // groovy itself
     testImplementation "org.spockframework:spock-core:1.2-groovy-2.5" // spock framework
-    testImplementation "me.biocomp.hubitat_ci:hubitat_ci:0.17" // hubita_ci
+    // Use Maven Central coordinates for hubitat_ci to avoid private feed
+    testImplementation 'me.biocomp:hubitat_ci:1.2.1' // hubitat_ci
     testImplementation 'org.codehaus.groovy.modules.http-builder:http-builder:0.7.1' // http builder for testing
     testImplementation 'net.bytebuddy:byte-buddy:1.12.18' // for mocking
 }

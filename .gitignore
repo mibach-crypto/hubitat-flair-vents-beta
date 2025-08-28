@@ -8,3 +8,4 @@ memory-bank
 .vscode/
 .hubitat/
 data/*.json
+/.tools/

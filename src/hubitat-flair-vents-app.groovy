@@ -174,7 +174,7 @@ def mainPage() {
 
       if (validation.errors.clientId) {
         paragraph "<span style='color: red;'>${validation.errors.clientId}</span>"
-      }
+      
       if (validation.errors.clientSecret) {
         paragraph "<span style='color: red;'>${validation.errors.clientSecret}</span>"
       }
@@ -200,7 +200,7 @@ def mainPage() {
         } else {
           paragraph "<span style='color: orange;'>Ready to authenticate...</span>"
         }
-      }
+
     }
 
     if (state.flairAccessToken) {
@@ -216,7 +216,7 @@ def mainPage() {
             paragraph "<span style='color: red;'>${info.name ?: id} expected ${info.target}% but reported ${info.actual}%</span>"
           }
         }
-      }
+      // Removed stray brace to fix if/else structure
 
       section('<h2>Dynamic Airflow Balancing</h2>') {
         input name: 'dabEnabled', type: 'bool', title: 'Use Dynamic Airflow Balancing', defaultValue: false, submitOnChange: true
@@ -322,7 +322,7 @@ def mainPage() {
             paragraph "<span style='color: red;'>Room mapping required for ${child.getLabel()}</span>"
           }
         }
-      }
+
 
       section('Vent Options') {
         input name: 'ventGranularity', type: 'enum', title: 'Vent Adjustment Granularity (in %)',
