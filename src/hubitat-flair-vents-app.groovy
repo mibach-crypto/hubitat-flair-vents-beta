@@ -3903,7 +3903,7 @@ def efficiencyDataPage() {
   }
 }
 
-def dabHistoryPage() {
+/* DUPLICATE REMOVED def dabHistoryPage() {
   dynamicPage(name: 'dabHistoryPage', title: '📚 DAB History', install: false, uninstall: false) {
     section {
       def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
@@ -3930,7 +3930,7 @@ def dabHistoryPage() {
       href name: 'backToMain', title: '← Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
     }
   }
-}
+} */
 
 def dabActivityLogPage() {
   dynamicPage(name: 'dabActivityLogPage', title: '📘 DAB Activity Log', install: false, uninstall: false) {
