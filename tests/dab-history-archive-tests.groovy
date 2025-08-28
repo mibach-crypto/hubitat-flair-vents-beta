@@ -26,11 +26,16 @@ class DabHistoryArchiveTests extends Specification {
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
       _ * getLog() >> log
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
-    script.location = [timeZone: TimeZone.getTimeZone('UTC')]
+    // CI-safe: inject location via getter rather than assigning
+    script.metaClass.getLocation = { -> [timeZone: TimeZone.getTimeZone('UTC')] }
+    // CI-safe: provide atomicState map via getter
+    def ast = [:]
+    script.metaClass.getAtomicState = { -> ast }
 
     when:
     script.appendDabActivityLog('testing archive')

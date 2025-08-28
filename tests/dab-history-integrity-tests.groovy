@@ -21,15 +21,19 @@ class DabHistoryIntegrityTests extends Specification {
   def "integrity check logs missing hours"() {
     setup:
       final log = new CapturingLog()
+      // CI-safe: mock atomicState access on executor to return our map
+      def ast = [dabHistory: ['2024-01-01':[0:[rate:1], 2:[rate:2]]]]
       AppExecutor executorApi = Mock {
         _ * getState() >> [:]
+        _ * getAtomicState() >> ast
         _ * getLog() >> log
       }
       def sandbox = new HubitatAppSandbox(APP_FILE)
       def script = sandbox.run('api': executorApi,
                                'validationFlags': VALIDATION_FLAGS,
                                'userSettingValues': [debugLevel:1])
-      script.atomicState.dabHistory = ['2024-01-01':[0:[rate:1], 2:[rate:2]]]
+      // Also expose atomicState via meta getter for direct property calls
+      script.metaClass.getAtomicState = { -> ast }
 
     when:
       script.checkDabHistoryIntegrity()

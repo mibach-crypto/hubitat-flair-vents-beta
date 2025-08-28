@@ -870,9 +870,9 @@ private void log(int level, String module, String msg, String correlationId = nu
   if (settingsLevel == 0 || level < settingsLevel) { return }
 
   String prefix = correlationId ? "[${module}|${correlationId}]" : "[${module}]"
-  log.debug "${prefix} ${msg}"
-
-  if (settings?.verboseLogging) {
+  log.debug "${prefix} ${msg}"  boolean __verbose = false
+  try { __verbose = (atomicState?.verboseLogging == true) } catch (ignore) { }
+  if (__verbose) {
     def tz = location?.timeZone ?: TimeZone.getTimeZone('UTC')
     def entry = [ts: new Date().format("yyyy-MM-dd'T'HH:mm:ssZ", tz),
                  level: level, module: module, cid: correlationId, msg: msg]
@@ -1328,8 +1328,9 @@ private void logError(String msg, String module = 'App', String correlationId = 
   int settingsLevel = (settings?.debugLevel as Integer) ?: 0
   if (settingsLevel > 0) {
     String prefix = correlationId ? "[${module}|${correlationId}]" : "[${module}]"
-    log.error "${prefix} ${msg}"
-    if (settings?.verboseLogging) {
+    log.error "${prefix} ${msg}"  boolean __verbose = false
+  try { __verbose = (atomicState?.verboseLogging == true) } catch (ignore) { }
+  if (__verbose) {
       def tz = location?.timeZone ?: TimeZone.getTimeZone('UTC')
       def entry = [ts: new Date().format("yyyy-MM-dd'T'HH:mm:ssZ", tz),
                    level: 0, module: module, cid: correlationId, msg: msg]
@@ -1352,7 +1353,9 @@ private void logWarn(String msg, String module = 'App', String correlationId = n
   if (settingsLevel > 0) {
     String prefix = correlationId ? "[${module}|${correlationId}]" : "[${module}]"
     log?.warn "${prefix} ${msg}"
-    if (settings?.verboseLogging) {
+    boolean __verbose = false
+    try { __verbose = (atomicState?.verboseLogging == true) } catch (ignore) { }
+    if (__verbose) {
       def tz = location?.timeZone ?: TimeZone.getTimeZone('UTC')
       def entry = [ts: new Date().format("yyyy-MM-dd'T'HH:mm:ssZ", tz),
                    level: 1, module: module, cid: correlationId, msg: msg]
@@ -3237,24 +3240,51 @@ def aggregateDailyDabStats() {
       entries = (hist instanceof List) ? hist : (hist?.entries ?: [])
     } catch (ignore) { }
   }
-  if (!entries) { return }
+  // If still no flat entries, compute aggregation directly from legacy map
   def tz = location?.timeZone ?: TimeZone.getTimeZone('UTC')
   String targetDate = (new Date() - 1).format('yyyy-MM-dd', tz)
   def stats = atomicState?.dabDailyStats ?: [:]
   def agg = [:]
-  entries.each { e ->
-    try {
-      Date d = new Date(e[0] as Long)
-      String ds = d.format('yyyy-MM-dd', tz)
-      if (ds != targetDate) { return }
-      String r = e[1]; String m = e[2]
-      BigDecimal rate = (e[4] as BigDecimal)
-      def roomMap = agg[r] ?: [:]
-      def list = (roomMap[m] ?: []) as List
-      list << rate
-      roomMap[m] = list
-      agg[r] = roomMap
-    } catch (ignore) { }
+  if (!entries || entries.size() == 0) {
+    if (hist instanceof Map) {
+      try {
+        hist.each { roomId, modeOrMeta ->
+          if (roomId in ['entries','hourlyRates']) { return }
+          if (!(modeOrMeta instanceof Map)) { return }
+          modeOrMeta.each { hvacMode, recList ->
+            if (!(recList instanceof List)) { return }
+            recList.each { rec ->
+              try {
+                if (rec instanceof Map && rec.date && rec.hour != null && rec.rate != null) {
+                  if (rec.date.toString() != targetDate) { return }
+                  def roomMap = agg[roomId.toString()] ?: [:]
+                  def list = (roomMap[hvacMode.toString()] ?: []) as List
+                  list << (rec.rate as BigDecimal)
+                  roomMap[hvacMode.toString()] = list
+                  agg[roomId.toString()] = roomMap
+                }
+              } catch (ignore2) { }
+            }
+          }
+        }
+      } catch (ignore) { }
+    }
+  } else {
+    // Use flat entries
+    entries.each { e ->
+      try {
+        Date d = new Date(e[0] as Long)
+        String ds = d.format('yyyy-MM-dd', tz)
+        if (ds != targetDate) { return }
+        String r = e[1]; String m = e[2]
+        BigDecimal rate = (e[4] as BigDecimal)
+        def roomMap = agg[r] ?: [:]
+        def list = (roomMap[m] ?: []) as List
+        list << rate
+        roomMap[m] = list
+        agg[r] = roomMap
+      } catch (ignore) { }
+    }
   }
   agg.each { roomId, modeMap ->
     modeMap.each { hvacMode, list ->
@@ -4177,6 +4207,8 @@ private void updateTileForVent(device) {
     def temp = device.currentValue('room-current-temperature-c')
     def name = device.currentValue('room-name') ?: device.getLabel()
     def mode = atomicState?.manualOverrides?.containsKey(ventId) ? 'manual' : 'auto'
+    def voltage = device.currentValue('voltage') ?: device.currentValue('system-voltage')
+    def battery = device.currentValue('battery')
     def html = new StringBuilder()
     html << "<div style='font-family:sans-serif;padding:6px'>"
     html << "<div style='font-weight:bold;font-size:14px;margin-bottom:4px'>${name}</div>"
@@ -4186,6 +4218,8 @@ private void updateTileForVent(device) {
     html << "</div>"
     html << "<div style='margin-top:6px;font-size:12px;color:#111'>Vent: <b>${level}%</b>"
     if (temp != null) { html << " &nbsp; • &nbsp; Temp: <b>${roundBigDecimal(temp)}</b>°C" }
+    if (battery != null) { html << " &nbsp; • &nbsp; Battery: <b>${battery}%</b>" }
+    if (voltage != null) { html << " &nbsp; • &nbsp; V: <b>${roundBigDecimal(voltage)}</b>" }
     html << " &nbsp; • &nbsp; Mode: <b>${mode}</b></div>"
     html << "</div>"
     sendEvent(tile, [name: 'html', value: html.toString()])
@@ -4621,9 +4655,11 @@ def dabHistoryPage() {
       String mode = settings?.historyHvacMode ?: 'both'
       List entries = []
       history.each { roomId, modeMap ->
+        if (!(modeMap instanceof Map)) { return }
         modeMap.each { hvacMode, records ->
+          if (!(records instanceof List)) { return }
           if (mode == 'both' || hvacMode == mode) {
-            records.each { rec ->
+            records.findAll { rec -> rec instanceof Map && rec.date && rec.hour != null && rec.rate != null }.each { rec ->
               if ((!start || rec.date >= start) && (!end || rec.date <= end)) {
                 entries << [date: rec.date, hour: (rec.hour as Integer), room: roomNames[roomId] ?: roomId, hvacMode: hvacMode, rate: rec.rate]
               }
@@ -4929,6 +4965,8 @@ String buildDabProgressTable() {
 }
 
 String buildDabDailySummaryTable() {
+  def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+  Map roomNames = vents.collectEntries { v -> [(v.currentValue('room-id') ?: v.getId()): (v.currentValue('room-name') ?: v.getLabel())] }
   def stats = atomicState?.dabDailyStats ?: [:]
   if (!stats || (stats instanceof Map && stats.isEmpty())) {
     // Fallback: compute daily stats on the fly from entries if persisted stats are unavailable
@@ -4973,11 +5011,114 @@ String buildDabDailySummaryTable() {
         }
         stats = rebuilt
       }
+      // Secondary fallback: support legacy per-room -> mode -> [ {date, hour, rate}, ... ] structure
+      if ((!stats || (stats instanceof Map && stats.isEmpty())) && (hist instanceof Map)) {
+        def tz = location?.timeZone ?: TimeZone.getTimeZone('UTC')
+        def byDay = [:] // room -> mode -> dateStr -> List<BigDecimal>
+        try {
+          hist.each { roomId, modeOrMeta ->
+            // Skip known meta keys
+            if (roomId in ['entries','hourlyRates']) { return }
+            if (!(modeOrMeta instanceof Map)) { return }
+            modeOrMeta.each { hvacMode, recList ->
+              if (!(recList instanceof List)) { return }
+              recList.each { rec ->
+                try {
+                  if (!(rec instanceof Map)) { return }
+                  if (rec.date && rec.hour != null && rec.rate != null) {
+                    String dateStr = rec.date.toString()
+                    def roomMap = byDay[roomId.toString()] ?: [:]
+                    def modeMap = roomMap[hvacMode.toString()] ?: [:]
+                    def list = (modeMap[dateStr] ?: []) as List
+                    list << (rec.rate as BigDecimal)
+                    modeMap[dateStr] = list
+                    roomMap[hvacMode.toString()] = modeMap
+                    byDay[roomId.toString()] = roomMap
+                  }
+                } catch (ignore2) { }
+              }
+            }
+          }
+        } catch (ignore) { }
+        if (byDay && !byDay.isEmpty()) {
+          def rebuilt = [:]
+          byDay.each { roomId, modeMap ->
+            def roomStats = rebuilt[roomId] ?: [:]
+            modeMap.each { hvacMode, dateMap ->
+              def modeStats = []
+              dateMap.keySet().sort().each { ds ->
+                def list = dateMap[ds]
+                if (list && list.size() > 0) {
+                  BigDecimal sum = 0.0
+                  list.each { sum += it as BigDecimal }
+                  BigDecimal avg = cleanDecimalForJson(sum / list.size())
+                  modeStats << [date: ds, avg: avg]
+                }
+              }
+              roomStats[hvacMode] = modeStats
+            }
+            rebuilt[roomId] = roomStats
+          }
+          stats = rebuilt
+        }
+      }
     } catch (ignore) { }
   }
-  if (!stats || (stats instanceof Map && stats.isEmpty())) { return '<p>No daily statistics available.</p>' }
-  def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
-  Map roomNames = vents.collectEntries { v -> [(v.currentValue('room-id') ?: v.getId()): (v.currentValue('room-name') ?: v.getLabel())] }
+  if (!stats || (stats instanceof Map && stats.isEmpty())) {
+    // As a last resort, compute directly from legacy map if present
+    def hist = atomicState?.dabHistory
+    def legacyRecords = []
+    if (hist instanceof Map) {
+      try {
+        hist.each { roomId, modeOrMeta ->
+          if (roomId in ['entries','hourlyRates']) { return }
+          if (!(modeOrMeta instanceof Map)) { return }
+          modeOrMeta.each { hvacMode, recList ->
+            if (!(recList instanceof List)) { return }
+            // Group by date and average values
+            def byDate = [:]
+            recList.each { rec ->
+              try {
+                if (rec instanceof Map && rec.date && rec.rate != null) {
+                  String ds = rec.date.toString()
+                  def list = (byDate[ds] ?: []) as List
+                  list << (rec.rate as BigDecimal)
+                  byDate[ds] = list
+                }
+              } catch (ignore) { }
+            }
+            byDate.keySet().each { ds ->
+              def list = byDate[ds]
+              if (list && list.size() > 0) {
+                BigDecimal sum = 0.0
+                list.each { sum += it as BigDecimal }
+                BigDecimal avg = cleanDecimalForJson(sum / list.size())
+                legacyRecords << [date: ds, room: roomNames[roomId] ?: roomId, mode: hvacMode, avg: avg]
+              }
+            }
+          }
+        }
+      } catch (ignore) { }
+    }
+    if (!legacyRecords || legacyRecords.isEmpty()) { return '<p>No daily statistics available.</p>' }
+    legacyRecords.sort { a, b -> b.date <=> a.date }
+    int page = (settings?.dailySummaryPage ?: 1) as int
+    int totalPages = ((legacyRecords.size() - 1) / DAILY_SUMMARY_PAGE_SIZE) + 1
+    if (page < 1) { page = 1 }
+    if (page > totalPages) { page = totalPages }
+    int start = (page - 1) * DAILY_SUMMARY_PAGE_SIZE
+    int end = Math.min(start + DAILY_SUMMARY_PAGE_SIZE, legacyRecords.size())
+    def pageRecords = legacyRecords.subList(start, end)
+    def htmlLegacy = new StringBuilder()
+    htmlLegacy << "<p>Page ${page} of ${totalPages}</p>"
+    htmlLegacy << "<table style='width:100%;border-collapse:collapse;'>"
+    htmlLegacy << "<tr><th style='text-align:left;padding:4px;'>Date</th><th style='text-align:left;padding:4px;'>Room</th><th style='text-align:left;padding:4px;'>Mode</th><th style='text-align:right;padding:4px;'>Avg</th></tr>"
+    pageRecords.each { r ->
+      htmlLegacy << "<tr><td style='text-align:left;padding:4px;'>${r.date}</td><td style='text-align:left;padding:4px;'>${r.room}</td><td style='text-align:left;padding:4px;'>${r.mode}</td><td style='text-align:right;padding:4px;'>${roundBigDecimal(r.avg)}</td></tr>"
+    }
+    htmlLegacy << '</table>'
+    return htmlLegacy.toString()
+  }
   def records = []
   stats.each { roomId, modeMap ->
     modeMap.each { hvacMode, list ->
@@ -5037,7 +5178,7 @@ def quickControlsPage() {
       vents.each { v ->
         Integer cur = (v.currentValue('percent-open') ?: v.currentValue('level') ?: 0) as int
         def vid = v.getDeviceNetworkId()
-        paragraph "<b>${v.getLabel()}</b> — Current: ${cur}%"
+        paragraph "<b></b> � Current: %"
         input name: "qc_${vid}_percent", type: 'number', title: 'Set percent', required: false, submitOnChange: false
       }
       input name: 'applyQuickControlsNow', type: 'button', title: 'Apply All Changes', submitOnChange: true
@@ -5096,4 +5237,5 @@ private void manualAllEditedVents() {
   atomicState.manualOverrides = overrides
   refreshVentTiles()
 }
+
 
