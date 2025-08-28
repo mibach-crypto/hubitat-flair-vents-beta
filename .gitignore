@@ -9,3 +9,10 @@ memory-bank
 .hubitat/
 data/*.json
 /.tools/
+.gradle-bin/
+.gradle/
+# Node/npm caches in case tooling creeps in later
+node_modules/
+# OS/editor noise
+.DS_Store
+Thumbs.db
