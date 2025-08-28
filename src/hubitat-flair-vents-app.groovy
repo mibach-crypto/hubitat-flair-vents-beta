@@ -322,12 +322,14 @@ def mainPage() {
       }
       // Only show vents in DAB section, not pucks
       def vents = getChildDevices().findAll { it.hasAttribute('percent-open') }
+      section('Thermostat Mapping') {
         for (child in vents) {
           input name: "vent${child.getId()}Thermostat", type: 'capability.temperatureMeasurement', title: "Choose Thermostat for ${child.getLabel()}", multiple: false, required: true
           if (missingMappings.contains(child.getLabel())) {
             paragraph "<span style='color: red;'>Room mapping required for ${child.getLabel()}</span>"
           }
         }
+      }
 
 
       section('Vent Options') {
@@ -4227,3 +4229,23 @@ String buildDabDailySummaryTable() {
 // ------------------------------
 // End of Core Functions
 // ------------------------------
+
+
+// ------------------------------
+// HTTP Async Callback Shims
+// ------------------------------
+
+// Some async HTTP calls are configured to use 'asyncHttpGetWrapper' as callback.
+// Provide a safe generic handler to avoid MissingMethodException and to centralize logging.
+// Hubitat passes (hubitat.scheduling.AsyncResponse response, data) where 'data' is the map
+// provided in the original asynchttpGet options.
+def asyncHttpGetWrapper(hubitat.scheduling.AsyncResponse response, Map data) {
+  try {
+    // Minimal defensive logging without assuming specific response API
+    def code = null
+    try { code = response?.status } catch (ignore) { }
+    log(3, 'HTTP', "Async GET callback for ${data?.uri ?: ''}${data?.path ?: ''} status=${code}")
+  } catch (Exception e) {
+    try { log(1, 'HTTP', "Async GET callback error: ${e?.message}") } catch (ignore) { }
+  }
+}
