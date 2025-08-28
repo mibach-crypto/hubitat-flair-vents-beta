@@ -325,7 +325,7 @@ def mainPage() {
       section('Thermostat Mapping') {
         for (child in vents) {
           input name: "vent${child.getId()}Thermostat", type: 'capability.temperatureMeasurement', title: "Choose Thermostat for ${child.getLabel()}", multiple: false, required: true
-          if (missingMappings.contains(child.getLabel())) {
+          if (validation.errors?.roomMappings?.contains(child.getLabel())) {
             paragraph "<span style='color: red;'>Room mapping required for ${child.getLabel()}</span>"
           }
         }
