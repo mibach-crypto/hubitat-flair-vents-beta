@@ -234,7 +234,7 @@ def mainPage() {
       section('<h2>Dynamic Airflow Balancing</h2>') {
         input name: 'dabEnabled', type: 'bool', title: 'Use Dynamic Airflow Balancing', defaultValue: false, submitOnChange: true
         if (dabEnabled) {
-          input name: 'thermostat1', type: 'capability.thermostat', title: 'Choose Thermostat for Vents', multiple: false, required: true
+          input name: 'thermostat1', type: 'capability.thermostat', title: 'Choose Thermostat for Vents', multiple: false, required: false
           input name: 'thermostat1TempUnit', type: 'enum', title: 'Units used by Thermostat', defaultValue: 2,
                 options: [1: 'Celsius (Â°C)', 2: 'Fahrenheit (Â°F)']
           input name: 'thermostat1AdditionalStandardVents', type: 'number', title: 'Count of conventional Vents', defaultValue: 0, submitOnChange: true
@@ -244,6 +244,8 @@ def mainPage() {
           input name: 'thermostat1CloseInactiveRooms', type: 'bool', title: 'Close vents on inactive rooms', defaultValue: true, submitOnChange: true
           input name: 'fanOnlyOpenAllVents', type: 'bool', title: 'Fan-only: open all vents to 100%', defaultValue: true, submitOnChange: true
           input name: 'dabHistoryRetentionDays', type: 'number', title: 'DAB history retention (days)', defaultValue: DEFAULT_HISTORY_RETENTION_DAYS, submitOnChange: true
+          input name: 'defaultCoolingSetpointC', type: 'number', title: 'Default cooling setpoint (°C)', required: false, submitOnChange: true
+          input name: 'defaultHeatingSetpointC', type: 'number', title: 'Default heating setpoint (°C)', required: false, submitOnChange: true
 
           if (settings.dabHistoryRetentionDays && settings.dabHistoryRetentionDays < 1) {
             app.updateSetting('dabHistoryRetentionDays', 1)
@@ -662,7 +664,13 @@ def initialize() {
     try { unschedule('refreshVentTiles') } catch (ignore) { }
   }
 
-  if (settings?.nightOverrideEnable) {
+  // Subscribe to thermostat events if configured
+  if (settings?.thermostat1) {
+    try {
+      subscribe(settings.thermostat1, 'thermostatOperatingState', 'thermostat1ChangeStateHandler')
+      subscribe(settings.thermostat1, 'temperature', 'thermostat1ChangeTemp')
+    } catch (e) { log(2, 'App', "Thermostat subscription error: ${e?.message}") }
+  }  if (settings?.nightOverrideEnable) {
     try {
       if (settings?.nightOverrideStart) { schedule(settings.nightOverrideStart, 'activateNightOverride') }
       if (settings?.nightOverrideEnd) { schedule(settings.nightOverrideEnd, 'deactivateNightOverride') }
@@ -721,6 +729,7 @@ private atomicStateUpdate(String stateKey, String key, value) {
 }
 
 def getThermostatSetpoint(String hvacMode) {
+def getThermostatSetpoint(String hvacMode) {
   def thermostat = settings?.thermostat1
   BigDecimal setpoint
 
@@ -735,10 +744,26 @@ def getThermostatSetpoint(String hvacMode) {
     setpoint = thermostat?.currentValue('thermostatSetpoint')
   }
   if (setpoint == null) {
-    logError 'Thermostat has no setpoint property, please choose a valid thermostat'
-    return null
+    // Fallbacks for duct-temp only setups: per-room setpoints or default inputs
+    try {
+      def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+      def vals = vents.collect { it.currentValue('room-set-point-c') }.findAll { it != null }
+      if (vals && vals.size()>0) {
+        // Use median of room setpoints
+        def sorted = vals.collect { it as BigDecimal }.sort()
+        setpoint = sorted[sorted.size().intdiv(2)]
+      }
+    } catch (ignore) { }
+    if (setpoint == null) {
+      if (hvacMode == COOLING) { setpoint = settings?.defaultCoolingSetpointC as BigDecimal }
+      else { setpoint = settings?.defaultHeatingSetpointC as BigDecimal }
+    }
+    if (setpoint == null) {
+      logError 'Thermostat has no setpoint and no defaults configured; please set defaults or a thermostat'
+      return null
+    }
   }
-  if (settings.thermostat1TempUnit == '2') {
+  if (settings.thermostat1TempUnit == '2' && thermostat) {
     setpoint = convertFahrenheitToCentigrade(setpoint)
   }
   return setpoint
@@ -5178,6 +5203,14 @@ def asyncHttpGetWrapper(response, Map data) {
 
 def quickControlsPage() {
   dynamicPage(name: 'quickControlsPage', title: '\u26A1 Quick Controls', install: false, uninstall: false) {
+    section('Authentication') {
+      if (!state.flairAccessToken) {
+        paragraph 'Not authenticated to Flair yet. Attempting authentication; please retry actions in a few seconds.'
+        try { autoAuthenticate() } catch (ignore) { }
+      } else {
+        paragraph 'Authenticated with Flair API.'
+      }
+    }
     section('Per-Room Percent') {
       def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
       vents.each { v ->
@@ -5251,5 +5284,6 @@ private void manualAllEditedVents() {
   atomicState.manualOverrides = overrides
   refreshVentTiles()
 }
+
 
 
