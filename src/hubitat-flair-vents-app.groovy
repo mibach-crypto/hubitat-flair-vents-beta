@@ -175,6 +175,7 @@ def mainPage() {
       if (validation.errors.clientId) {
         paragraph "<span style='color: red;'>${validation.errors.clientId}</span>"
       }
+      
       if (validation.errors.clientSecret) {
         paragraph "<span style='color: red;'>${validation.errors.clientSecret}</span>"
       }
@@ -187,7 +188,7 @@ def mainPage() {
         }
 
         if (state.flairAccessToken && !state.authError) {
-          paragraph "<span style='color: green;'>✓ Authenticated successfully</span>"
+          paragraph "<span style='color: green;'>Authenticated successfully</span>"
         } else if (state.authError && !state.authInProgress) {
           section {
             paragraph "<span style='color: red;'>${state.authError}</span>"
@@ -195,12 +196,12 @@ def mainPage() {
             paragraph "<small>If authentication continues to fail, verify your credentials are correct and try again.</small>"
           }
         } else if (state.authInProgress) {
-          paragraph "<span style='color: orange;'>⏳ Authenticating... Please wait.</span>"
+          paragraph "<span style='color: orange;'>Authenticating... Please wait.</span>"
           paragraph "<small>This may take 10-15 seconds. The page will refresh automatically when complete.</small>"
         } else {
           paragraph "<span style='color: orange;'>Ready to authenticate...</span>"
         }
-      }
+
     }
 
     if (state.flairAccessToken) {
@@ -216,7 +217,10 @@ def mainPage() {
             paragraph "<span style='color: red;'>${info.name ?: id} expected ${info.target}% but reported ${info.actual}%</span>"
           }
         }
+        // Close discrepancies block before proceeding to DAB section
       }
+
+      // Removed stray brace to fix if/else structure
 
       section('<h2>Dynamic Airflow Balancing</h2>') {
         input name: 'dabEnabled', type: 'bool', title: 'Use Dynamic Airflow Balancing', defaultValue: false, submitOnChange: true
@@ -229,7 +233,7 @@ def mainPage() {
                     'with the chosen thermostat, excluding Flair vents. This ensures the combined airflow does not drop ' +
                     'below a specified percent to prevent HVAC issues.</small>'
           input name: 'thermostat1CloseInactiveRooms', type: 'bool', title: 'Close vents on inactive rooms', defaultValue: true, submitOnChange: true
-          input name: 'fanOnlyOpenAllVents', type: 'bool', title: 'Fan-only → open all vents 100 %', defaultValue: true, submitOnChange: true
+          input name: 'fanOnlyOpenAllVents', type: 'bool', title: 'Fan-only: open all vents to 100%', defaultValue: true, submitOnChange: true
           input name: 'dabHistoryRetentionDays', type: 'number', title: 'DAB history retention (days)', defaultValue: DEFAULT_HISTORY_RETENTION_DAYS, submitOnChange: true
 
           if (settings.dabHistoryRetentionDays && settings.dabHistoryRetentionDays < 1) {
@@ -322,7 +326,7 @@ def mainPage() {
             paragraph "<span style='color: red;'>Room mapping required for ${child.getLabel()}</span>"
           }
         }
-      }
+
 
       section('Vent Options') {
         input name: 'ventGranularity', type: 'enum', title: 'Vent Adjustment Granularity (in %)',

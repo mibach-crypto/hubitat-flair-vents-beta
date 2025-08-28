@@ -34,6 +34,17 @@ sourceSets {
     }
 }
 
+// Skip compiling main app sources; tests load app Groovy via Hubitat CI sandbox
+tasks.named('compileGroovy') {
+    enabled = false
+}
+
+// Increase Groovy compiler verbosity to surface errors
+tasks.withType(GroovyCompile).configureEach {
+    groovyOptions.verbose = true
+    groovyOptions.fork = true
+}
+
 // JaCoCo configuration for code coverage with dynamic loading support
 jacoco {
     toolVersion = "0.8.8"
@@ -128,10 +139,10 @@ jacocoTestCoverageVerification {
 repositories {
     mavenCentral()
 
-    // Optional Azure DevOps feed (not required when using Maven Central artifact)
-    // maven {
-    //     url 'https://biocomp.pkgs.visualstudio.com/HubitatCiRelease/_packaging/hubitat_ci_feed@Release/maven/v1'
-    // }
+    // hubitat_ci repository
+    maven {
+        url 'https://biocomp.pkgs.visualstudio.com/HubitatCiRelease/_packaging/hubitat_ci_feed@Release/maven/v1'
+    }
 }
 
 dependencies {
@@ -142,8 +153,7 @@ dependencies {
 
     testImplementation 'org.codehaus.groovy:groovy-all:2.5.4' // groovy itself
     testImplementation "org.spockframework:spock-core:1.2-groovy-2.5" // spock framework
-    // Use Maven Central coordinates for hubitat_ci to avoid private feed
-    testImplementation 'me.biocomp:hubitat_ci:1.2.1' // hubitat_ci
+    testImplementation "me.biocomp.hubitat_ci:hubitat_ci:0.17" // hubitat_ci
     testImplementation 'org.codehaus.groovy.modules.http-builder:http-builder:0.7.1' // http builder for testing
     testImplementation 'net.bytebuddy:byte-buddy:1.12.18' // for mocking
 }
