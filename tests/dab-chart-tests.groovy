@@ -53,7 +53,8 @@ class DabChartTests extends Specification {
     and: "dataset uses room-id for hourly rates"
     def marker = html.contains('chart?b64=') ? 'chart?b64=' : 'chart?c='
     def encoded = html.substring(html.indexOf(marker) + marker.length()).split("'")[0]
-    def config = new JsonSlurper().parseText(URLDecoder.decode(encoded, 'UTF-8'))
+    def configJson = marker == 'chart?b64=' ? new String(encoded.decodeBase64(), 'UTF-8') : URLDecoder.decode(encoded, 'UTF-8')
+    def config = new JsonSlurper().parseText(configJson)
     config.data.datasets[0].data[0] == 1.0d
   }
 
@@ -88,7 +89,8 @@ class DabChartTests extends Specification {
     then:
     def marker2 = html.contains('chart?b64=') ? 'chart?b64=' : 'chart?c='
     def encoded = html.split(java.util.regex.Pattern.quote(marker2))[1].split("'")[0]
-    def config = new JsonSlurper().parseText(URLDecoder.decode(encoded, 'UTF-8'))
+    def configJson2 = marker2 == 'chart?b64=' ? new String(encoded.decodeBase64(), 'UTF-8') : URLDecoder.decode(encoded, 'UTF-8')
+    def config = new JsonSlurper().parseText(configJson2)
     config.data.datasets[0].data[0] == 2.0d
   }
 
@@ -125,7 +127,8 @@ class DabChartTests extends Specification {
     then:
     def marker3 = html.contains('chart?b64=') ? 'chart?b64=' : 'chart?c='
     def encoded = html.split(java.util.regex.Pattern.quote(marker3))[1].split("'")[0]
-    def config = new JsonSlurper().parseText(URLDecoder.decode(encoded, 'UTF-8'))
+    def configJson3 = marker3 == 'chart?b64=' ? new String(encoded.decodeBase64(), 'UTF-8') : URLDecoder.decode(encoded, 'UTF-8')
+    def config = new JsonSlurper().parseText(configJson3)
     config.data.datasets[0].data[0] == 2.0d
   }
 }
