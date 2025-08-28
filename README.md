@@ -161,3 +161,39 @@ The integration features advanced **Dynamic Airflow Balancing (DAB)** algorithms
 Dive deeper into documentation, engage with community discussions, and receive support on the [Hubitat community forum thread](https://community.hubitat.com/t/new-control-flair-vents-with-hubitat-free-open-source-app-and-driver/132728).
 
 ![Flair Vent Device in Hubitat](hubitat-flair-vents-device.png)
+
+## Quick Setup (Hubitat)
+
+- Install drivers src/hubitat-flair-vents-driver.groovy and src/hubitat-flair-vent-tile-driver.groovy.
+- Install app src/hubitat-flair-vents-app.groovy and add it via Apps.
+- Enter Flair API credentials, wait for green "Authenticated successfully".
+- Discover and sync vents.
+- Optional: Enable "Use Dynamic Airflow Balancing" to run on duct-temp detection (works without thermostat).
+- Optional: Enable "Dashboard tiles" and click "Create/Sync Tiles".
+
+## Quick Controls (In-App)
+
+Inside the app, open ? Quick Controls. You can:
+- Set per-room percent (qc_*) and Apply All Changes
+- Bulk Open/Close, Manual/Auto for edited vents
+- Manual overrides persist until cleared and are respected by DAB
+- Active Rooms list is shown when devices report oom-active = true
+
+## Tiles (Battery/Voltage Badge)
+
+Tiles show: room name, bar %, mode, and when available a small badge with Battery % and Voltage (V). If a tile is blank initially, run Create/Sync Tiles again or use Quick Controls ? Apply All Changes.
+
+## Testing Checklist (Before New Features)
+
+- DAB Daily Summary: verify daily table shows yesterday’s averages after a day of runtime
+- DAB Chart: verify quickchart link renders hourly series for rooms
+- DAB History: check activity log and integrity page for missing hours notices
+- Quick Controls: per-room setpoints apply immediately; overrides persist
+- Tiles: verify % updates and battery/voltage appear when reported by devices
+- Diagnostics: run Health Check to confirm API reachable and vent count
+
+## Troubleshooting
+
+- If you lack a thermostat: enable duct-temp DAB; the app infers heating/cooling from duct vs room temperature delta
+- If tiles don’t update: open Quick Controls and Apply All Changes; or run Create/Sync Tiles
+- For deeper logs: set Debug Level > 0; verbose logs are mirrored safely for CI
