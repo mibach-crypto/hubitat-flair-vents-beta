@@ -253,6 +253,34 @@ def mainPage() {
             atomicState?.putAt('thermostat1Mode', 'manual')
           }
           
+          // Quick Safety Limits
+          section('Quick Safety Limits') {
+            input name: 'allowFullClose', type: 'bool', title: 'Allow vents to fully close (0%)', defaultValue: false, submitOnChange: true
+            input name: 'minVentFloorPercent', type: 'number', title: 'Minimum vent opening floor (%)', defaultValue: 10, submitOnChange: true
+          }
+
+          // Night override (simple schedule)
+          section('Night Override (per-room)') {
+            input name: 'nightOverrideEnable', type: 'bool', title: 'Enable night override', defaultValue: false, submitOnChange: true
+            input name: 'nightOverrideRooms', type: 'capability.switchLevel', title: 'Rooms (vents) to override', multiple: true, required: false, submitOnChange: true
+            input name: 'nightOverridePercent', type: 'number', title: 'Override vent percent (%)', defaultValue: 100, submitOnChange: true
+            input name: 'nightOverrideStart', type: 'time', title: 'Start time', required: false, submitOnChange: true
+            input name: 'nightOverrideEnd', type: 'time', title: 'End time', required: false, submitOnChange: true
+            input name: 'applyNightOverrideNow', type: 'button', title: 'Apply Now', submitOnChange: true
+            input name: 'clearManualOverrides', type: 'button', title: 'Clear Manual Overrides', submitOnChange: true
+            if (settings?.applyNightOverrideNow) { activateNightOverride(); app.updateSetting('applyNightOverrideNow','') }
+            if (settings?.clearManualOverrides) { clearAllManualOverrides(); app.updateSetting('clearManualOverrides','') }
+          }
+
+          // Dashboard tiles
+          section('Dashboard Tiles') {
+            input name: 'enableDashboardTiles', type: 'bool', title: 'Enable vent dashboard tiles', defaultValue: false, submitOnChange: true
+            input name: 'syncVentTiles', type: 'button', title: 'Create/Sync Tiles', submitOnChange: true
+            if (settings?.syncVentTiles) {
+              try { syncVentTiles() } catch (e) { logError "Tile sync failed: ${e?.message}" } finally { app.updateSetting('syncVentTiles','') }
+            }
+          }
+          
           // Efficiency Data Management Link
           section {
             href name: 'efficiencyDataLink', title: '🔄 Backup & Restore Efficiency Data',
@@ -579,6 +607,25 @@ def initialize() {
   runEvery5Minutes('cleanupPendingRequests')
   runEvery10Minutes('clearRoomCache')
   runEvery5Minutes('clearDeviceCache')
+
+  // Schedule/subscribe for tiles and overrides
+  if (settings?.enableDashboardTiles) {
+    try {
+      subscribeToVentEventsForTiles()
+      runEvery5Minutes('refreshVentTiles')
+    } catch (e) { log(2, 'App', "Tile scheduler/subscription error: ${e?.message}") }
+  } else {
+    try { unschedule('refreshVentTiles') } catch (ignore) { }
+  }
+
+  if (settings?.nightOverrideEnable) {
+    try {
+      if (settings?.nightOverrideStart) { schedule(settings.nightOverrideStart, 'activateNightOverride') }
+      if (settings?.nightOverrideEnd) { schedule(settings.nightOverrideEnd, 'deactivateNightOverride') }
+    } catch (e) { log(2, 'App', "Night override scheduling error: ${e?.message}") }
+  } else {
+    try { unschedule('activateNightOverride'); unschedule('deactivateNightOverride') } catch (ignore) { }
+  }
 }
 
 // ------------------------------
@@ -2571,7 +2618,9 @@ def retryGetStructureDataWrapper(data) {
 }
 
 def patchVentDevice(device, percentOpen, attempt = 1) {
-  def pOpen = Math.min(100, Math.max(0, percentOpen as int))
+  int floorPct = 0
+  try { floorPct = (settings?.allowFullClose ? 0 : ((settings?.minVentFloorPercent ?: 0) as int)) } catch (ignore) { floorPct = 0 }
+  def pOpen = Math.min(100, Math.max(floorPct, percentOpen as int))
   def currentOpen = (device?.currentValue('percent-open') ?: 0).toInteger()
   if (pOpen == currentOpen) {
     log(3, 'App', "Keeping ${device} percent open unchanged at ${pOpen}%")
@@ -3387,12 +3436,34 @@ def initializeRoomStates(String hvacMode) {
 
   calcPercentOpen = adjustVentOpeningsToEnsureMinimumAirflowTarget(rateAndTempPerVentId, hvacMode, calcPercentOpen, settings.thermostat1AdditionalStandardVents)
 
+  // Apply manual overrides and floors before patching vents
+  calcPercentOpen = applyOverridesAndFloors(calcPercentOpen)
+
   calcPercentOpen.each { ventId, percentOpen ->
     def vent = getChildDevice(ventId)
     if (vent) {
       patchVent(vent, roundToNearestMultiple(percentOpen))
     }
   }
+}
+
+// Enforce global floor and per-vent manual overrides
+private Map applyOverridesAndFloors(Map calc) {
+  def result = [:]
+  int floorPct = 0
+  try {
+    floorPct = (settings?.allowFullClose ? 0 : ((settings?.minVentFloorPercent ?: 0) as int))
+  } catch (ignore) { floorPct = 0 }
+
+  // Build manual override map ventId -> percent
+  def overrides = atomicState?.manualOverrides ?: [:]
+
+  calc.each { ventId, pct ->
+    def out = overrides.containsKey(ventId) ? (overrides[ventId] as int) : (pct as int)
+    if (out < floorPct) { out = floorPct }
+    result[ventId] = out
+  }
+  return result
 }
 
 def adjustVentOpeningsToEnsureMinimumAirflowTarget(rateAndTempPerVentId, String hvacMode, Map calculatedPercentOpen, additionalStandardVents) {
@@ -3817,6 +3888,160 @@ def exportEfficiencyData() {
   }
   
   return data
+}
+
+// ------------------------------
+// Dashboard Tiles and Manual Overrides (Usability)
+// ------------------------------
+
+private String tileDniForVentId(String ventId) { return "tile-${ventId}" }
+
+def syncVentTiles() {
+  try {
+    def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+    vents.each { v ->
+      String dni = tileDniForVentId(v.getDeviceNetworkId())
+      def child = getChildDevice(dni)
+      if (!child) {
+        try {
+          addChildDevice('bot.flair', 'Flair Vent Tile', dni, [name: "Tile ${v.getLabel()}", label: "Tile ${v.getLabel()}", isComponent: true])
+        } catch (Exception e) {
+          log(2, 'App', "Failed to create tile for ${v.getLabel()}: ${e?.message}")
+        }
+      }
+    }
+    refreshVentTiles()
+  } catch (err) {
+    logError "syncVentTiles error: ${err?.message}"
+  }
+}
+
+private void subscribeToVentEventsForTiles() {
+  try {
+    def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+    unsubscribe(updateTileForEvent)
+    vents.each { v ->
+      subscribe(v, 'percent-open', updateTileForEvent)
+      subscribe(v, 'room-current-temperature-c', updateTileForEvent)
+      subscribe(v, 'level', updateTileForEvent)
+      subscribe(v, 'room-name', updateTileForEvent)
+    }
+  } catch (e) {
+    log(2, 'App', "subscribeToVentEventsForTiles error: ${e?.message}")
+  }
+}
+
+def updateTileForEvent(evt) {
+  try {
+    def dev = evt?.device
+    if (dev) { updateTileForVent(dev) }
+  } catch (e) { log(2,'App',"updateTileForEvent error: ${e?.message}") }
+}
+
+def refreshVentTiles() {
+  try {
+    def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+    vents.each { v -> updateTileForVent(v) }
+  } catch (e) { log(2,'App',"refreshVentTiles error: ${e?.message}") }
+}
+
+private void updateTileForVent(device) {
+  try {
+    String ventId = device.getDeviceNetworkId()
+    def tile = getChildDevice(tileDniForVentId(ventId))
+    if (!tile) { return }
+    Integer level = (device.currentValue('percent-open') ?: device.currentValue('level') ?: 0) as int
+    def temp = device.currentValue('room-current-temperature-c')
+    def name = device.currentValue('room-name') ?: device.getLabel()
+    def mode = atomicState?.manualOverrides?.containsKey(ventId) ? 'manual' : 'auto'
+    def html = new StringBuilder()
+    html << "<div style='font-family:sans-serif;padding:6px'>"
+    html << "<div style='font-weight:bold;font-size:14px'>${name}</div>"
+    html << "<div style='margin-top:4px'>Vent: <b>${level}%</b>"
+    if (temp != null) { html << " &nbsp; • &nbsp; Temp: <b>${roundBigDecimal(temp)}</b>°C" }
+    html << " &nbsp; • &nbsp; Mode: <b>${mode}</b></div>"
+    html << "</div>"
+    sendEvent(tile, [name: 'html', value: html.toString()])
+    sendEvent(tile, [name: 'level', value: level])
+    if (temp != null) { sendEvent(tile, [name: 'temperature', value: temp]) }
+  } catch (e) {
+    log(2,'App',"updateTileForVent error: ${e?.message}")
+  }
+}
+
+// Manual override helpers
+def activateNightOverride() {
+  try {
+    if (!settings?.nightOverrideRooms) { return }
+    def overrides = atomicState?.manualOverrides ?: [:]
+    Integer pct = (settings?.nightOverridePercent ?: 100) as int
+    settings.nightOverrideRooms.each { v ->
+      def vent = (v instanceof String) ? getChildDevice(v) : v
+      if (!vent) { return }
+      String vid = vent.getDeviceNetworkId()
+      overrides[vid] = pct
+      patchVent(vent, pct)
+    }
+    atomicState.manualOverrides = overrides
+    refreshVentTiles()
+  } catch (e) { log(2,'App',"activateNightOverride error: ${e?.message}") }
+}
+
+def deactivateNightOverride() {
+  try {
+    if (!atomicState?.manualOverrides) { return }
+    if (settings?.nightOverrideRooms) {
+      settings.nightOverrideRooms.each { v ->
+        def vent = (v instanceof String) ? getChildDevice(v) : v
+        if (!vent) { return }
+        String vid = vent.getDeviceNetworkId()
+        atomicState.manualOverrides.remove(vid)
+      }
+    } else {
+      atomicState.manualOverrides = [:]
+    }
+    refreshVentTiles()
+  } catch (e) { log(2,'App',"deactivateNightOverride error: ${e?.message}") }
+}
+
+def clearAllManualOverrides() {
+  atomicState.manualOverrides = [:]
+  refreshVentTiles()
+}
+
+// Tile driver command callbacks
+def tileSetVentPercent(String tileDni, Integer percent) {
+  try {
+    String ventId = tileDni?.replaceFirst('^tile-','')
+    def vent = getChildDevice(ventId)
+    if (!vent) { return }
+    def overrides = atomicState?.manualOverrides ?: [:]
+    overrides[ventId] = percent
+    atomicState.manualOverrides = overrides
+    patchVent(vent, percent)
+    refreshVentTiles()
+  } catch (e) { log(2,'App',"tileSetVentPercent error: ${e?.message}") }
+}
+
+def tileSetManualMode(String tileDni) {
+  try {
+    String ventId = tileDni?.replaceFirst('^tile-','')
+    def vent = getChildDevice(ventId)
+    if (!vent) { return }
+    def overrides = atomicState?.manualOverrides ?: [:]
+    Integer pct = (vent.currentValue('percent-open') ?: vent.currentValue('level') ?: 100) as int
+    overrides[ventId] = pct
+    atomicState.manualOverrides = overrides
+    refreshVentTiles()
+  } catch (e) { log(2,'App',"tileSetManualMode error: ${e?.message}") }
+}
+
+def tileSetAutoMode(String tileDni) {
+  try {
+    String ventId = tileDni?.replaceFirst('^tile-','')
+    if (atomicState?.manualOverrides) { atomicState.manualOverrides.remove(ventId) }
+    refreshVentTiles()
+  } catch (e) { log(2,'App',"tileSetAutoMode error: ${e?.message}") }
 }
 
 // Export DAB history from atomicState to JSON or CSV
