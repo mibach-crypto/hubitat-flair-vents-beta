@@ -1,6 +1,13 @@
 # Hubitat Integration for Flair Smart Vents
 
-This app provides comprehensive control of [Flair Smart Vents](https://flair.co/) through [Hubitat](https://hubitat.com/), introducing intelligent and adaptive air management for your home's heating, ventilation, and air conditioning (HVAC) system.
+This app provides comprehensive control of [Flair Smart Vents](https://flair.co/) through [Hubitat](https://hubitat.com/), introducing intelligent and adaptive air management for your home's HVAC system.
+
+## What’s New (This Fork)
+- Duct‑temperature HVAC detection (works without thermostat integration or when API‑limited)
+- Data model reliability with non‑destructive Reindex + daily stats generation
+- Optional smoothing (EWMA) and robust outlier handling (MAD)
+- Quick Controls page, global vent floor/allow‑full‑close, and per‑vent Dashboard tiles
+- CI/test hardening and safer settings reads
 
 ## Key Features
 
@@ -34,6 +41,30 @@ To automate room activity within Rule Machine:
 2. **Install Flair App**: Access **Apps Code > New App**, copy and paste `hubitat-flair-vents-app.groovy`, click save, and then **Add User App** to install the Flair integration.
 3. **Configure API Credentials**: Request and input Flair API credentials (Client ID and Client Secret) within the Hubitat Flair app setup interface.
 4. **Discover Devices**: Initiate device discovery through the app to add your Flair vents.
+5. (One‑time) In the app’s main page, press “Reindex DAB History Now” to normalize and index any prior data.
+
+### Enable DAB Using Duct Temperature (no thermostat required)
+- Enable “Use Dynamic Airflow Balancing”.
+- The app computes average (duct ‑ room) temperature across open vents every minute.
+- If average > threshold → HEATING; if < −threshold → COOLING; else idle.
+- DAB learns per‑room hourly rates and adjusts vents accordingly.
+
+### Quick Controls and Safety Floor
+- “⚡ Quick Controls” page: per‑room percent, bulk open/close, bulk manual/auto.
+- Manual overrides persist until cleared and are respected by DAB.
+- Global floor: set “Minimum vent opening floor (%)” and “Allow vents to fully close (0%)”.
+
+### Dashboard Tiles (Classic Dashboard)
+This project creates a virtual “Flair Vent Tile” per vent with a compact HTML card (progress bar, temp, mode).
+
+1) In the app under “Dashboard Tiles”, enable tiles and click “Create/Sync Tiles”.
+2) In Dashboard → Choose Devices → add each “Tile <Room>”.
+3) Add a tile:
+   - Template: Attribute
+   - Attribute: `html`
+4) Optional: add a second tile for the same device using “Dimmer” to set vent percent from the Dashboard.
+
+Tip: If a tile is blank at first, click “Create/Sync Tiles” again or open “Quick Controls → Apply All Changes”.
 
 ## Using The Integration
 Control and automation are at your fingertips. Each Flair vent appears as an individual device within Hubitat. You can:
@@ -52,6 +83,19 @@ Access **View Diagnostics** from the app's Debug Options to troubleshoot your se
 ### Enable Debug Mode
 
 In the app's settings, choose a **debug level** greater than `0` under Debug Options. Higher levels output more detailed logs and populate the diagnostics page.
+
+## Data Smoothing (Optional)
+- EWMA smoothing: toggle on and set half‑life (days per hour‑slot) to weight recent days slightly higher.
+- MAD outliers: enable robust clipping/rejecting spikes (default clip, k=3). Raw data is never discarded.
+
+## Export/Import and Reindex
+- Export Efficiency Data (includes DAB history + activity log) for backup/migration.
+- Reindex DAB History Now: safe normalization; rebuilds hourly index and daily stats within retention.
+
+## Why Flair iOS Can Integrate More Broadly
+Flair’s mobile app talks to the Flair cloud, which integrates server‑to‑server with thermostat vendors (e.g., Resideo/Honeywell). The cloud can buffer/batch vendor API calls. A local Hubitat app must call vendor APIs directly and respect strict limits; some (e.g., RedLink/Total Comfort) have no official local API. This app avoids those constraints by deriving HVAC state locally from duct temperature while still allowing occasional thermostat reads if you integrate one.
+
+If you need thermostat cloud data in Hubitat, your options are: use a maintained community driver, add a small cloud bridge to Flair (needs Flair API token), or continue with the local duct‑temperature approach (recommended for reliability).
 
 ## Development & Testing
 
