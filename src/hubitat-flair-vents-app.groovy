@@ -315,9 +315,17 @@ def mainPage() {
             }
           }
         }
-        // Run integrity check
+        // Run integrity check / reindex
         section {
-          input name: 'runDabHistoryCheck', type: 'button', title: 'Run DAB History Check', submitOnChange: true
+          input name: 'runDabHistoryCheck', type: 'button', title: 'Reindex DAB History Now', submitOnChange: true
+          if (settings?.runDabHistoryCheck) {
+            def result = reindexDabHistory()
+            state.dabHistoryCheckStatus = "\u2713 Reindexed DAB history: ${result.entries} entries across ${result.rooms} rooms."
+            app.updateSetting('runDabHistoryCheck', '')
+          }
+          if (state.dabHistoryCheckStatus) {
+            paragraph state.dabHistoryCheckStatus
+          }
         }
       }
       // Only show vents in DAB section, not pucks
@@ -3061,6 +3069,46 @@ def aggregateDailyDabStats() {
     }
   }
   atomicState.dabDailyStats = stats
+}
+
+// Rebuild hourlyRates index from timestamped entries and refresh daily stats
+def reindexDabHistory() {
+  initializeDabHistory()
+  def hist = atomicState?.dabHistory
+  def entries = (hist instanceof List) ? hist : (hist?.entries ?: [])
+  Integer retention = (settings?.dabHistoryRetentionDays ?: DEFAULT_HISTORY_RETENTION_DAYS) as Integer
+  Long cutoff = now() - retention * 24L * 60L * 60L * 1000L
+  // Rebuild index from scratch
+  def index = [:]
+  int rooms = 0
+  try {
+    entries.each { e ->
+      try {
+        Long ts = e[0] as Long; if (ts < cutoff) { return }
+        String r = e[1]; String m = e[2]; Integer h = (e[3] as Integer)
+        BigDecimal rate = e[4] as BigDecimal
+        def room = index[r] ?: [:]
+        def mode = room[m] ?: [:]
+        def list = (mode[h] ?: []) as List
+        list << rate
+        if (list.size() > retention) { list = list[-retention..-1] }
+        mode[h] = list
+        room[m] = mode
+        index[r] = room
+      } catch (ignore) { }
+    }
+    rooms = index.keySet().size()
+    if (hist instanceof List) {
+      atomicState.dabHistory = [entries: entries, hourlyRates: index]
+    } else {
+      hist.hourlyRates = index
+      hist.entries = entries
+      atomicState.dabHistory = hist
+    }
+  } catch (ignore) { }
+  // Recompute yesterday daily stats so summary shows data immediately next day
+  try { aggregateDailyDabStats() } catch (ignore) { }
+  return [entries: entries?.size() ?: 0, rooms: rooms]
 }
 
 def appendDabActivityLog(String message) {
