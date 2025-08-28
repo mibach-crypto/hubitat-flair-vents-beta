@@ -1,0 +1,8 @@
+VAC state (in minutes).
+@Field static final Integer POLLING_INTERVAL_ACTIVE = 3     // When HVAC is running
+@Field static final Integer POLLING_INTERVAL_IDLE = 10      // When HVAC is idle
+
+// Delay before initializing room states after certain events (in milliseconds).
+@Field static final Integer INITIALIZATION_DELAY_MS = 3000
+
+// Delay after a thermostat state change before reinitializing

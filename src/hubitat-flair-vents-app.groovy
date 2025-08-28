@@ -870,7 +870,8 @@ private void log(int level, String module, String msg, String correlationId = nu
   if (settingsLevel == 0 || level < settingsLevel) { return }
 
   String prefix = correlationId ? "[${module}|${correlationId}]" : "[${module}]"
-  log.debug "${prefix} ${msg}"  boolean __verbose = false
+  log.debug "${prefix} ${msg}"
+  boolean __verbose = false
   try { __verbose = (atomicState?.verboseLogging == true) } catch (ignore) { }
   if (__verbose) {
     def tz = location?.timeZone ?: TimeZone.getTimeZone('UTC')
@@ -1328,7 +1329,8 @@ private void logError(String msg, String module = 'App', String correlationId = 
   int settingsLevel = (settings?.debugLevel as Integer) ?: 0
   if (settingsLevel > 0) {
     String prefix = correlationId ? "[${module}|${correlationId}]" : "[${module}]"
-    log.error "${prefix} ${msg}"  boolean __verbose = false
+    log.error "${prefix} ${msg}"
+  boolean __verbose = false
   try { __verbose = (atomicState?.verboseLogging == true) } catch (ignore) { }
   if (__verbose) {
       def tz = location?.timeZone ?: TimeZone.getTimeZone('UTC')
@@ -4911,14 +4913,17 @@ String buildDabProgressTable() {
   initializeDabHistory()
   def history = atomicState?.dabHistory ?: []
   def entries = (history instanceof List) ? history : (history?.entries ?: [])
-  String roomId = settings?.progressRoom
+  String roomId = null
+  try { roomId = (atomicState?.progressRoom as String) } catch (ignore) { }
+  if (!roomId) { try { roomId = entries ? entries[0][1] : null } catch (ignore) { } }
+  // roomId is read from atomicState mirror for CI-safety
   if (!roomId) { return '<p>Select a room to view progress.</p>' }
 
   String hvacMode = settings?.progressHvacMode ?: getThermostat1Mode() ?: atomicState?.lastHvacMode
   if (!hvacMode || hvacMode in ['auto', 'manual']) { hvacMode = atomicState?.lastHvacMode }
   hvacMode = hvacMode ?: COOLING
-  Date start = settings?.progressStart ? Date.parse('yyyy-MM-dd', settings.progressStart) : null
-  Date end = settings?.progressEnd ? Date.parse('yyyy-MM-dd', settings.progressEnd) : null
+  Date start = (settings?.progressStart instanceof String && settings.progressStart) ? Date.parse('yyyy-MM-dd', settings.progressStart) : null
+  Date end = (settings?.progressEnd instanceof String && settings.progressEnd) ? Date.parse('yyyy-MM-dd', settings.progressEnd) : null
   def modes = hvacMode == 'both' ? [COOLING, HEATING] : [hvacMode]
   def tz = location?.timeZone ?: TimeZone.getTimeZone('UTC')
 
@@ -5178,10 +5183,19 @@ def quickControlsPage() {
       vents.each { v ->
         Integer cur = (v.currentValue('percent-open') ?: v.currentValue('level') ?: 0) as int
         def vid = v.getDeviceNetworkId()
-        paragraph "<b></b> — Current: %"
+        paragraph "<b>${v.getLabel()}</b> - Current: ${cur}%"
         input name: "qc_${vid}_percent", type: 'number', title: 'Set percent', required: false, submitOnChange: false
       }
       input name: 'applyQuickControlsNow', type: 'button', title: 'Apply All Changes', submitOnChange: true
+    }
+    section('Active Rooms Now') {
+      def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+      def actives = vents.findAll { (it.currentValue('room-active') ?: 'false') == 'true' }
+      if (actives) {
+        actives.each { v -> paragraph("* ${v.getLabel()}") }
+      } else {
+        paragraph 'No rooms are currently marked active.'
+      }
     }
     section('Bulk Actions') {
       input name: 'openAll', type: 'button', title: 'Open All 100%', submitOnChange: true
