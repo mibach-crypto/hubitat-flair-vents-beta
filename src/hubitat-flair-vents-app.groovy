@@ -202,6 +202,8 @@ def mainPage() {
           paragraph "<span style='color: orange;'>Ready to authenticate...</span>"
         }
 
+      }
+
     }
 
     if (state.flairAccessToken) {
