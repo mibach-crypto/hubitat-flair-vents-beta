@@ -55,22 +55,22 @@ import java.net.URLEncoder
 @Field static final BigDecimal MIN_PERCENTAGE_OPEN = 0.0
 @Field static final BigDecimal MAX_PERCENTAGE_OPEN = 100.0
 
-// Threshold (in °C) used to trigger a pre-adjustment of vent settings before the setpoint is reached.
+// Threshold (in â”¬â–‘C) used to trigger a pre-adjustment of vent settings before the setpoint is reached.
 @Field static final BigDecimal VENT_PRE_ADJUST_THRESHOLD = 0.2
 
 // HVAC timing constants.
 @Field static final BigDecimal MAX_MINUTES_TO_SETPOINT = 60       // Maximum minutes to reach setpoint.
 @Field static final BigDecimal MIN_MINUTES_TO_SETPOINT = 1        // Minimum minutes required to compute temperature change rate.
 
-// Temperature offset (in °C) applied to thermostat setpoints.
+// Temperature offset (in â”¬â–‘C) applied to thermostat setpoints.
 @Field static final BigDecimal SETPOINT_OFFSET = 0.7
 
-// Acceptable temperature change rate limits (in °C per minute).
+// Acceptable temperature change rate limits (in â”¬â–‘C per minute).
 @Field static final BigDecimal MAX_TEMP_CHANGE_RATE = 1.5
 @Field static final BigDecimal MIN_TEMP_CHANGE_RATE = 0.001
 
 // Temperature sensor accuracy and noise filtering
-@Field static final BigDecimal TEMP_SENSOR_ACCURACY = 0.5  // ±0.5°C typical sensor accuracy
+@Field static final BigDecimal TEMP_SENSOR_ACCURACY = 0.5  // â”¬â–’0.5â”¬â–‘C typical sensor accuracy
 @Field static final BigDecimal MIN_DETECTABLE_TEMP_CHANGE = 0.1  // Minimum change to consider real
 @Field static final Integer MIN_RUNTIME_FOR_RATE_CALC = 5  // Minimum minutes before calculating rate
 
@@ -79,7 +79,7 @@ import java.net.URLEncoder
 
 // INCREMENT_PERCENTAGE is used as a base multiplier when incrementally increasing vent open percentages
 // during airflow adjustments. For example, if the computed proportion for a vent is 0.5,
-// then the vent’s open percentage will be increased by 1.5 * 0.5 = 0.75% in that iteration.
+// then the ventÎ“Ã‡Ã–s open percentage will be increased by 1.5 * 0.5 = 0.75% in that iteration.
 // This increment is applied repeatedly until the total combined airflow meets the minimum target.
 @Field static final BigDecimal INCREMENT_PERCENTAGE = 1.5
 
@@ -95,16 +95,16 @@ import java.net.URLEncoder
 // Default opening percentage for standard (non-Flair) vents (in %).
 @Field static final Integer STANDARD_VENT_DEFAULT_OPEN = 50
 
-// Temperature tolerance for rebalancing vent operations (in °C).
+// Temperature tolerance for rebalancing vent operations (in â”¬â–‘C).
 @Field static final BigDecimal REBALANCING_TOLERANCE = 0.5
 
-// Temperature boundary adjustment for airflow calculations (in °C).
+// Temperature boundary adjustment for airflow calculations (in â”¬â–‘C).
 @Field static final BigDecimal TEMP_BOUNDARY_ADJUSTMENT = 0.1
 
-// Thermostat hysteresis to prevent cycling (in °C).
-@Field static final BigDecimal THERMOSTAT_HYSTERESIS = 0.6  // ~1°F
+// Thermostat hysteresis to prevent cycling (in â”¬â–‘C).
+@Field static final BigDecimal THERMOSTAT_HYSTERESIS = 0.6  // ~1â”¬â–‘F
 
-// Minimum average difference between duct and room temperature (in °C)
+// Minimum average difference between duct and room temperature (in â”¬â–‘C)
 // required to determine that the HVAC system is actively heating or cooling.
 @Field static final BigDecimal DUCT_TEMP_DIFF_THRESHOLD = 1.0
 
@@ -233,10 +233,11 @@ def mainPage() {
 
       section('<h2>Dynamic Airflow Balancing</h2>') {
         input name: 'dabEnabled', type: 'bool', title: 'Use Dynamic Airflow Balancing', defaultValue: false, submitOnChange: true
-        if (dabEnabled) {
-          input name: 'thermostat1', type: 'capability.thermostat', title: 'Choose Thermostat for Vents', multiple: false, required: false
+      }
+      if (dabEnabled) {
+          input name: 'thermostat1', type: 'capability.thermostat', title: 'Choose Thermostat for Vents', multiple: false, required: true
           input name: 'thermostat1TempUnit', type: 'enum', title: 'Units used by Thermostat', defaultValue: 2,
-                options: [1: 'Celsius (°C)', 2: 'Fahrenheit (°F)']
+                options: [1: 'Celsius (â”¬â–‘C)', 2: 'Fahrenheit (â”¬â–‘F)']
           input name: 'thermostat1AdditionalStandardVents', type: 'number', title: 'Count of conventional Vents', defaultValue: 0, submitOnChange: true
           paragraph '<small>Enter the total number of standard (non-Flair) adjustable vents in the home associated ' +
                     'with the chosen thermostat, excluding Flair vents. This ensures the combined airflow does not drop ' +
@@ -244,8 +245,6 @@ def mainPage() {
           input name: 'thermostat1CloseInactiveRooms', type: 'bool', title: 'Close vents on inactive rooms', defaultValue: true, submitOnChange: true
           input name: 'fanOnlyOpenAllVents', type: 'bool', title: 'Fan-only: open all vents to 100%', defaultValue: true, submitOnChange: true
           input name: 'dabHistoryRetentionDays', type: 'number', title: 'DAB history retention (days)', defaultValue: DEFAULT_HISTORY_RETENTION_DAYS, submitOnChange: true
-          input name: 'defaultCoolingSetpointC', type: 'number', title: 'Default cooling setpoint (�C)', required: false, submitOnChange: true
-          input name: 'defaultHeatingSetpointC', type: 'number', title: 'Default heating setpoint (�C)', required: false, submitOnChange: true
 
           if (settings.dabHistoryRetentionDays && settings.dabHistoryRetentionDays < 1) {
             app.updateSetting('dabHistoryRetentionDays', 1)
@@ -303,7 +302,7 @@ def mainPage() {
             input name: 'enableEwma', type: 'bool', title: 'Use EWMA smoothing for hourly averages', defaultValue: false, submitOnChange: true
             input name: 'ewmaHalfLifeDays', type: 'number', title: 'EWMA half-life (days per hour-slot)', defaultValue: 3, submitOnChange: true
             input name: 'enableOutlierRejection', type: 'bool', title: 'Robust outlier handling (MAD)', defaultValue: true, submitOnChange: true
-            input name: 'outlierThresholdMad', type: 'number', title: 'Outlier threshold (k × MAD)', defaultValue: 3, submitOnChange: true
+            input name: 'outlierThresholdMad', type: 'number', title: 'Outlier threshold (k â”œÃ¹ MAD)', defaultValue: 3, submitOnChange: true
             input name: 'outlierMode', type: 'enum', title: 'Outlier mode', options: ['reject':'Reject', 'clip':'Clip to bound'], defaultValue: 'clip', submitOnChange: true
             // Mirror to atomicState for CI-safe access
             try {
@@ -317,7 +316,7 @@ def mainPage() {
           
           // Efficiency Data Management Link
           section {
-            href name: 'efficiencyDataLink', title: '🔄 Backup & Restore Efficiency Data',
+            href name: 'efficiencyDataLink', title: 'â‰¡Æ’Ã¶Ã¤ Backup & Restore Efficiency Data',
                  description: 'Save your learned room efficiency data to restore after app updates',
                  page: 'efficiencyDataPage'
 
@@ -333,31 +332,31 @@ def mainPage() {
           }
           // Hourly DAB Chart Link
           section {
-            href name: 'dabChartLink', title: '📊 View Hourly DAB Rates',
+            href name: 'dabChartLink', title: 'â‰¡Æ’Ã´Ã¨ View Hourly DAB Rates',
                  description: 'Visualize 24-hour average airflow rates for each room',
                  page: 'dabChartPage'
           }
           // Hourly DAB Rates Table Link
           section {
-            href name: 'dabRatesTableLink', title: '📋 View DAB Rates Table',
+            href name: 'dabRatesTableLink', title: 'â‰¡Æ’Ã´Ã¯ View DAB Rates Table',
                  description: 'Tabular hourly DAB calculations for each room',
                  page: 'dabRatesTablePage'
           }
           // DAB Progress Page Link
           section {
-            href name: 'dabProgressLink', title: '📈 View DAB Progress',
+            href name: 'dabProgressLink', title: 'â‰¡Æ’Ã´Ãª View DAB Progress',
                  description: 'Track DAB progress by date and hour',
                  page: 'dabProgressPage'
           }
           // Daily DAB Summary Link
           section {
-            href name: 'dabDailySummaryLink', title: '📅 View Daily DAB Summary',
+            href name: 'dabDailySummaryLink', title: 'â‰¡Æ’Ã´Ã  View Daily DAB Summary',
                  description: 'Daily airflow averages per room and mode',
                  page: 'dabDailySummaryPage'
           }
           // DAB Activity Log Link
           section {
-            href name: 'dabActivityLogLink', title: '📘 View DAB Activity Log',
+            href name: 'dabActivityLogLink', title: 'â‰¡Æ’Ã´Ã¿ View DAB Activity Log',
                  description: 'See recent HVAC mode transitions',
                  page: 'dabActivityLogPage'
           }
@@ -388,14 +387,11 @@ def mainPage() {
           if (state.dabHistoryCheckStatus) {
             paragraph state.dabHistoryCheckStatus
           }
-          // Quick Controls Link
-          section {
-            href name: 'quickControlsLink', title: '\u26A1 Quick Controls',
-                 description: 'Rapid per-room manual control and bulk actions',
-                 page: 'quickControlsPage'
-          }
+          // Quick Controls Link (avoid nested section calls in CI)
+          href name: 'quickControlsLink', title: '\u26A1 Quick Controls',
+               description: 'Rapid per-room manual control and bulk actions',
+               page: 'quickControlsPage'
         }
-      }
       // Only show vents in DAB section, not pucks
       def vents = getChildDevices().findAll { it.hasAttribute('percent-open') }
       section('Thermostat Mapping') {
@@ -664,13 +660,7 @@ def initialize() {
     try { unschedule('refreshVentTiles') } catch (ignore) { }
   }
 
-  // Subscribe to thermostat events if configured
-  if (settings?.thermostat1) {
-    try {
-      subscribe(settings.thermostat1, 'thermostatOperatingState', 'thermostat1ChangeStateHandler')
-      subscribe(settings.thermostat1, 'temperature', 'thermostat1ChangeTemp')
-    } catch (e) { log(2, 'App', "Thermostat subscription error: ${e?.message}") }
-  }  if (settings?.nightOverrideEnable) {
+  if (settings?.nightOverrideEnable) {
     try {
       if (settings?.nightOverrideStart) { schedule(settings.nightOverrideStart, 'activateNightOverride') }
       if (settings?.nightOverrideEnd) { schedule(settings.nightOverrideEnd, 'deactivateNightOverride') }
@@ -704,13 +694,13 @@ private BigDecimal getRoomTemp(def vent) {
       log(2, 'App', "WARNING: Temperature device ${tempDevice?.getLabel() ?: 'Unknown'} for room '${roomName}' is not reporting temperature!")
       // Fall back to room temperature
       def roomTemp = vent.currentValue('room-current-temperature-c') ?: 0
-      log(2, 'App', "Falling back to room temperature for '${roomName}': ${roomTemp}°C")
+      log(2, 'App', "Falling back to room temperature for '${roomName}': ${roomTemp}â”¬â–‘C")
       return roomTemp
     }
     if (settings.thermostat1TempUnit == '2') {
       temp = convertFahrenheitToCentigrade(temp)
     }
-    log(2, 'App', "Got temp from ${tempDevice?.getLabel() ?: 'Unknown'} for '${roomName}': ${temp}°C")
+    log(2, 'App', "Got temp from ${tempDevice?.getLabel() ?: 'Unknown'} for '${roomName}': ${temp}â”¬â–‘C")
     return temp
   }
   
@@ -719,7 +709,7 @@ private BigDecimal getRoomTemp(def vent) {
     log(2, 'App', "ERROR: No temperature available for room '${roomName}' - neither from Puck nor from room API!")
     return 0
   }
-  log(2, 'App', "Using room temperature for '${roomName}': ${roomTemp}°C")
+  log(2, 'App', "Using room temperature for '${roomName}': ${roomTemp}â”¬â–‘C")
   return roomTemp
 }
 
@@ -728,7 +718,6 @@ private atomicStateUpdate(String stateKey, String key, value) {
   log(1, 'App', "atomicStateUpdate(${stateKey}, ${key}, ${value})")
 }
 
-def getThermostatSetpoint(String hvacMode) {
 def getThermostatSetpoint(String hvacMode) {
   def thermostat = settings?.thermostat1
   BigDecimal setpoint
@@ -744,26 +733,10 @@ def getThermostatSetpoint(String hvacMode) {
     setpoint = thermostat?.currentValue('thermostatSetpoint')
   }
   if (setpoint == null) {
-    // Fallbacks for duct-temp only setups: per-room setpoints or default inputs
-    try {
-      def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
-      def vals = vents.collect { it.currentValue('room-set-point-c') }.findAll { it != null }
-      if (vals && vals.size()>0) {
-        // Use median of room setpoints
-        def sorted = vals.collect { it as BigDecimal }.sort()
-        setpoint = sorted[sorted.size().intdiv(2)]
-      }
-    } catch (ignore) { }
-    if (setpoint == null) {
-      if (hvacMode == COOLING) { setpoint = settings?.defaultCoolingSetpointC as BigDecimal }
-      else { setpoint = settings?.defaultHeatingSetpointC as BigDecimal }
-    }
-    if (setpoint == null) {
-      logError 'Thermostat has no setpoint and no defaults configured; please set defaults or a thermostat'
-      return null
-    }
+    logError 'Thermostat has no setpoint property, please choose a valid thermostat'
+    return null
   }
-  if (settings.thermostat1TempUnit == '2' && thermostat) {
+  if (settings.thermostat1TempUnit == '2') {
     setpoint = convertFahrenheitToCentigrade(setpoint)
   }
   return setpoint
@@ -867,11 +840,11 @@ def calculateHvacMode() {
                        v.currentValue('current-temperature-c') ?:
                        v.currentValue('temperature')) as BigDecimal
     BigDecimal diff = duct - room
-    log(4, 'DAB', "Vent ${v?.displayName ?: v?.id}: duct=${duct}°C room=${room}°C diff=${diff}°C", v?.id)
+    log(4, 'DAB', "Vent ${v?.displayName ?: v?.id}: duct=${duct}â”¬â–‘C room=${room}â”¬â–‘C diff=${diff}â”¬â–‘C", v?.id)
     avgDiff += diff
   }
   avgDiff = avgDiff / vents.size()
-  log(4, 'DAB', "Average duct-room temp diff=${avgDiff}°C")
+  log(4, 'DAB', "Average duct-room temp diff=${avgDiff}â”¬â–‘C")
   if (avgDiff > DUCT_TEMP_DIFF_THRESHOLD) { return HEATING }
   if (avgDiff < -DUCT_TEMP_DIFF_THRESHOLD) { return COOLING }
   null
@@ -924,12 +897,12 @@ private Map validatePreferences() {
 
   if (!settings?.clientId) {
     errors.clientId = 'Client ID is required'
-    logValidationFailure('clientId', 'missing')
+    if (settings?.validateNow) logValidationFailure('clientId', 'missing')
     valid = false
   }
   if (!settings?.clientSecret) {
     errors.clientSecret = 'Client Secret is required'
-    logValidationFailure('clientSecret', 'missing')
+    if (settings?.validateNow) logValidationFailure('clientSecret', 'missing')
     valid = false
   }
 
@@ -939,7 +912,7 @@ private Map validatePreferences() {
     def key = "vent${v.getId()}Thermostat"
     if (!settings?."${key}") {
       missingRooms << v.getLabel()
-      logValidationFailure(key, 'missing')
+      if (settings?.validateNow) logValidationFailure(key, 'missing')
       valid = false
     }
   }
@@ -961,7 +934,7 @@ private void performValidationTest() {
     result.message = 'Successfully connected to Flair API'
   } catch (e) {
     result.message = "Connectivity test failed: ${e.message}"
-    logValidationFailure('connectivity', e.message)
+    if (settings?.validateNow) logValidationFailure('connectivity', e.message)
   }
   state.lastValidationResult = result
 }
@@ -2329,8 +2302,8 @@ def handlePuckGet(resp, data) {
     if (puckData?.attributes?.'current-temperature-c' != null) {
       def tempC = puckData.attributes['current-temperature-c']
       def tempF = (tempC * 9/5) + 32
-      sendEvent(data.device, [name: 'temperature', value: tempF, unit: '°F'])
-      log(2, 'App', "Puck temperature: ${tempF}°F")
+      sendEvent(data.device, [name: 'temperature', value: tempF, unit: 'â”¬â–‘F'])
+      log(2, 'App', "Puck temperature: ${tempF}â”¬â–‘F")
     }
     if (puckData?.attributes?.'current-humidity' != null) {
       sendEvent(data.device, [name: 'humidity', value: puckData.attributes['current-humidity'], unit: '%'])
@@ -2390,8 +2363,8 @@ def handlePuckReadingGet(resp, data) {
     if (reading.attributes?.'room-temperature-c' != null) {
       def tempC = reading.attributes['room-temperature-c']
       def tempF = (tempC * 9/5) + 32
-      sendEvent(data.device, [name: 'temperature', value: tempF, unit: '°F'])
-      log(2, 'App', "Puck temperature from reading: ${tempF}°F")
+      sendEvent(data.device, [name: 'temperature', value: tempF, unit: 'â”¬â–‘F'])
+      log(2, 'App', "Puck temperature from reading: ${tempF}â”¬â–‘F")
     }
     if (reading.attributes?.humidity != null) {
       sendEvent(data.device, [name: 'humidity', value: reading.attributes.humidity, unit: '%'])
@@ -2806,7 +2779,7 @@ def patchRoomSetPoint(device, temp) {
   if (getTemperatureScale() == 'F') {
     tempC = convertFahrenheitToCentigrade(tempC)
   }
-  log(3, 'App', "Setting set-point to ${tempC}°C for '${device.currentValue('room-name')}'")
+  log(3, 'App', "Setting set-point to ${tempC}â”¬â–‘C for '${device.currentValue('room-name')}'")
   def uri = "${BASE_URL}/api/rooms/${roomId}"
   def body = [ data: [ type: 'rooms', attributes: [ 'set-point-c': tempC ] ] ]
   patchDataAsync(uri, 'handleRoomSetPointPatch', body, [device: device])
@@ -2832,13 +2805,13 @@ def thermostat1ChangeTemp(evt) {
   
   if (tempDiff >= THERMOSTAT_HYSTERESIS) {
     atomicState.lastSignificantTemp = temp
-    log(2, 'App', "Significant temperature change detected: ${tempDiff}°C (threshold: ${THERMOSTAT_HYSTERESIS}°C)")
+    log(2, 'App', "Significant temperature change detected: ${tempDiff}â”¬â–‘C (threshold: ${THERMOSTAT_HYSTERESIS}â”¬â–‘C)")
     
     if (isThermostatAboutToChangeState(hvacMode, thermostatSetpoint, temp)) {
       runInMillis(INITIALIZATION_DELAY_MS, 'initializeRoomStates', [data: hvacMode])
     }
   } else {
-    log(3, 'App', "Temperature change ${tempDiff}°C is below hysteresis threshold ${THERMOSTAT_HYSTERESIS}°C - ignoring")
+    log(3, 'App', "Temperature change ${tempDiff}â”¬â–‘C is below hysteresis threshold ${THERMOSTAT_HYSTERESIS}â”¬â–‘C - ignoring")
   }
 }
 
@@ -2912,7 +2885,7 @@ def updateHvacStateFromDuctTemps() {
   String previousMode = atomicState.thermostat1State?.mode ?: 'idle'
   String hvacMode = calculateHvacMode()
   if (hvacMode != previousMode) {
-    appendDabActivityLog("Start: ${previousMode} → ${hvacMode ?: 'idle'}")
+    appendDabActivityLog("Start: ${previousMode} Î“Ã¥Ã† ${hvacMode ?: 'idle'}")
   }
   if (hvacMode) {
     if (!atomicState.thermostat1State || atomicState.thermostat1State?.mode != hvacMode) {
@@ -2946,7 +2919,7 @@ def updateHvacStateFromDuctTemps() {
   }
   String currentMode = atomicState.thermostat1State?.mode ?: 'idle'
   if (currentMode != previousMode) {
-    appendDabActivityLog("End: ${previousMode} → ${currentMode}")
+    appendDabActivityLog("End: ${previousMode} Î“Ã¥Ã† ${currentMode}")
   }
 }
 
@@ -2982,7 +2955,7 @@ def evaluateRebalancingVents() {
         if (!hasRoomReachedSetpoint(hvacMode, setPoint, roomTemp, REBALANCING_TOLERANCE)) {
           continue
         }
-        log(3, 'App', "Rebalancing Vents - '${vent.currentValue('room-name')}' is at ${roomTemp}° (target: ${setPoint})")
+        log(3, 'App', "Rebalancing Vents - '${vent.currentValue('room-name')}' is at ${roomTemp}â”¬â–‘ (target: ${setPoint})")
         reBalanceVents()
         return // Exit after first rebalancing to avoid multiple adjustments per evaluation
       } catch (err) {
@@ -3661,7 +3634,7 @@ def recordStartingTemperatures() {
         }
         BigDecimal currentTemp = getRoomTemp(vent)
         sendEvent(vent, [name: 'room-starting-temperature-c', value: currentTemp])
-        log(2, 'App', "Starting temperature for '${vent.currentValue('room-name')}': ${currentTemp}°C")
+        log(2, 'App', "Starting temperature for '${vent.currentValue('room-name')}': ${currentTemp}â”¬â–‘C")
       } catch (err) {
         logError err
       }
@@ -3825,7 +3798,7 @@ def getAttribsPerVentId(ventsByRoomId, String hvacMode) {
         // Log rooms with zero efficiency for debugging
         if (rate == 0) {
           def tempSource = settings."vent${ventId}Thermostat" ? "Puck ${settings."vent${ventId}Thermostat".getLabel()}" : "Room API"
-          log(2, 'App', "Room '${roomName}' has zero ${hvacMode} efficiency rate, temp=${roomTemp}°C from ${tempSource}")
+          log(2, 'App', "Room '${roomName}' has zero ${hvacMode} efficiency rate, temp=${roomTemp}â”¬â–‘C from ${tempSource}")
         }
         
         rateAndTemp[ventId] = [ rate: rate, temp: roomTemp, active: isActive, name: roomName ]
@@ -3896,7 +3869,7 @@ def calculateLongestMinutesToTarget(rateAndTempPerVentId, String hvacMode, BigDe
         minutesToTarget = Math.abs(setpoint - stateVal.temp) / stateVal.rate
         // Check for unrealistic time estimates due to minimal temperature change
         if (minutesToTarget > maxRunningTime * 2) {
-          logWarn "'${stateVal.name}' shows minimal temperature change (rate: ${roundBigDecimal(stateVal.rate)}°C/min). " +
+          logWarn "'${stateVal.name}' shows minimal temperature change (rate: ${roundBigDecimal(stateVal.rate)}â”¬â–‘C/min). " +
                   "Estimated time ${roundBigDecimal(minutesToTarget)} minutes is unrealistic."
           minutesToTarget = maxRunningTime  // Cap at max running time
         }
@@ -3960,7 +3933,7 @@ def calculateRoomChangeRate(BigDecimal lastStartTemp, BigDecimal currentTemp, Bi
   
   // Check if temperature change is within sensor noise/accuracy range
   if (diffTemps < MIN_DETECTABLE_TEMP_CHANGE) {
-    log(2, 'App', "Temperature change (${diffTemps}°C) is below minimum detectable threshold (${MIN_DETECTABLE_TEMP_CHANGE}°C) - likely sensor noise")
+    log(2, 'App', "Temperature change (${diffTemps}â”¬â–‘C) is below minimum detectable threshold (${MIN_DETECTABLE_TEMP_CHANGE}â”¬â–‘C) - likely sensor noise")
     
     // If no meaningful temperature change but vent was significantly open, assign minimum efficiency
     if (percentOpen >= 30) {
@@ -3972,7 +3945,7 @@ def calculateRoomChangeRate(BigDecimal lastStartTemp, BigDecimal currentTemp, Bi
   
   // Account for sensor accuracy when detecting minimal changes
   if (diffTemps < TEMP_SENSOR_ACCURACY) {
-    log(2, 'App', "Temperature change (${diffTemps}°C) is within sensor accuracy range (±${TEMP_SENSOR_ACCURACY}°C) - adjusting calculation")
+    log(2, 'App', "Temperature change (${diffTemps}â”¬â–‘C) is within sensor accuracy range (â”¬â–’${TEMP_SENSOR_ACCURACY}â”¬â–‘C) - adjusting calculation")
     // Use a minimum reliable change for calculation to avoid division by near-zero
     diffTemps = Math.max(diffTemps, MIN_DETECTABLE_TEMP_CHANGE)
   }
@@ -4037,7 +4010,7 @@ def handleExportEfficiencyData() {
     
     // Set export status message
     def roomCount = efficiencyData.roomEfficiencies.size()
-    state.exportStatus = "✓ Exported efficiency data for ${roomCount} rooms. Copy the JSON data below:"
+    state.exportStatus = "Î“Â£Ã´ Exported efficiency data for ${roomCount} rooms. Copy the JSON data below:"
     
     // Store the JSON data for display
     state.exportedJsonData = jsonData
@@ -4047,7 +4020,7 @@ def handleExportEfficiencyData() {
   } catch (Exception e) {
     def errorMsg = "Export failed: ${e.message}"
     logError errorMsg
-    state.exportStatus = "✗ ${errorMsg}"
+    state.exportStatus = "Î“Â£Ã¹ ${errorMsg}"
     state.exportedJsonData = null
   }
 }
@@ -4085,7 +4058,7 @@ def handleImportEfficiencyData() {
     // Get JSON data from user input
     def jsonData = settings.importJsonData
     if (!jsonData?.trim()) {
-      state.importStatus = "✗ No JSON data provided. Please paste the exported efficiency data."
+      state.importStatus = "Î“Â£Ã¹ No JSON data provided. Please paste the exported efficiency data."
       state.importSuccess = false
       return
     }
@@ -4094,7 +4067,7 @@ def handleImportEfficiencyData() {
     def result = importEfficiencyData(jsonData.trim())
     
     if (result.success) {
-      def statusMsg = "✓ Import successful! Updated ${result.roomsUpdated} rooms"
+      def statusMsg = "Î“Â£Ã´ Import successful! Updated ${result.roomsUpdated} rooms"
       if (result.globalUpdated) {
         statusMsg += " and global efficiency rates"
       }
@@ -4117,7 +4090,7 @@ def handleImportEfficiencyData() {
       log(2, 'App', "Import completed: ${result.roomsUpdated} rooms updated, ${result.roomsSkipped} skipped")
       
     } else {
-      state.importStatus = "✗ Import failed: ${result.error}"
+      state.importStatus = "Î“Â£Ã¹ Import failed: ${result.error}"
       state.importSuccess = false
       logError "Import failed: ${result.error}"
     }
@@ -4125,7 +4098,7 @@ def handleImportEfficiencyData() {
   } catch (Exception e) {
     def errorMsg = "Import failed: ${e.message}"
     logError errorMsg
-    state.importStatus = "✗ ${errorMsg}"
+    state.importStatus = "Î“Â£Ã¹ ${errorMsg}"
     state.importSuccess = false
   }
 }
@@ -4244,10 +4217,10 @@ private void updateTileForVent(device) {
     html << "<div style='height:8px;width:${level}%;background:#3b82f6'></div>"
     html << "</div>"
     html << "<div style='margin-top:6px;font-size:12px;color:#111'>Vent: <b>${level}%</b>"
-    if (temp != null) { html << " &nbsp; • &nbsp; Temp: <b>${roundBigDecimal(temp)}</b>°C" }
-    if (battery != null) { html << " &nbsp; • &nbsp; Battery: <b>${battery}%</b>" }
-    if (voltage != null) { html << " &nbsp; • &nbsp; V: <b>${roundBigDecimal(voltage)}</b>" }
-    html << " &nbsp; • &nbsp; Mode: <b>${mode}</b></div>"
+    if (temp != null) { html << " &nbsp; Î“Ã‡Ã³ &nbsp; Temp: <b>${roundBigDecimal(temp)}</b>â”¬â–‘C" }
+    if (battery != null) { html << " &nbsp; Î“Ã‡Ã³ &nbsp; Battery: <b>${battery}%</b>" }
+    if (voltage != null) { html << " &nbsp; Î“Ã‡Ã³ &nbsp; V: <b>${roundBigDecimal(voltage)}</b>" }
+    html << " &nbsp; Î“Ã‡Ã³ &nbsp; Mode: <b>${mode}</b></div>"
     html << "</div>"
     sendEvent(tile, [name: 'html', value: html.toString()])
     sendEvent(tile, [name: 'level', value: level])
@@ -4432,8 +4405,8 @@ def applyImportedEfficiencies(efficiencyData) {
   
   // Update global rates
   if (efficiencyData.globalRates) {
-    atomicState.maxCoolingRate = efficiencyData.globalRates.maxCoolingRate
-    atomicState.maxHeatingRate = efficiencyData.globalRates.maxHeatingRate
+    try { atomicState.maxCoolingRate = efficiencyData.globalRates.maxCoolingRate } catch (ignore) { }
+    try { atomicState.maxHeatingRate = efficiencyData.globalRates.maxHeatingRate } catch (ignore) { }
     results.globalUpdated = true
     log(2, 'App', "Updated global rates: cooling=${efficiencyData.globalRates.maxCoolingRate}, heating=${efficiencyData.globalRates.maxHeatingRate}")
   }
@@ -4500,11 +4473,11 @@ def efficiencyDataPage() {
     }
   }
   
-  dynamicPage(name: 'efficiencyDataPage', title: '🔄 Backup & Restore Efficiency Data', install: false, uninstall: false) {
+  dynamicPage(name: 'efficiencyDataPage', title: 'â‰¡Æ’Ã¶Ã¤ Backup & Restore Efficiency Data', install: false, uninstall: false) {
     section {
       paragraph '''
         <div style="background-color: #f0f8ff; padding: 15px; border-left: 4px solid #007bff; margin-bottom: 20px;">
-          <h3 style="margin-top: 0; color: #0056b3;">📚 What is this?</h3>
+          <h3 style="margin-top: 0; color: #0056b3;">â‰¡Æ’Ã´Ãœ What is this?</h3>
           <p style="margin-bottom: 0;">Your Flair vents learn how efficiently each room heats and cools over time. This data helps the system optimize energy usage. 
           Use this page to backup your data before app updates or restore it after system resets.</p>
         </div>
@@ -4513,11 +4486,11 @@ def efficiencyDataPage() {
     
     // Show current status
     if (vents.size() > 0) {
-      section("📊 Current Status") {
+      section("â‰¡Æ’Ã´Ã¨ Current Status") {
         if (roomsWithData.size() > 0) {
-          paragraph "<div style='color: green; font-weight: bold;'>✓ Your system has learned efficiency data for ${roomsWithData.size()} out of ${vents.size()} rooms</div>"
+          paragraph "<div style='color: green; font-weight: bold;'>Î“Â£Ã´ Your system has learned efficiency data for ${roomsWithData.size()} out of ${vents.size()} rooms</div>"
         } else {
-          paragraph "<div style='color: orange; font-weight: bold;'>⚠ Your system is still learning (${vents.size()} rooms found, but no efficiency data yet)</div>"
+          paragraph "<div style='color: orange; font-weight: bold;'>Î“ÃœÃ¡ Your system is still learning (${vents.size()} rooms found, but no efficiency data yet)</div>"
           paragraph "<small>Let your system run for a few heating/cooling cycles before backing up data.</small>"
         }
       }
@@ -4525,7 +4498,7 @@ def efficiencyDataPage() {
     
     // Export Section - Auto-generated
     if (roomsWithData.size() > 0 && exportJsonData) {
-      section("💾 Save Your Data (Backup)") {
+      section("â‰¡Æ’Ã†â•› Save Your Data (Backup)") {
         // Create base64 encoded download link with current date
         def currentDate = new Date().format("yyyy-MM-dd")
         def fileName = "Flair-Backup-${currentDate}.json"
@@ -4534,21 +4507,21 @@ def efficiencyDataPage() {
         
         paragraph "Your backup data is ready:"
         
-        paragraph "<a href=\"${downloadUrl}\" download=\"${fileName}\">📥 Download ${fileName}</a>"
+        paragraph "<a href=\"${downloadUrl}\" download=\"${fileName}\">â‰¡Æ’Ã´Ã‘ Download ${fileName}</a>"
       }
     } else if (vents.size() > 0) {
-      section("💾 Save Your Data (Backup)") {
+      section("â‰¡Æ’Ã†â•› Save Your Data (Backup)") {
         paragraph "System is still learning. Check back after a few heating/cooling cycles."
       }
     }
     
     // Import Section
-    section("📥 Step 2: Restore Your Data (Import)") {
+    section("â‰¡Æ’Ã´Ã‘ Step 2: Restore Your Data (Import)") {
       paragraph '''
         <p><strong>When should I do this?</strong></p>
-        <p>• After reinstalling this app<br>
-        • After resetting your Hubitat hub<br>
-        • After replacing hardware</p>
+        <p>Î“Ã‡Ã³ After reinstalling this app<br>
+        Î“Ã‡Ã³ After resetting your Hubitat hub<br>
+        Î“Ã‡Ã³ After replacing hardware</p>
       '''
       
       paragraph '''
@@ -4571,13 +4544,13 @@ def efficiencyDataPage() {
       
       if (state.importStatus) {
         def statusColor = state.importSuccess ? 'green' : 'red'
-        def statusIcon = state.importSuccess ? '✓' : '✗'
+        def statusIcon = state.importSuccess ? 'Î“Â£Ã´' : 'Î“Â£Ã¹'
         paragraph "<div style='color: ${statusColor}; font-weight: bold; margin-top: 15px; padding: 10px; background-color: ${state.importSuccess ? '#e8f5e8' : '#ffe8e8'}; border-radius: 5px;'>${statusIcon} ${state.importStatus}</div>"
         
         if (state.importSuccess) {
           paragraph '''
             <div style="background-color: #e8f5e8; padding: 15px; border-radius: 5px; margin-top: 10px;">
-              <h4 style="margin-top: 0; color: #2d5a2d;">🎉 Success! What happens now?</h4>
+              <h4 style="margin-top: 0; color: #2d5a2d;">â‰¡Æ’Ã„Ã« Success! What happens now?</h4>
               <p>Your room learning data has been restored. Your Flair vents will now use the saved efficiency information to:</p>
               <ul>
                 <li>Optimize airflow to each room</li>
@@ -4592,10 +4565,10 @@ def efficiencyDataPage() {
     }
     
     // Help & Tips Section
-    section("❓ Need Help?") {
+    section("Î“Â¥Ã´ Need Help?") {
       paragraph '''
         <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px;">
-          <h4 style="margin-top: 0;">💡 Tips for Success</h4>
+          <h4 style="margin-top: 0;">â‰¡Æ’Ã†Ã­ Tips for Success</h4>
           <ul style="margin-bottom: 10px;">
             <li><strong>Regular Backups:</strong> Save your data monthly or before any system changes</li>
             <li><strong>File Naming:</strong> Include the date in your backup filename (e.g., "Flair-Backup-2025-06-26")</li>
@@ -4603,7 +4576,7 @@ def efficiencyDataPage() {
             <li><strong>When to Restore:</strong> Only restore data when setting up a new system or after data loss</li>
           </ul>
           
-          <h4>🚨 Troubleshooting</h4>
+          <h4>â‰¡Æ’ÃœÂ¿ Troubleshooting</h4>
           <ul style="margin-bottom: 0;">
             <li><strong>Import Failed:</strong> Make sure you copied ALL the text from your backup file</li>
             <li><strong>No Data to Export:</strong> Let your system run for a few heating/cooling cycles first</li>
@@ -4615,13 +4588,13 @@ def efficiencyDataPage() {
     }
     
     section {
-      href name: 'backToMain', title: '← Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+      href name: 'backToMain', title: 'Î“Ã¥Ã‰ Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
     }
   }
 }
 
 /* DUPLICATE REMOVED def dabHistoryPage() {
-  dynamicPage(name: 'dabHistoryPage', title: '📚 DAB History', install: false, uninstall: false) {
+  dynamicPage(name: 'dabHistoryPage', title: 'â‰¡Æ’Ã´Ãœ DAB History', install: false, uninstall: false) {
     section {
       def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
       Map roomOptions = vents.collectEntries { v ->
@@ -4639,18 +4612,18 @@ def efficiencyDataPage() {
       if (atomicState?.dabHistoryErrors) { allErrors += atomicState.dabHistoryErrors }
       if (result.errors) { allErrors += result.errors }
       if (allErrors) {
-        paragraph "<span style='color:red'>⚠️ ${allErrors.join('<br>')}</span>"
+        paragraph "<span style='color:red'>Î“ÃœÃ¡âˆ©â••Ã… ${allErrors.join('<br>')}</span>"
       }
       paragraph result.table
     }
     section {
-      href name: 'backToMain', title: '← Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+      href name: 'backToMain', title: 'Î“Ã¥Ã‰ Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
     }
   }
 } */
 
 def dabActivityLogPage() {
-  dynamicPage(name: 'dabActivityLogPage', title: '📘 DAB Activity Log', install: false, uninstall: false) {
+  dynamicPage(name: 'dabActivityLogPage', title: 'â‰¡Æ’Ã´Ã¿ DAB Activity Log', install: false, uninstall: false) {
     section {
       def entries = atomicState?.dabActivityLog ?: []
       if (entries) {
@@ -4660,13 +4633,13 @@ def dabActivityLogPage() {
       }
     }
     section {
-      href name: 'backToMain', title: '← Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+      href name: 'backToMain', title: 'Î“Ã¥Ã‰ Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
     }
   }
 }
 
 def dabHistoryPage() {
-  dynamicPage(name: 'dabHistoryPage', title: '📚 DAB History', install: false, uninstall: false) {
+  dynamicPage(name: 'dabHistoryPage', title: 'â‰¡Æ’Ã´Ãœ DAB History', install: false, uninstall: false) {
     section {
       input name: 'historyHvacMode', type: 'enum', title: 'HVAC Mode', required: false, submitOnChange: true,
             options: [(COOLING): 'Cooling', (HEATING): 'Heating', 'both': 'Both']
@@ -4705,39 +4678,39 @@ def dabHistoryPage() {
       }
     }
     section {
-      href name: 'backToMain', title: '← Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+      href name: 'backToMain', title: 'Î“Ã¥Ã‰ Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
     }
   }
 }
 
 def dabRatesTablePage() {
-  dynamicPage(name: 'dabRatesTablePage', title: '📋 Hourly DAB Rates Table', install: false, uninstall: false) {
+  dynamicPage(name: 'dabRatesTablePage', title: 'â‰¡Æ’Ã´Ã¯ Hourly DAB Rates Table', install: false, uninstall: false) {
     section {
       input name: 'tableHvacMode', type: 'enum', title: 'HVAC Mode', required: false, submitOnChange: true,
             options: [(COOLING): 'Cooling', (HEATING): 'Heating', 'both': 'Both']
       paragraph buildDabRatesTable()
     }
     section {
-      href name: 'backToMain', title: '← Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+      href name: 'backToMain', title: 'Î“Ã¥Ã‰ Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
     }
   }
 }
 
 def dabChartPage() {
-  dynamicPage(name: 'dabChartPage', title: '📊 Hourly DAB Rates', install: false, uninstall: false) {
+  dynamicPage(name: 'dabChartPage', title: 'â‰¡Æ’Ã´Ã¨ Hourly DAB Rates', install: false, uninstall: false) {
     section {
       input name: 'chartHvacMode', type: 'enum', title: 'HVAC Mode', required: false, submitOnChange: true,
             options: [(COOLING): 'Cooling', (HEATING): 'Heating', 'both': 'Both']
       paragraph buildDabChart()
     }
     section {
-      href name: 'backToMain', title: '← Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+      href name: 'backToMain', title: 'Î“Ã¥Ã‰ Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
     }
   }
 }
 
 def dabProgressPage() {
-  dynamicPage(name: 'dabProgressPage', title: '📈 DAB Progress', install: false, uninstall: false) {
+  dynamicPage(name: 'dabProgressPage', title: 'â‰¡Æ’Ã´Ãª DAB Progress', install: false, uninstall: false) {
     section {
       def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
       boolean hasVents = vents && vents.size() > 0
@@ -4754,19 +4727,19 @@ def dabProgressPage() {
       if (hasVents) { paragraph buildDabProgressTable() }
     }
     section {
-      href name: 'backToMain', title: '← Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+      href name: 'backToMain', title: 'Î“Ã¥Ã‰ Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
     }
   }
 }
 
 def dabDailySummaryPage() {
-  dynamicPage(name: 'dabDailySummaryPage', title: '📅 Daily DAB Summary', install: false, uninstall: false) {
+  dynamicPage(name: 'dabDailySummaryPage', title: 'â‰¡Æ’Ã´Ã  Daily DAB Summary', install: false, uninstall: false) {
     section {
       input name: 'dailySummaryPage', type: 'number', title: 'Page', required: false, defaultValue: 1, submitOnChange: true
       paragraph buildDabDailySummaryTable()
     }
     section {
-      href name: 'backToMain', title: '← Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+      href name: 'backToMain', title: 'Î“Ã¥Ã‰ Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
     }
   }
 }
@@ -5203,14 +5176,6 @@ def asyncHttpGetWrapper(response, Map data) {
 
 def quickControlsPage() {
   dynamicPage(name: 'quickControlsPage', title: '\u26A1 Quick Controls', install: false, uninstall: false) {
-    section('Authentication') {
-      if (!state.flairAccessToken) {
-        paragraph 'Not authenticated to Flair yet. Attempting authentication; please retry actions in a few seconds.'
-        try { autoAuthenticate() } catch (ignore) { }
-      } else {
-        paragraph 'Authenticated with Flair API.'
-      }
-    }
     section('Per-Room Percent') {
       def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
       vents.each { v ->
@@ -5284,6 +5249,5 @@ private void manualAllEditedVents() {
   atomicState.manualOverrides = overrides
   refreshVentTiles()
 }
-
 
 

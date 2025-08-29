@@ -54,5 +54,5 @@ class DabProgressTests extends Specification {
 
     then:
     html.contains('Select a room to view progress')
-
-  }\n}\n
+  }
+}
