@@ -498,6 +498,7 @@ def mainPage() {
     section('Debug Options') {
       input name: 'debugLevel', type: 'enum', title: 'Choose debug level', defaultValue: 0,
             options: [0: 'None', 1: 'Level 1 (All)', 2: 'Level 2', 3: 'Level 3'], submitOnChange: true
+      input name: 'failFastFinalization', type: 'bool', title: 'Enable Fail Fast Mode for Finalization', defaultValue: false, submitOnChange: true
       href name: 'diagnosticsLink', title: 'View Diagnostics',
            description: 'Troubleshoot vent data and logs', page: 'diagnosticsPage'
     }
@@ -3240,7 +3241,7 @@ def getHourlyRates(String roomId, String hvacMode, Integer hour) {
   if (list && list.size() > 0) { return list }
   // Fallback to hourlyRates index if entries empty
   try {
-    def rates = hist?.hourlyRates?.get(roomId)?.get(hvacMode)?.get(hour as Integer) ?: []
+    def rates = hist?.hourlyRates?.get(roomId)?.get(hvacMode)?.get(hour.toString()) ?: []
     return rates.collect { it as BigDecimal }
   } catch (ignore) {
     return []
@@ -3405,7 +3406,7 @@ def getAverageHourlyRate(String roomId, String hvacMode, Integer hour) {
   def hist = atomicState?.dabHistory
   def rates = []
   try {
-    rates = hist?.hourlyRates?.get(roomId)?.get(hvacMode)?.get(hour as Integer) ?: []
+    rates = hist?.hourlyRates?.get(roomId)?.get(hvacMode)?.get(hour.toString()) ?: []
   } catch (ignore) { rates = [] }
   if (!rates || rates.size() == 0) {
     rates = getHourlyRates(roomId, hvacMode, hour) ?: []
@@ -3513,22 +3514,23 @@ def appendHourlyRate(String roomId, String hvacMode, Integer hour, BigDecimal ra
   def hourly = (hist instanceof Map) ? (hist?.hourlyRates ?: [:]) : [:]
   def room = hourly[roomId] ?: [:]
   def mode = room[hvacMode] ?: [:]
-  Integer h = hour as Integer
-  def list = (mode[h] ?: []) as List
+  String hKey = hour.toString()
+  def list = (mode[hKey] ?: []) as List
   list << (rate as BigDecimal)
   Integer retention = getRetentionDays()
   if (list.size() > retention) {
     list = list[-retention..-1]
   }
-  mode[h] = list
+  mode[hKey] = list
   room[hvacMode] = mode
   hourly[roomId] = room
-  try { hist.hourlyRates = hourly } catch (ignore) { }
+    try { hist.hourlyRates = hourly } catch (ignore) { }
   // Also mirror into flat entries for union-based queries (CI/tests and progress page)
   try {
     def entries = (hist instanceof List) ? (hist as List) : (hist.entries ?: [])
     Long ts = now()
-    entries << [ts, roomId, hvacMode, h, (rate as BigDecimal)]
+    Integer hInt = hour as Integer
+    entries << [ts, roomId, hvacMode, hInt, (rate as BigDecimal)]
     Long cutoff = ts - retention * 24L * 60L * 60L * 1000L
     entries = entries.findAll { e ->
       try { return (e[0] as Long) >= cutoff } catch (ignore) { return false }
@@ -3908,7 +3910,7 @@ def finalizeRoomStates(data) {
         BigDecimal currentTemp = getRoomTemp(vent)
         BigDecimal lastStartTemp = vent.currentValue('room-starting-temperature-c') ?: 0
         BigDecimal currentRate = vent.currentValue(ratePropName) ?: 0
-        def newRate = calculateRoomChangeRate(lastStartTemp, currentTemp, totalCycleMinutes, percentOpen, currentRate)
+        def newRate = calculateRoomChangeRateRef(lastStartTemp, currentTemp, totalCycleMinutes, percentOpen, currentRate)
         
         if (newRate <= 0) {
           log(3, 'App', "New rate for ${roomName} is ${newRate}")
@@ -3980,6 +3982,7 @@ def finalizeRoomStates(data) {
       }
       } catch (Exception e) {
         logError("Error processing room ${roomId} in finalizeRoomStates: ${e?.message}", 'DAB', roomId)
+        if (settings?.failFastFinalization) { throw e }
       }
     }
   } else {
@@ -4444,6 +4447,45 @@ def calculateRoomChangeRate(BigDecimal lastStartTemp, BigDecimal currentTemp, Bi
     // Return minimum rate instead of excluding to prevent zero efficiency
     return MIN_TEMP_CHANGE_RATE
   }
+  return approxRate
+}
+
+// Refactored variant used by finalization path
+def calculateRoomChangeRateRef(BigDecimal lastStartTemp, BigDecimal currentTemp, BigDecimal totalMinutes, int percentOpen, BigDecimal currentRate) {
+  if (!_validateRateInputsRef(lastStartTemp, currentTemp, totalMinutes, percentOpen, currentRate)) { return -1 }
+  BigDecimal diff = (lastStartTemp - currentTemp).abs()
+  if (!_isSignificantTempChangeRef(diff)) { return _onInsignificantChangeRef(percentOpen) }
+  BigDecimal adj = _adjustForAccuracyRef(diff)
+  BigDecimal rate = adj / totalMinutes
+  BigDecimal pOpen = percentOpen / 100
+  BigDecimal maxRate = rate.max(currentRate)
+  BigDecimal approx = maxRate != 0 ? (rate / maxRate) / pOpen : 0
+  return _clampRateRef(approx)
+}
+
+private boolean _validateRateInputsRef(BigDecimal lastStartTemp, BigDecimal currentTemp, BigDecimal totalMinutes, int percentOpen, BigDecimal currentRate) {
+  if (lastStartTemp == null || currentTemp == null || totalMinutes == null || currentRate == null) { return false }
+  if (totalMinutes < MIN_MINUTES_TO_SETPOINT) { return false }
+  if (totalMinutes < MIN_RUNTIME_FOR_RATE_CALC) { return false }
+  if (percentOpen <= MIN_PERCENTAGE_OPEN) { return false }
+  return true
+}
+
+private boolean _isSignificantTempChangeRef(BigDecimal diffTemps) {
+  return !(diffTemps < MIN_DETECTABLE_TEMP_CHANGE)
+}
+
+private BigDecimal _onInsignificantChangeRef(int percentOpen) {
+  return (percentOpen >= 30) ? MIN_TEMP_CHANGE_RATE : -1
+}
+
+private BigDecimal _adjustForAccuracyRef(BigDecimal diffTemps) {
+  return (diffTemps < TEMP_SENSOR_ACCURACY) ? diffTemps.max(MIN_DETECTABLE_TEMP_CHANGE) : diffTemps
+}
+
+private BigDecimal _clampRateRef(BigDecimal approxRate) {
+  if (approxRate > MAX_TEMP_CHANGE_RATE) { return -1 }
+  if (approxRate < MIN_TEMP_CHANGE_RATE) { return MIN_TEMP_CHANGE_RATE }
   return approxRate
 }
 
