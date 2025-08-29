@@ -1,8 +1,13 @@
-VAC state (in minutes).
-@Field static final Integer POLLING_INTERVAL_ACTIVE = 3     // When HVAC is running
-@Field static final Integer POLLING_INTERVAL_IDLE = 10      // When HVAC is idle
+        openAllVents(atomicState.ventsByRoomId, MAX_PERCENTAGE_OPEN as int)
+      }
 
-// Delay before initializing room states after certain events (in milliseconds).
-@Field static final Integer INITIALIZATION_DELAY_MS = 3000
+      // Update polling to idle interval when HVAC is idle
+      updateDevicePollingInterval((settings?.pollingIntervalIdle ?: POLLING_INTERVAL_IDLE) as Integer)
+      break
+  }
+}
 
-// Delay after a thermostat state change before reinitializing
+// Periodically evaluate duct temperatures to determine HVAC state
+// without relying on an external thermostat.
+def updateHvacStateFromDuctTemps() {
+  if (!settings?.dabEnabled) { return }

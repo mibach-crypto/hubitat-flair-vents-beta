@@ -496,10 +496,10 @@ def diagnosticsPage() {
         try { state.diagnosticsJson = buildDiagnosticsJson() } catch (ignore) { state.diagnosticsJson = '{}' }
         app.updateSetting('exportDiagnosticsNow','')
       }
-      paragraph 'Copy JSON from app logs (next release will render textarea safely).',
+      paragraph 'Copy JSON from app logs (next release will render textarea safely).'
       try { log(2, 'App', 'Diagnostics JSON: ' + state.diagnosticsJson) } catch (ignore) { }
     }
-    }
+    
     section('Actions') {
       input name: 'reauthenticate', type: 'button', title: 'Re-Authenticate'
       input name: 'resyncVents', type: 'button', title: 'Re-Sync Vents'
