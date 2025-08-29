@@ -134,6 +134,12 @@ import java.net.URLEncoder
 // End Constants
 // ------------------------------
 
+// Raw data cache defaults and fallbacks
+@Field static final Integer RAW_CACHE_DEFAULT_HOURS = 24
+@Field static final Integer RAW_CACHE_MAX_ENTRIES = 20000
+@Field static final BigDecimal DEFAULT_COOLING_SETPOINT_C = 24.0
+@Field static final BigDecimal DEFAULT_HEATING_SETPOINT_C = 20.0
+
 definition(
     name: 'Flair Vents',
     namespace: 'bot.flair',
@@ -236,7 +242,7 @@ def mainPage() {
       }
       if (dabEnabled) {
         section('Thermostat & Globals') {
-          input name: 'thermostat1', type: 'capability.thermostat', title: 'Choose Thermostat for Vents', multiple: false, required: true
+          input name: 'thermostat1', type: 'capability.thermostat', title: 'Optional: Thermostat for global setpoint', multiple: false, required: false
           input name: 'thermostat1TempUnit', type: 'enum', title: 'Units used by Thermostat', defaultValue: 2,
                 options: [1: 'Celsius (Ã¢â€Â¬Ã¢â€“â€˜C)', 2: 'Fahrenheit (Ã¢â€Â¬Ã¢â€“â€˜F)']
           input name: 'thermostat1AdditionalStandardVents', type: 'number', title: 'Count of conventional Vents', defaultValue: 0, submitOnChange: true
@@ -290,13 +296,20 @@ def mainPage() {
             input name: 'pollingIntervalIdle', type: 'number', title: 'Idle polling interval (minutes)', defaultValue: 10, submitOnChange: true
           }
 
-          // Dashboard tiles
-          section('Dashboard Tiles') {
-            input name: 'enableDashboardTiles', type: 'bool', title: 'Enable vent dashboard tiles', defaultValue: false, submitOnChange: true
-            input name: 'syncVentTiles', type: 'button', title: 'Create/Sync Tiles', submitOnChange: true
-            if (settings?.syncVentTiles) {
-              try { syncVentTiles() } catch (e) { logError "Tile sync failed: ${e?.message}" } finally { app.updateSetting('syncVentTiles','') }
-            }
+      // Dashboard tiles
+      section('Dashboard Tiles') {
+        input name: 'enableDashboardTiles', type: 'bool', title: 'Enable vent dashboard tiles', defaultValue: false, submitOnChange: true
+        input name: 'syncVentTiles', type: 'button', title: 'Create/Sync Tiles', submitOnChange: true
+        if (settings?.syncVentTiles) {
+          try { syncVentTiles() } catch (e) { logError "Tile sync failed: ${e?.message}" } finally { app.updateSetting('syncVentTiles','') }
+        }
+      }
+
+          // Raw Data Cache (for diagnostics and optional DAB calculations)
+          section('Raw Data Cache') {
+            input name: 'enableRawCache', type: 'bool', title: 'Enable raw data cache (24h)', defaultValue: true, submitOnChange: true
+            input name: 'rawDataRetentionHours', type: 'number', title: 'Raw data retention (hours)', defaultValue: RAW_CACHE_DEFAULT_HOURS, submitOnChange: true
+            input name: 'useCachedRawForDab', type: 'bool', title: 'Calculate DAB using cached raw data', defaultValue: false, submitOnChange: true
           }
 
   // Data smoothing and robustness (optional)
@@ -398,10 +411,7 @@ def mainPage() {
       def vents = getChildDevices().findAll { it.hasAttribute('percent-open') }
       section('Thermostat Mapping') {
         for (child in vents) {
-          input name: "vent${child.getId()}Thermostat", type: 'capability.temperatureMeasurement', title: "Choose Thermostat for ${child.getLabel()}", multiple: false, required: true
-          if (validation.errors?.roomMappings?.contains(child.getLabel())) {
-            paragraph "<span style='color: red;'>Room mapping required for ${child.getLabel()}</span>"
-          }
+          input name: "vent${child.getId()}Thermostat", type: 'capability.temperatureMeasurement', title: "Optional: Temperature sensor for ${child.getLabel()}", multiple: false, required: false
         }
       }
 
@@ -413,6 +423,15 @@ def mainPage() {
         paragraph '<small>Select how granular the vent adjustments should be. For example, if you choose 50%, vents ' +
                   'will only adjust to 0%, 50%, or 100%. Lower percentages allow for finer control, but may ' +
                   'result in more frequent adjustments (which could affect battery-powered vents).</small>'
+      }
+
+      // Optional per-vent weighting within a room (to bias distribution)
+      section('Per-Vent Weighting (optional)') {
+        vents.each { v ->
+          input name: "vent${v.getId()}Weight", type: 'number', title: "Weight for ${v.getLabel()} (default 1.0)", defaultValue: 1.0, submitOnChange: true
+        }
+        paragraph '<small>When a room has multiple vents, the system calculates a room-level target and then vents are adjusted individually. '
+                + 'Weights bias openings within a room: higher weight => relatively more opening. Leave at 1.0 for equal weighting.</small>'
       }
 
       if (state.ventPatchDiscrepancies) {
@@ -497,6 +516,22 @@ def diagnosticsPage() {
         app.updateSetting('exportDiagnosticsNow','')
       }
       paragraph 'Copy JSON from app logs (next release will render textarea safely).'
+    }
+    section('Raw Data Cache') {
+      def entries = (atomicState?.rawDabSamplesEntries ?: [])
+      paragraph "Raw cache enabled: ${settings?.enableRawCache == true}"
+      paragraph "Entries: ${entries.size()} | Retention (h): ${settings?.rawDataRetentionHours ?: RAW_CACHE_DEFAULT_HOURS}"
+      input name: 'exportRawCacheNow', type: 'button', title: 'Export Raw Cache (JSON)', submitOnChange: true
+      input name: 'clearRawCacheNow', type: 'button', title: 'Clear Raw Cache', submitOnChange: true
+      if (settings?.exportRawCacheNow) {
+        try { state.rawCacheJson = buildRawCacheJson() } catch (ignore) { state.rawCacheJson = '{}' }
+        app.updateSetting('exportRawCacheNow','')
+      }
+      if (settings?.clearRawCacheNow) {
+        clearRawCache()
+        app.updateSetting('clearRawCacheNow','')
+      }
+      paragraph 'Exported data is stored in state and shown in logs.'
     }
     
     section('Actions') {
@@ -664,9 +699,32 @@ def initialize() {
     runEvery1Minute('updateHvacStateFromDuctTemps')
     unschedule('aggregateDailyDabStats')
     runEvery1Day('aggregateDailyDabStats')
+    // Raw data cache samplers
+    try {
+      if (settings?.enableRawCache) {
+        runEvery1Minute('sampleRawDabData')
+        runEvery1Hour('pruneRawCache')
+      } else {
+        unschedule('sampleRawDabData')
+        unschedule('pruneRawCache')
+      }
+    } catch (e) { log(2, 'App', "Raw cache scheduler error: ${e?.message}") }
+    // Also subscribe to thermostat events as a fallback when duct temps are not available
+    try {
+      if (settings?.thermostat1) {
+        subscribe(settings.thermostat1, 'thermostatOperatingState', 'thermostat1ChangeStateHandler')
+        subscribe(settings.thermostat1, 'temperature', 'thermostat1ChangeTemp')
+        subscribe(settings.thermostat1, 'coolingSetpoint', 'thermostat1ChangeTemp')
+        subscribe(settings.thermostat1, 'heatingSetpoint', 'thermostat1ChangeTemp')
+      }
+    } catch (e) {
+      log(2, 'App', "Thermostat subscription error: ${e?.message}")
+    }
   } else {
     unschedule('updateHvacStateFromDuctTemps')
     unschedule('aggregateDailyDabStats')
+    unschedule('sampleRawDabData')
+    unschedule('pruneRawCache')
   }
   // Schedule periodic cleanup of instance caches and pending requests
   runEvery5Minutes('cleanupPendingRequests')
@@ -710,6 +768,14 @@ private BigDecimal getRoomTemp(def vent) {
   def ventId = vent.getId()
   def roomName = vent.currentValue('room-name') ?: 'Unknown'
   def tempDevice = settings."vent${ventId}Thermostat"
+  // If enabled, prefer latest cached raw sample
+  if (settings?.useCachedRawForDab) {
+    def samp = getLatestRawSample(vent.getDeviceNetworkId())
+    if (samp && samp.size() >= 9) {
+      def roomC = samp[5]
+      if (roomC != null) { return roomC as BigDecimal }
+    }
+  }
   
   if (tempDevice) {
     def temp = tempDevice.currentValue('temperature')
@@ -763,6 +829,25 @@ def getThermostatSetpoint(String hvacMode) {
     setpoint = convertFahrenheitToCentigrade(setpoint)
   }
   return setpoint
+}
+
+// Global setpoint resolution that does not require a thermostat.
+// Falls back to median room setpoints from vent rooms when thermostat is absent.
+def getGlobalSetpoint(String hvacMode) {
+  try {
+    def sp = getThermostatSetpoint(hvacMode)
+    if (sp != null) { return sp }
+  } catch (ignore) { }
+  // Compute median of room set-points (Celsius) from vents
+  def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+  def list = vents.collect { it.currentValue('room-set-point-c') }.findAll { it != null }.collect { it as BigDecimal }
+  if (list && list.size() > 0) {
+    def sorted = list.sort()
+    int mid = sorted.size().intdiv(2)
+    return sorted[mid] as BigDecimal
+  }
+  // Fallback defaults
+  return (hvacMode == COOLING ? DEFAULT_COOLING_SETPOINT_C : DEFAULT_HEATING_SETPOINT_C)
 }
 
 def roundBigDecimal(BigDecimal number, int scale = 3) {
@@ -845,7 +930,13 @@ def hasRoomReachedSetpoint(String hvacMode, BigDecimal setpoint, BigDecimal curr
 
 // Determine HVAC mode purely from vent duct temperatures. Returns
 // 'heating', 'cooling', or null if HVAC is idle.
-def calculateHvacMode() {
+def calculateHvacMode(BigDecimal temp, BigDecimal coolingSetpoint, BigDecimal heatingSetpoint) {
+  calculateHvacModeRobust()
+}
+
+// Robust HVAC mode detection using median duct-room temperature difference
+// with thermostat operating state as a fallback.
+def calculateHvacModeRobust() {
   def vents = getChildDevices()?.findAll {
     it.currentValue('duct-temperature-c') != null &&
     (it.currentValue('room-current-temperature-c') != null ||
@@ -854,29 +945,37 @@ def calculateHvacMode() {
     (it.currentValue('percent-open') == null ||
      (it.currentValue('percent-open') as BigDecimal) > 0)
   }
-  if (!vents || vents.isEmpty()) { return null }
 
-  BigDecimal avgDiff = 0.0
-  vents.each { v ->
-    BigDecimal duct = v.currentValue('duct-temperature-c') as BigDecimal
-    BigDecimal room = (v.currentValue('room-current-temperature-c') ?:
-                       v.currentValue('current-temperature-c') ?:
-                       v.currentValue('temperature')) as BigDecimal
-    BigDecimal diff = duct - room
-    log(4, 'DAB', "Vent ${v?.displayName ?: v?.id}: duct=${duct}Ã¢â€Â¬Ã¢â€“â€˜C room=${room}Ã¢â€Â¬Ã¢â€“â€˜C diff=${diff}Ã¢â€Â¬Ã¢â€“â€˜C", v?.id)
-    avgDiff += diff
+  def fallbackFromThermostat = {
+    try {
+      String op = settings?.thermostat1?.currentValue('thermostatOperatingState')?.toString()?.toLowerCase()
+      if (op in ['heating', 'pending heat']) { return HEATING }
+      if (op in ['cooling', 'pending cool']) { return COOLING }
+    } catch (ignore) { }
+    return null
   }
-  avgDiff = avgDiff / vents.size()
-  log(4, 'DAB', "Average duct-room temp diff=${avgDiff}Ã¢â€Â¬Ã¢â€“â€˜C")
-  if (avgDiff > DUCT_TEMP_DIFF_THRESHOLD) { return HEATING }
-  if (avgDiff < -DUCT_TEMP_DIFF_THRESHOLD) { return COOLING }
-  null
-}
 
-// Backwards-compatible signature; ignores parameters and delegates to
-// the duct temperature based calculation.
-def calculateHvacMode(BigDecimal temp, BigDecimal coolingSetpoint, BigDecimal heatingSetpoint) {
-  calculateHvacMode()
+  if (!vents || vents.isEmpty()) { return fallbackFromThermostat() }
+
+  def diffs = []
+  vents.each { v ->
+    try {
+      BigDecimal duct = v.currentValue('duct-temperature-c') as BigDecimal
+      BigDecimal room = (v.currentValue('room-current-temperature-c') ?:
+                         v.currentValue('current-temperature-c') ?:
+                         v.currentValue('temperature')) as BigDecimal
+      BigDecimal diff = duct - room
+      diffs << diff
+      log(4, 'DAB', "Vent ${v?.displayName ?: v?.id}: duct=${duct}C room=${room}C diff=${diff}C", v?.id)
+    } catch (ignore) { }
+  }
+  if (!diffs) { return fallbackFromThermostat() }
+  def sorted = diffs.sort()
+  BigDecimal median = sorted[sorted.size().intdiv(2)] as BigDecimal
+  log(4, 'DAB', "Median duct-room temp diff=${median}C")
+  if (median > DUCT_TEMP_DIFF_THRESHOLD) { return HEATING }
+  if (median < -DUCT_TEMP_DIFF_THRESHOLD) { return COOLING }
+  return fallbackFromThermostat()
 }
 
 void removeChildren() {
@@ -928,18 +1027,6 @@ private Map validatePreferences() {
     if (settings?.validateNow) logValidationFailure('clientSecret', 'missing')
     valid = false
   }
-
-  def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') }
-  def missingRooms = []
-  vents.each { v ->
-    def key = "vent${v.getId()}Thermostat"
-    if (!settings?."${key}") {
-      missingRooms << v.getLabel()
-      if (settings?.validateNow) logValidationFailure(key, 'missing')
-      valid = false
-    }
-  }
-  if (missingRooms) { errors.roomMappings = missingRooms }
 
   // Polling interval validation moved to runtime to avoid strict CI constraints on reading non-registered inputs
 
@@ -1095,6 +1182,87 @@ private initializeInstanceCaches() {
     state."${cacheKey}_pendingDeviceRequests" = [:]
     state."${cacheKey}_initialized" = true
     log(3, 'App', "Initialized instance-based caches for instance ${instanceId}")
+  }
+}
+
+// ------------------------------
+// Raw DAB Data Cache (24h rolling)
+// ------------------------------
+
+private Integer getRawCacheRetentionHours() {
+  try {
+    Integer h = (settings?.rawDataRetentionHours ?: RAW_CACHE_DEFAULT_HOURS) as Integer
+    if (h < 1) { h = 1 }
+    if (h > 48) { h = 48 }
+    return h
+  } catch (ignore) { return RAW_CACHE_DEFAULT_HOURS }
+}
+
+private Long getRawCacheCutoffTs() {
+  return now() - (getRawCacheRetentionHours() * 60L * 60L * 1000L)
+}
+
+private void appendRawDabSample(List entry) {
+  try {
+    def list = atomicState?.rawDabSamplesEntries ?: []
+    list << entry
+    // Trim by cutoff time
+    Long cutoff = getRawCacheCutoffTs()
+    list = list.findAll { e ->
+      try { return (e[0] as Long) >= cutoff } catch (ignore) { return false }
+    }
+    // Hard cap to avoid runaway
+    if (list.size() > RAW_CACHE_MAX_ENTRIES) { list = list[-RAW_CACHE_MAX_ENTRIES..-1] }
+    atomicState.rawDabSamplesEntries = list
+    // Quick latest index for O(1) get
+    def lastByVent = atomicState?.rawDabLastByVent ?: [:]
+    lastByVent[(entry[1] as String)] = entry
+    atomicState.rawDabLastByVent = lastByVent
+  } catch (ignore) { }
+}
+
+private List getLatestRawSample(String ventId) {
+  try { return (atomicState?.rawDabLastByVent ?: [:])[ventId] as List } catch (ignore) { return null }
+}
+
+def pruneRawCache() {
+  try {
+    def list = atomicState?.rawDabSamplesEntries ?: []
+    if (!list) { return }
+    Long cutoff = getRawCacheCutoffTs()
+    list = list.findAll { e ->
+      try { return (e[0] as Long) >= cutoff } catch (ignore) { return false }
+    }
+    if (list.size() > RAW_CACHE_MAX_ENTRIES) { list = list[-RAW_CACHE_MAX_ENTRIES..-1] }
+    atomicState.rawDabSamplesEntries = list
+    // Optionally rebuild lastByVent map
+    def lastByVent = [:]
+    list.each { e -> lastByVent[(e[1] as String)] = e }
+    atomicState.rawDabLastByVent = lastByVent
+  } catch (ignore) { }
+}
+
+def sampleRawDabData() {
+  if (!settings?.enableRawCache) { return }
+  try {
+    Long ts = now()
+    String hvacMode = calculateHvacModeRobust()
+    def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+    vents.each { v ->
+      try {
+        String ventId = v.getDeviceNetworkId()
+        String roomId = v.currentValue('room-id')?.toString()
+        BigDecimal ductC = v.currentValue('duct-temperature-c') != null ? (v.currentValue('duct-temperature-c') as BigDecimal) : null
+        def roomCv = (v.currentValue('room-current-temperature-c') ?: v.currentValue('current-temperature-c'))
+        BigDecimal roomC = roomCv != null ? (roomCv as BigDecimal) : null
+        BigDecimal pct = (v.currentValue('percent-open') ?: v.currentValue('level') ?: 0) as BigDecimal
+        boolean active = (v.currentValue('room-active') ?: 'false') == 'true'
+        BigDecimal rSet = v.currentValue('room-set-point-c') != null ? (v.currentValue('room-set-point-c') as BigDecimal) : null
+        appendRawDabSample([ts, ventId, roomId, hvacMode, ductC, roomC, pct, active, rSet])
+      } catch (ignore) { }
+    }
+  } catch (e) {
+    log(2, 'App', "Raw sampler error: ${e?.message}")
   }
 }
 
@@ -2919,7 +3087,7 @@ def thermostat1ChangeStateHandler(evt) {
 def updateHvacStateFromDuctTemps() {
   if (!settings?.dabEnabled) { return }
   String previousMode = atomicState.thermostat1State?.mode ?: 'idle'
-  String hvacMode = calculateHvacMode()
+  String hvacMode = calculateHvacModeRobust()
   if (hvacMode != previousMode) {
     appendDabActivityLog("Start: ${previousMode} ÃŽâ€œÃƒÂ¥Ãƒâ€  ${hvacMode ?: 'idle'}")
   }
@@ -2983,7 +3151,7 @@ def evaluateRebalancingVents() {
   if (!atomicState.thermostat1State) { return }
   def ventIdsByRoomId = atomicState.ventsByRoomId
   String hvacMode = atomicState.thermostat1State?.mode
-  def setPoint = getThermostatSetpoint(hvacMode)
+  def setPoint = getGlobalSetpoint(hvacMode)
 
   ventIdsByRoomId.each { roomId, ventIds ->
     for (ventId in ventIds) {
@@ -3558,6 +3726,22 @@ def finalizeRoomStates(data) {
     Integer hour = new Date(data.startedCycle).format('H', location?.timeZone ?: TimeZone.getTimeZone('UTC')) as Integer
 
     data.ventIdsByRoomId.each { roomId, ventIds ->
+      // Compute aggregated percent-open for the whole room (sum, capped to 100)
+      int roomPercentOpen = 0
+      try {
+        ventIds.each { vid ->
+          def v = getChildDevice(vid)
+          if (!v) { return }
+          def p = (v?.currentValue('percent-open') ?: v?.currentValue('level') ?: 0)
+          if (settings?.useCachedRawForDab) {
+            def samp = getLatestRawSample(vid)
+            if (samp && samp.size() >= 9 && samp[6] != null) { p = (samp[6] as BigDecimal) }
+          }
+          try { roomPercentOpen += ((p ?: 0) as BigDecimal).intValue() } catch (ignore) { }
+        }
+        if (roomPercentOpen > 100) { roomPercentOpen = 100 }
+      } catch (ignore) { roomPercentOpen = 0 }
+
       for (ventId in ventIds) {
         def vent = getChildDevice(ventId)
         if (!vent) {
@@ -3577,8 +3761,8 @@ def finalizeRoomStates(data) {
           continue
         }
         
-        // Calculate rate for this room (first vent in room)
-        def percentOpen = (vent.currentValue('percent-open') ?: 0).toInteger()
+        // Calculate rate for this room (first vent in room) using aggregated room opening
+        def percentOpen = roomPercentOpen
         BigDecimal currentTemp = getRoomTemp(vent)
         BigDecimal lastStartTemp = vent.currentValue('room-starting-temperature-c') ?: 0
         BigDecimal currentRate = vent.currentValue(ratePropName) ?: 0
@@ -3589,7 +3773,7 @@ def finalizeRoomStates(data) {
           
           // Check if room is already at or beyond setpoint
           def isAtSetpoint = hasRoomReachedSetpoint(data.hvacMode, 
-              getThermostatSetpoint(data.hvacMode), currentTemp)
+              getGlobalSetpoint(data.hvacMode), currentTemp)
           
           if (isAtSetpoint && currentRate > 0) {
             // Room is already at setpoint - maintain last known efficiency
@@ -3598,7 +3782,7 @@ def finalizeRoomStates(data) {
           } else if (percentOpen > 0) {
             // Vent was open but no temperature change - use minimum rate
             newRate = MIN_TEMP_CHANGE_RATE
-            log(3, 'App', "Setting minimum rate for ${roomName} - no temperature change detected with ${percentOpen}% open vent")
+            log(3, 'App', "Setting minimum rate for ${roomName} - no temperature change detected with ${percentOpen}% room opening")
           } else if (currentRate == 0) {
             // Room has zero efficiency and vent was closed - set baseline efficiency
             def maxRate = data.hvacMode == COOLING ? 
@@ -3691,10 +3875,10 @@ def initializeRoomStates(String hvacMode) {
     }
   }
 
-  BigDecimal setpoint = getThermostatSetpoint(hvacMode)
+  BigDecimal setpoint = getGlobalSetpoint(hvacMode)
   if (!setpoint) { return }
   atomicStateUpdate('thermostat1State', 'startedCycle', now())
-  def rateAndTempPerVentId = getAttribsPerVentId(atomicState.ventsByRoomId, hvacMode)
+  def rateAndTempPerVentId = getAttribsPerVentIdWeighted(atomicState.ventsByRoomId, hvacMode)
   
   def maxRunningTime = atomicState.maxHvacRunningTime ?: MAX_MINUTES_TO_SETPOINT
   def longestTimeToTarget = calculateLongestMinutesToTarget(rateAndTempPerVentId, hvacMode, setpoint, maxRunningTime, settings.thermostat1CloseInactiveRooms)
@@ -3862,6 +4046,42 @@ def getAttribsPerVentId(ventsByRoomId, String hvacMode) {
         }
         
         rateAndTemp[ventId] = [ rate: rate, temp: roomTemp, active: isActive, name: roomName ]
+      } catch (err) {
+        logError err
+      }
+    }
+  }
+  return rateAndTemp
+}
+
+// Weighted variant that applies optional per-vent weights to bias openings in multi-vent rooms
+def getAttribsPerVentIdWeighted(ventsByRoomId, String hvacMode) {
+  def rateAndTemp = [:]
+  ventsByRoomId.each { roomId, ventIds ->
+    for (ventId in ventIds) {
+      try {
+        def vent = getChildDevice(ventId)
+        if (!vent) { continue }
+        def baseRate = hvacMode == COOLING ? (vent.currentValue('room-cooling-rate') ?: 0) : (vent.currentValue('room-heating-rate') ?: 0)
+        baseRate = baseRate ?: 0
+        def isActive = vent.currentValue('room-active') == 'true'
+        def roomTemp = getRoomTemp(vent)
+        def roomName = vent.currentValue('room-name') ?: ''
+        BigDecimal weight = 1.0
+        try {
+          def w = settings?."vent${ventId}Weight"
+          if (w != null) {
+            weight = (w as BigDecimal)
+            if (weight <= 0) { weight = 1.0 }
+          }
+        } catch (ignore) { weight = 1.0 }
+        def effectiveRate
+        try { effectiveRate = (baseRate as BigDecimal) / (weight as BigDecimal) } catch (ignore) { effectiveRate = baseRate }
+        if ((effectiveRate ?: 0) == 0) {
+          def tempSource = settings."vent${ventId}Thermostat" ? "Puck ${settings."vent${ventId}Thermostat".getLabel()}" : "Room API"
+          log(2, 'App', "Room '${roomName}' has zero ${hvacMode} efficiency rate, temp=${roomTemp}C from ${tempSource}")
+        }
+        rateAndTemp[ventId] = [ rate: effectiveRate, temp: roomTemp, active: isActive, name: roomName ]
       } catch (err) {
         logError err
       }
@@ -5373,6 +5593,32 @@ private String buildDiagnosticsJson() {
   try { return groovy.json.JsonOutput.toJson(snapshot) } catch (ignore) { return '{}' }
 }
 
+private String buildRawCacheJson() {
+  try {
+    def list = (atomicState?.rawDabSamplesEntries ?: [])
+    def trimmed = list.size() > 5000 ? list[-5000..-1] : list
+    def payload = [
+      generatedAt: new Date().format('yyyy-MM-dd HH:mm:ss', location?.timeZone ?: TimeZone.getTimeZone('UTC')),
+      retentionHours: settings?.rawDataRetentionHours ?: RAW_CACHE_DEFAULT_HOURS,
+      entries: trimmed
+    ]
+    def json = groovy.json.JsonOutput.toJson(payload)
+    log(2, 'App', "Raw cache export: ${trimmed.size()} entries")
+    return json
+  } catch (e) {
+    log(2, 'App', "Raw cache export failed: ${e?.message}")
+    return '{}'
+  }
+}
+
+private void clearRawCache() {
+  try {
+    atomicState.remove('rawDabSamplesEntries')
+    atomicState.remove('rawDabLastByVent')
+    log(2, 'App', 'Cleared raw data cache')
+  } catch (ignore) { }
+}
+
 def dabHealthMonitor() {
   try {
     def issues = []
@@ -5392,3 +5638,4 @@ def dabHealthMonitor() {
     try { logWarn("Health monitor error: ${e?.message}", 'DAB') } catch (ignore) { }
   }
 }
+
