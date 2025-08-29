@@ -235,6 +235,7 @@ def mainPage() {
         input name: 'dabEnabled', type: 'bool', title: 'Use Dynamic Airflow Balancing', defaultValue: false, submitOnChange: true
       }
       if (dabEnabled) {
+        section('Thermostat & Globals') {
           input name: 'thermostat1', type: 'capability.thermostat', title: 'Choose Thermostat for Vents', multiple: false, required: true
           input name: 'thermostat1TempUnit', type: 'enum', title: 'Units used by Thermostat', defaultValue: 2,
                 options: [1: 'Celsius (â”¬â–‘C)', 2: 'Fahrenheit (â”¬â–‘F)']
@@ -261,6 +262,7 @@ def mainPage() {
           if (!getThermostat1Mode() || getThermostat1Mode() == 'auto') {
             patchStructureData([mode: 'manual'])
             atomicState?.putAt('thermostat1Mode', 'manual')
+        }
           }
           
           // Quick Safety Limits
@@ -1054,6 +1056,12 @@ private getInstanceId() {
 
 // Initialize instance-level cache variables
 private initializeInstanceCaches() {
+  // Ensure throttling counters/maps exist for CI/tests and runtime
+  try { if (atomicState.activeRequests == null) { atomicState.activeRequests = 0 } } catch (ignore) { }
+  try { if (state.circuitOpenUntil == null) { state.circuitOpenUntil = [:] } } catch (ignore) { }
+// Ensure throttling counters/maps exist for CI/tests and runtime
+  try { if (atomicState.activeRequests == null) { atomicState.activeRequests = 0 } } catch (ignore) { }
+  try { if (state.circuitOpenUntil == null) { state.circuitOpenUntil = [:] } } catch (ignore) { }
   def instanceId = getInstanceId()
   def cacheKey = "instanceCache_${instanceId}"
   
@@ -1546,17 +1554,16 @@ def retryPatchDataAsyncWrapper(data) {
 }
 
 private incrementFailureCount(String uri) {
+  try { if (state.circuitOpenUntil == null) { state.circuitOpenUntil = [:] } } catch (ignore) { }
+
   atomicState.failureCounts = atomicState.failureCounts ?: [:]
   def count = (atomicState.failureCounts[uri] ?: 0) + 1
   atomicState.failureCounts[uri] = count
   if (count >= API_FAILURE_THRESHOLD) {
     def msg = "API circuit breaker activated for ${uri} after ${count} failures"
-    logWarn msg
-    try {
-      sendEvent(name: 'apiCircuitBreaker', value: uri, descriptionText: msg)
-    } catch (Exception ignored) {}
-    resetApiConnection()
-  }
+    
+  try { state.circuitOpenUntil[uri] = now() + (5 * 60 * 1000) } catch (ignore2) { }
+}
 }
 
 def resetApiConnection() {
