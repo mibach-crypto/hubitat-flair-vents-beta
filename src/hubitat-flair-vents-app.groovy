@@ -109,7 +109,7 @@ import java.net.URLEncoder
 
 // Minimum average difference between duct and room temperature (in Ã¢â€Â¬Ã¢â€“â€˜C)
 // required to determine that the HVAC system is actively heating or cooling.
-@Field static final BigDecimal DUCT_TEMP_DIFF_THRESHOLD = 1.0
+@Field static final BigDecimal DUCT_TEMP_DIFF_THRESHOLD = 0.5
 
 // Polling intervals based on HVAC state (in minutes).
 @Field static final Integer POLLING_INTERVAL_ACTIVE = 3     // When HVAC is running
@@ -953,7 +953,14 @@ def hasRoomReachedSetpoint(String hvacMode, BigDecimal setpoint, BigDecimal curr
 // Determine HVAC mode purely from vent duct temperatures. Returns
 // 'heating', 'cooling', or null if HVAC is idle.
 def calculateHvacMode(BigDecimal temp, BigDecimal coolingSetpoint, BigDecimal heatingSetpoint) {
-  calculateHvacModeRobust()
+  try {
+    if (temp != null) {
+      // Simple param-based inference with small hysteresis using SETPOINT_OFFSET
+      if (coolingSetpoint != null && temp >= (coolingSetpoint + SETPOINT_OFFSET)) { return COOLING }
+      if (heatingSetpoint != null && temp <= (heatingSetpoint - SETPOINT_OFFSET)) { return HEATING }
+    }
+  } catch (ignore) { }
+  return calculateHvacModeRobust()
 }
 
 // Robust HVAC mode detection using median duct-room temperature difference
@@ -963,9 +970,7 @@ def calculateHvacModeRobust() {
     it.currentValue('duct-temperature-c') != null &&
     (it.currentValue('room-current-temperature-c') != null ||
      it.currentValue('current-temperature-c') != null ||
-     it.currentValue('temperature') != null) &&
-    (it.currentValue('percent-open') == null ||
-     (it.currentValue('percent-open') as BigDecimal) > 0)
+     it.currentValue('temperature') != null)
   }
 
   def fallbackFromThermostat = {
@@ -977,7 +982,7 @@ def calculateHvacModeRobust() {
     return null
   }
 
-  if (!vents || vents.isEmpty()) { return fallbackFromThermostat() }
+  if (!vents || vents.isEmpty()) { return (fallbackFromThermostat() ?: 'idle') }
 
   def diffs = []
   vents.each { v ->
@@ -991,13 +996,13 @@ def calculateHvacModeRobust() {
       log(4, 'DAB', "Vent ${v?.displayName ?: v?.id}: duct=${duct}C room=${room}C diff=${diff}C", v?.id)
     } catch (ignore) { }
   }
-  if (!diffs) { return fallbackFromThermostat() }
+  if (!diffs) { return (fallbackFromThermostat() ?: 'idle') }
   def sorted = diffs.sort()
   BigDecimal median = sorted[sorted.size().intdiv(2)] as BigDecimal
   log(4, 'DAB', "Median duct-room temp diff=${median}C")
   if (median > DUCT_TEMP_DIFF_THRESHOLD) { return HEATING }
   if (median < -DUCT_TEMP_DIFF_THRESHOLD) { return COOLING }
-  return fallbackFromThermostat()
+  return (fallbackFromThermostat() ?: 'idle')
 }
 
 void removeChildren() {
@@ -3067,20 +3072,24 @@ def thermostat1ChangeStateHandler(evt) {
       }
       atomicStateUpdate('thermostat1State', 'mode', hvacMode)
       atomicStateUpdate('thermostat1State', 'startedRunning', now())
-      unschedule('initializeRoomStates')
-      runInMillis(POST_STATE_CHANGE_DELAY_MS, 'initializeRoomStates', [data: hvacMode])
-      recordStartingTemperatures()
-      runEvery5Minutes('evaluateRebalancingVents')
-      runEvery30Minutes('reBalanceVents')
+      if (settings?.dabEnabled) {
+        unschedule('initializeRoomStates')
+        runInMillis(POST_STATE_CHANGE_DELAY_MS, 'initializeRoomStates', [data: hvacMode])
+        recordStartingTemperatures()
+        runEvery5Minutes('evaluateRebalancingVents')
+        runEvery30Minutes('reBalanceVents')
+      }
       
       // Update polling to active interval when HVAC is running
       updateDevicePollingInterval((settings?.pollingIntervalActive ?: POLLING_INTERVAL_ACTIVE) as Integer)
       break
     default:
-      unschedule('initializeRoomStates')
-      unschedule('finalizeRoomStates')
-      unschedule('evaluateRebalancingVents')
-      unschedule('reBalanceVents')
+      if (settings?.dabEnabled) {
+        unschedule('initializeRoomStates')
+        unschedule('finalizeRoomStates')
+        unschedule('evaluateRebalancingVents')
+        unschedule('reBalanceVents')
+      }
       if (atomicState.thermostat1State) {
         atomicStateUpdate('thermostat1State', 'finishedRunning', now())
         def params = [
@@ -3107,13 +3116,13 @@ def thermostat1ChangeStateHandler(evt) {
 // Periodically evaluate duct temperatures to determine HVAC state
 // without relying on an external thermostat.
 def updateHvacStateFromDuctTemps() {
-  if (!settings?.dabEnabled) { return }
+  // Detection runs even if DAB is disabled; only DAB actions are gated by dabEnabled
   String previousMode = atomicState.thermostat1State?.mode ?: 'idle'
-  String hvacMode = calculateHvacModeRobust()
+  String hvacMode = (calculateHvacModeRobust() ?: 'idle')
   if (hvacMode != previousMode) {
-    appendDabActivityLog("Start: ${previousMode} ÃŽâ€œÃƒÂ¥Ãƒâ€  ${hvacMode ?: 'idle'}")
+    appendDabActivityLog("Start: ${previousMode} -> ${hvacMode}")
   }
-  if (hvacMode) {
+  if (hvacMode in [COOLING, HEATING]) {
     if (!atomicState.thermostat1State || atomicState.thermostat1State?.mode != hvacMode) {
       atomicStateUpdate('thermostat1State', 'mode', hvacMode)
       atomicStateUpdate('thermostat1State', 'startedRunning', now())
@@ -3131,21 +3140,23 @@ def updateHvacStateFromDuctTemps() {
       unschedule('evaluateRebalancingVents')
       unschedule('reBalanceVents')
       atomicStateUpdate('thermostat1State', 'finishedRunning', now())
-      def params = [
-        ventIdsByRoomId: atomicState.ventsByRoomId,
-        startedCycle: atomicState.thermostat1State?.startedCycle,
-        startedRunning: atomicState.thermostat1State?.startedRunning,
-        finishedRunning: atomicState.thermostat1State?.finishedRunning,
-        hvacMode: atomicState.thermostat1State?.mode
-      ]
-      runInMillis(TEMP_READINGS_DELAY_MS, 'finalizeRoomStates', [data: params])
+      if (settings?.dabEnabled) {
+        def params = [
+          ventIdsByRoomId: atomicState.ventsByRoomId,
+          startedCycle: atomicState.thermostat1State?.startedCycle,
+          startedRunning: atomicState.thermostat1State?.startedRunning,
+          finishedRunning: atomicState.thermostat1State?.finishedRunning,
+          hvacMode: atomicState.thermostat1State?.mode
+        ]
+        runInMillis(TEMP_READINGS_DELAY_MS, 'finalizeRoomStates', [data: params])
+      }
       atomicState.remove('thermostat1State')
       updateDevicePollingInterval((settings?.pollingIntervalIdle ?: POLLING_INTERVAL_IDLE) as Integer)
     }
   }
   String currentMode = atomicState.thermostat1State?.mode ?: 'idle'
   if (currentMode != previousMode) {
-    appendDabActivityLog("End: ${previousMode} ÃŽâ€œÃƒÂ¥Ãƒâ€  ${currentMode}")
+    appendDabActivityLog("End: ${previousMode} -> ${currentMode}")
   }
 }
 
@@ -5250,7 +5261,7 @@ String buildDabChart() {
   }
   if (!hvacMode) { try { hvacMode = (atomicState?.chartHvacMode as String) } catch (ignore) { } }
   if (!hvacMode) { hvacMode = getThermostat1Mode() ?: atomicState?.lastHvacMode }
-  if (hvacMode) { hvacMode = hvacMode.toString().toLowerCase() }
+  if (hvacMode in [COOLING, HEATING]) { hvacMode = hvacMode.toString().toLowerCase() }
   if (!hvacMode || hvacMode in ['auto', 'manual']) { hvacMode = atomicState?.lastHvacMode }
   hvacMode = (hvacMode ?: COOLING)
   def labels = (0..23).collect { it.toString() }
@@ -5897,5 +5908,8 @@ def dabHealthMonitor() {
     try { logWarn("Health monitor error: ${e?.message}", 'DAB') } catch (ignore) { }
   }
 }
+
+
+
 
 
