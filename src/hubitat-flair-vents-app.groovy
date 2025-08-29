@@ -134,6 +134,13 @@ import java.net.URLEncoder
 // End Constants
 // ------------------------------
 
+// Adaptive DAB seeding defaults (for abrupt condition changes)
+@Field static final Boolean ADAPTIVE_BOOST_ENABLED = true
+@Field static final Integer ADAPTIVE_LOOKBACK_PERIODS = 3
+@Field static final BigDecimal ADAPTIVE_THRESHOLD_PERCENT = 25.0
+@Field static final BigDecimal ADAPTIVE_BOOST_PERCENT = 12.5
+@Field static final BigDecimal ADAPTIVE_MAX_BOOST_PERCENT = 25.0
+
 // Raw data cache defaults and fallbacks
 @Field static final Integer RAW_CACHE_DEFAULT_HOURS = 24
 @Field static final Integer RAW_CACHE_MAX_ENTRIES = 20000
@@ -3383,7 +3390,16 @@ def getAverageHourlyRate(String roomId, String hvacMode, Integer hour) {
   }
   BigDecimal sum = 0.0
   rates.each { sum += it as BigDecimal }
-  return cleanDecimalForJson(sum / rates.size())
+  BigDecimal base = (sum / rates.size())
+  // Apply adaptive boost from recent hours if enabled
+  try {
+    boolean enabled = (atomicState?.enableAdaptiveBoost != false)
+    if (enabled) {
+      BigDecimal boost = getAdaptiveBoostFactor(roomId, hvacMode, hour)
+      base = base * (1.0 + boost)
+    }
+  } catch (ignore) { }
+  return cleanDecimalForJson(base)
 }
 
 // Find the most recent recorded rate for a room/mode/hour within retention
@@ -3403,6 +3419,48 @@ private BigDecimal getLastObservedHourlyRate(String roomId, String hvacMode, Int
     }
   } catch (ignoreOuter) { }
   return null
+}
+
+// Compute adaptive boost factor (0..ADAPTIVE_MAX_BOOST_PERCENT/100) based on recent hours with large upward corrections
+private BigDecimal getAdaptiveBoostFactor(String roomId, String hvacMode, Integer hour) {
+  try {
+    boolean enabled = (atomicState?.enableAdaptiveBoost != null) ? (atomicState?.enableAdaptiveBoost != false) : ADAPTIVE_BOOST_ENABLED
+    if (!enabled) { return 0.0 }
+    Integer lookback = (atomicState?.adaptiveLookbackPeriods ?: ADAPTIVE_LOOKBACK_PERIODS) as Integer
+    BigDecimal threshPct = (atomicState?.adaptiveThresholdPercent ?: ADAPTIVE_THRESHOLD_PERCENT) as BigDecimal
+    BigDecimal boostPct = (atomicState?.adaptiveBoostPercent ?: ADAPTIVE_BOOST_PERCENT) as BigDecimal
+    BigDecimal boostMaxPct = (atomicState?.adaptiveMaxBoostPercent ?: ADAPTIVE_MAX_BOOST_PERCENT) as BigDecimal
+    def entries = atomicState?.adaptiveMarksEntries ?: []
+    if (!entries) { return 0.0 }
+    int hits = 0
+    def seenHours = [] as Set
+    for (int i = entries.size()-1; i >=0 && seenHours.size() < lookback; i--) {
+      def e = entries[i]
+      try {
+        if (e[1] == roomId && e[2] == hvacMode) {
+          Integer hr = (e[3] as Integer)
+          if (hr == (((hour as int) - (seenHours.size()+1) + 24) % 24)) {
+            seenHours << hr
+            BigDecimal ratio = (e[4] as BigDecimal)
+            BigDecimal pct = ratio * 100.0
+            if (pct >= threshPct) { hits++ }
+          }
+        }
+      } catch (ignore) { }
+    }
+    BigDecimal totalBoost = (boostPct * hits)
+    if (totalBoost > boostMaxPct) { totalBoost = boostMaxPct }
+    return (totalBoost / 100.0)
+  } catch (ignoreOuter) { return 0.0 }
+}
+
+private void appendAdaptiveMark(String roomId, String hvacMode, Integer hour, BigDecimal ratio) {
+  try {
+    def list = atomicState?.adaptiveMarksEntries ?: []
+    list << [now(), roomId, hvacMode, (hour as Integer), (ratio as BigDecimal)]
+    if (list.size() > 5000) { list = list[-5000..-1] }
+    atomicState.adaptiveMarksEntries = list
+  } catch (ignore) { }
 }
 
 // Append a new efficiency rate to the rolling 10-day hourly history
@@ -3810,8 +3868,8 @@ def finalizeRoomStates(data) {
           log(3, 'App', "New rate for ${roomName} is ${newRate}")
           
           // Check if room is already at or beyond setpoint
-          def isAtSetpoint = hasRoomReachedSetpoint(data.hvacMode, 
-              getGlobalSetpoint(data.hvacMode), currentTemp)
+          def spRoom = vent.currentValue('room-set-point-c') ?: getGlobalSetpoint(data.hvacMode)
+          def isAtSetpoint = hasRoomReachedSetpoint(data.hvacMode, spRoom, currentTemp)
           
           if (isAtSetpoint && currentRate > 0) {
             // Room is already at setpoint - maintain last known efficiency
@@ -3843,6 +3901,16 @@ def finalizeRoomStates(data) {
 
         // Store the calculated rate for this room
         roomRates[roomName] = cleanedRate
+        // Record adaptive adjustment mark vs seeded rate
+        try {
+          Integer hour = new Date(data.startedCycle).format('H', location?.timeZone ?: TimeZone.getTimeZone('UTC')) as Integer
+          def seeded = (atomicState?.lastSeededRate ?: [:])?.get(roomId)?.get(data.hvacMode)?.get(hour as Integer) as BigDecimal
+          if (persistedRate != null && (persistedRate as BigDecimal) > 0) {
+            BigDecimal base = (seeded != null && seeded > 0) ? seeded : (persistedRate as BigDecimal)
+            BigDecimal ratio = ((persistedRate as BigDecimal) - base) / base
+            appendAdaptiveMark(roomId, data.hvacMode, hour, ratio)
+          }
+        } catch (ignore) { }
         if (persistedRate != null) {
           appendHourlyRate(roomId, data.hvacMode, hour, persistedRate)
           appendDabHistory(roomId, data.hvacMode, hour, persistedRate)
@@ -3911,6 +3979,17 @@ def initializeRoomStates(String hvacMode) {
         sendEvent(vent, [name: attr, value: avgRate])
       }
     }
+    // Record seeded rate for adaptive analysis (once per room)
+    try {
+      def seeded = atomicState?.lastSeededRate ?: [:]
+      def roomMap = seeded[roomId] ?: [:]
+      def modeMap = roomMap[hvacMode] ?: [:]
+      modeMap[currentHour as Integer] = (avgRate as BigDecimal)
+      roomMap[hvacMode] = modeMap
+      seeded[roomId] = roomMap
+      atomicState.lastSeededRate = seeded
+      atomicState.seededHour = currentHour
+    } catch (ignore) { }
   }
 
   BigDecimal setpoint = getGlobalSetpoint(hvacMode)
@@ -4133,19 +4212,21 @@ def calculateOpenPercentageForAllVents(rateAndTempPerVentId, String hvacMode, Bi
   rateAndTempPerVentId.each { ventId, stateVal ->
     try {
       def percentageOpen = MIN_PERCENTAGE_OPEN
-      boolean atSetpoint = hasRoomReachedSetpoint(hvacMode, setpoint, stateVal.temp, REBALANCING_TOLERANCE)
+      def vdev = getChildDevice(ventId)
+      BigDecimal spForVent = (vdev?.currentValue('room-set-point-c') ?: setpoint) as BigDecimal
+      boolean atSetpoint = hasRoomReachedSetpoint(hvacMode, spForVent, stateVal.temp, REBALANCING_TOLERANCE)
 
       if (closeInactive && !stateVal.active) {
         log(3, 'App', "Closing vent on inactive room: ${stateVal.name}")
       } else if (atSetpoint) {
-        // Room is already on the comfortable side of the setpoint – keep at floor
+        // Room is already on the comfortable side of the setpoint - keep at floor
         percentageOpen = MIN_PERCENTAGE_OPEN
       } else if (stateVal.rate < MIN_TEMP_CHANGE_RATE) {
         // Unknown or too-low learning rate: open fully unless already at/below setpoint
         percentageOpen = MAX_PERCENTAGE_OPEN
         log(3, 'App', "Opening vent at max since change rate is too low: ${stateVal.name}")
       } else {
-        percentageOpen = calculateVentOpenPercentage(stateVal.name, stateVal.temp, setpoint, hvacMode, stateVal.rate, longestTime)
+        percentageOpen = calculateVentOpenPercentage(stateVal.name, stateVal.temp, spForVent, hvacMode, stateVal.rate, longestTime)
       }
       // Trace raw decision before overrides/rounding
       logVentDecision([
@@ -4215,10 +4296,11 @@ def calculateLongestMinutesToTarget(rateAndTempPerVentId, String hvacMode, BigDe
       def minutesToTarget = -1
       if (closeInactive && !stateVal.active) {
         log(3, 'App', "'${stateVal.name}' is inactive")
-      } else if (hasRoomReachedSetpoint(hvacMode, setpoint, stateVal.temp)) {
+      } else if (hasRoomReachedSetpoint(hvacMode, (getChildDevice(ventId)?.currentValue('room-set-point-c') ?: setpoint) as BigDecimal, stateVal.temp)) {
         log(3, 'App', "'${stateVal.name}' has already reached setpoint")
       } else if (stateVal.rate > 0) {
-        minutesToTarget = Math.abs(setpoint - stateVal.temp) / stateVal.rate
+        BigDecimal spForVent = (getChildDevice(ventId)?.currentValue('room-set-point-c') ?: setpoint) as BigDecimal
+        minutesToTarget = Math.abs(spForVent - stateVal.temp) / stateVal.rate
         // Check for unrealistic time estimates due to minimal temperature change
         if (minutesToTarget > maxRunningTime * 2) {
           logWarn "'${stateVal.name}' shows minimal temperature change (rate: ${roundBigDecimal(stateVal.rate)}Ã¢â€Â¬Ã¢â€“â€˜C/min). " +
@@ -5585,9 +5667,15 @@ def quickControlsPage() {
         def tempC = v.currentValue('room-current-temperature-c')
         def setpC = v.currentValue('room-set-point-c')
         def active = v.currentValue('room-active')
-        paragraph "<b>${roomName}</b> - Vent: ${cur}% | Temp: ${tempC ?: '-'} C | Setpoint: ${setpC ?: '-'} C | Active: ${active ?: 'false'}"
+        def upd = v.currentValue('updated-at') ?: ''
+        def batt = v.currentValue('battery') ?: ''
+        def toF = { c -> c != null ? (((c as BigDecimal) * 9/5) + 32) : null }
+        def fmt1 = { x -> x != null ? (((x as BigDecimal) * 10).round() / 10) : '-' }
+        def tempF = fmt1(toF(tempC))
+        def setpF = fmt1(toF(setpC))
+        paragraph "<b>${roomName}</b> - Vent: ${cur}% | Temp: ${tempF} °F | Setpoint: ${setpF} °F | Active: ${active ?: 'false'}" + (batt ? " | Battery: ${batt}%" : "") + (upd ? " | Updated: ${upd}" : "")
         input name: "qc_${vid}_percent", type: 'number', title: 'Set vent percent', required: false, submitOnChange: false
-        input name: "qc_room_${roomId}_setpoint", type: 'number', title: 'Set room setpoint (C)', required: false, submitOnChange: false
+        input name: "qc_room_${roomId}_setpoint", type: 'number', title: 'Set room setpoint (°F)', required: false, submitOnChange: false
         input name: "qc_room_${roomId}_active", type: 'enum', title: 'Set room active', options: ['true','false'], required: false, submitOnChange: false
       }
       input name: 'applyQuickControlsNow', type: 'button', title: 'Apply All Changes', submitOnChange: true
