@@ -214,6 +214,12 @@ def mainPage() {
     }
 
     if (state.flairAccessToken) {
+      // Fast access to Quick Controls at the top
+      section('\u26A1 Quick Controls') {
+        href name: 'quickControlsLinkTop', title: '\u26A1 Open Quick Controls',
+             description: 'Rapid per-room manual control, setpoints, and bulk actions',
+             page: 'quickControlsPage'
+      }
       section('Device Discovery') {
         input name: 'discoverDevices', type: 'button', title: 'Discover', submitOnChange: true
         input name: 'structureId', type: 'text', title: 'Home Id (SID)', required: false, submitOnChange: true
@@ -5490,13 +5496,25 @@ def asyncHttpGetWrapper(response, Map data) {
 
 def quickControlsPage() {
   dynamicPage(name: 'quickControlsPage', title: '\u26A1 Quick Controls', install: false, uninstall: false) {
-    section('Per-Room Percent') {
+    section('Per-Room Status & Controls') {
       def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+      // Build 1 row per room
+      def byRoom = [:]
       vents.each { v ->
+        def rid = v.currentValue('room-id') ?: v.getDeviceNetworkId()
+        if (!byRoom.containsKey(rid)) { byRoom[rid] = v }
+      }
+      byRoom.each { roomId, v ->
         Integer cur = (v.currentValue('percent-open') ?: v.currentValue('level') ?: 0) as int
         def vid = v.getDeviceNetworkId()
-        paragraph "<b>${v.getLabel()}</b> - Current: ${cur}%"
-        input name: "qc_${vid}_percent", type: 'number', title: 'Set percent', required: false, submitOnChange: false
+        def roomName = v.currentValue('room-name') ?: v.getLabel()
+        def tempC = v.currentValue('room-current-temperature-c')
+        def setpC = v.currentValue('room-set-point-c')
+        def active = v.currentValue('room-active')
+        paragraph "<b>${roomName}</b> - Vent: ${cur}% | Temp: ${tempC ?: '-'} C | Setpoint: ${setpC ?: '-'} C | Active: ${active ?: 'false'}"
+        input name: "qc_${vid}_percent", type: 'number', title: 'Set vent percent', required: false, submitOnChange: false
+        input name: "qc_room_${roomId}_setpoint", type: 'number', title: 'Set room setpoint (C)', required: false, submitOnChange: false
+        input name: "qc_room_${roomId}_active", type: 'enum', title: 'Set room active', options: ['true','false'], required: false, submitOnChange: false
       }
       input name: 'applyQuickControlsNow', type: 'button', title: 'Apply All Changes', submitOnChange: true
     }
@@ -5529,9 +5547,11 @@ def quickControlsPage() {
 }
 
 private void applyQuickControls() {
-  def keys = settings?.keySet()?.findAll { (it as String).startsWith('qc_') && (it as String).endsWith('_percent') } ?: []
   def overrides = atomicState?.manualOverrides ?: [:]
-  keys.each { k ->
+  def allKeys = (settings?.keySet() ?: []) as List
+  // Per-vent percent controls
+  def pctKeys = allKeys.findAll { (it as String).startsWith('qc_') && (it as String).endsWith('_percent') }
+  pctKeys.each { k ->
     def vid = (k as String).replace('qc_','').replace('_percent','')
     def v = getChildDevice(vid)
     if (!v) { return }
@@ -5543,13 +5563,46 @@ private void applyQuickControls() {
       app.updateSetting(k, '')
     }
   }
+  // Per-room setpoint controls
+  def spKeys = allKeys.findAll { (it as String).startsWith('qc_room_') && (it as String).endsWith('_setpoint') }
+  spKeys.each { k ->
+    def roomId = (k as String).replace('qc_room_','').replace('_setpoint','')
+    def v = getChildDevices()?.find { it.hasAttribute('percent-open') && (it.currentValue('room-id')?.toString() == roomId) }
+    def val = settings[k]
+    if (v && val != null && val != '') {
+      try {
+        BigDecimal temp = (val as BigDecimal)
+        patchRoomSetPoint(v, temp)
+      } catch (ignore) { }
+      app.updateSetting(k, '')
+    }
+  }
+  // Per-room active controls
+  def activeKeys = allKeys.findAll { (it as String).startsWith('qc_room_') && (it as String).endsWith('_active') }
+  activeKeys.each { k ->
+    def roomId = (k as String).replace('qc_room_','').replace('_active','')
+    def v = getChildDevices()?.find { it.hasAttribute('percent-open') && (it.currentValue('room-id')?.toString() == roomId) }
+    def val = settings[k]
+    if (v && (val == 'true' || val == 'false')) {
+      patchRoom(v, val)
+      app.updateSetting(k, '')
+    }
+  }
   atomicState.manualOverrides = overrides
   refreshVentTiles()
 }
 
 private void openAllSelected(Integer pct) {
   def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
-  vents.each { v -> patchVent(v, pct) }
+  // Set a manual override for stickiness and patch
+  def overrides = atomicState?.manualOverrides ?: [:]
+  vents.each { v ->
+    try {
+      overrides[v.getDeviceNetworkId()] = pct
+      patchVent(v, pct)
+    } catch (ignore) { }
+  }
+  atomicState.manualOverrides = overrides
 }
 
 private void manualAllEditedVents() {
