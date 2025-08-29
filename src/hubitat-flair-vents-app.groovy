@@ -318,7 +318,7 @@ def mainPage() {
           
           // Efficiency Data Management Link
           section {
-            href name: 'efficiencyDataLink', title: 'Ã¢â€°Â¡Ã†â€™ÃƒÂ¶ÃƒÂ¤ Backup & Restore Efficiency Data',
+            href name: 'efficiencyDataLink', title: 'Backup & Restore Efficiency Data',
                  description: 'Save your learned room efficiency data to restore after app updates',
                  page: 'efficiencyDataPage'
 
@@ -334,31 +334,31 @@ def mainPage() {
           }
           // Hourly DAB Chart Link
           section {
-            href name: 'dabChartLink', title: 'Ã¢â€°Â¡Ã†â€™ÃƒÂ´ÃƒÂ¨ View Hourly DAB Rates',
+            href name: 'dabChartLink', title: 'View Hourly DAB Rates',
                  description: 'Visualize 24-hour average airflow rates for each room',
                  page: 'dabChartPage'
           }
           // Hourly DAB Rates Table Link
           section {
-            href name: 'dabRatesTableLink', title: 'Ã¢â€°Â¡Ã†â€™ÃƒÂ´ÃƒÂ¯ View DAB Rates Table',
+            href name: 'dabRatesTableLink', title: 'View DAB Rates Table',
                  description: 'Tabular hourly DAB calculations for each room',
                  page: 'dabRatesTablePage'
           }
           // DAB Progress Page Link
           section {
-            href name: 'dabProgressLink', title: 'Ã¢â€°Â¡Ã†â€™ÃƒÂ´ÃƒÂª View DAB Progress',
+            href name: 'dabProgressLink', title: 'View DAB Progress',
                  description: 'Track DAB progress by date and hour',
                  page: 'dabProgressPage'
           }
           // Daily DAB Summary Link
           section {
-            href name: 'dabDailySummaryLink', title: 'Ã¢â€°Â¡Ã†â€™ÃƒÂ´ÃƒÂ  View Daily DAB Summary',
+            href name: 'dabDailySummaryLink', title: 'View Daily DAB Summary',
                  description: 'Daily airflow averages per room and mode',
                  page: 'dabDailySummaryPage'
           }
           // DAB Activity Log Link
           section {
-            href name: 'dabActivityLogLink', title: 'Ã¢â€°Â¡Ã†â€™ÃƒÂ´ÃƒÂ¿ View DAB Activity Log',
+            href name: 'dabActivityLogLink', title: 'View DAB Activity Log',
                  description: 'See recent HVAC mode transitions',
                  page: 'dabActivityLogPage'
           }
@@ -469,6 +469,16 @@ def diagnosticsPage() {
         logs.reverse().each { paragraph it }
       } else {
         paragraph 'No recent errors.'
+      }
+    }
+    section('Decision Trace (last 60)') {
+      def decisions = state.recentVentDecisions ?: []
+      if (decisions) {
+        decisions.each { d ->
+          paragraph "<code>${d.ts} [${d.mode}] ${d.stage} - ${d.room}: T=${d.temp}, SP=${d.setpoint}, rate=${d.rate}, atSP=${d.atSp}, override=${d.override}, pct=${d.pct}%</code>"
+        }
+      } else {
+        paragraph 'No recent decisions recorded.'
       }
     }
     section('Health Check') {
@@ -2695,6 +2705,14 @@ def patchVentDevice(device, percentOpen, attempt = 1) {
 
 // Keep the old method name for backward compatibility
 def patchVent(device, percentOpen) {
+  try {
+    String vid = device?.getDeviceNetworkId()
+    def overrides = atomicState?.manualOverrides ?: [:]
+    if (vid && overrides?.containsKey(vid)) {
+      // Hard-enforce manual override: never let algorithmic calls reduce it
+      percentOpen = (overrides[vid] as Integer)
+    }
+  } catch (ignore) { }
   patchVentDevice(device, percentOpen)
 }
 
@@ -2954,6 +2972,12 @@ def reBalanceVents() {
   ]
   finalizeRoomStates(params)
   initializeRoomStates(atomicState.thermostat1State?.mode)
+  try {
+    def decisions = (state.recentVentDecisions ?: []).findAll { it.stage == 'final' }
+    def changed = decisions.findAll { it.pct != null }
+    def summary = changed.takeRight(5).collect { d -> "${d.room}:${d.pct}%" }
+    if (summary) { appendDabActivityLog("Changes: ${summary.join(', ')}") }
+  } catch (ignore) { }
 }
 
 def evaluateRebalancingVents() {
@@ -3591,22 +3615,8 @@ def finalizeRoomStates(data) {
         def rate = rollingAverage(currentRate, newRate, percentOpen / 100, 4)
         def cleanedRate = cleanDecimalForJson(rate)
 
-        // Robust outlier handling and EWMA smoothing before persisting
+        // Skip outlier rejection and EWMA until core behavior is validated
         BigDecimal persistedRate = cleanedRate
-        try {
-          if (settings?.enableOutlierRejection) {
-            def decision = assessOutlierForHourly(roomId, data.hvacMode, hour, cleanedRate)
-            if (decision?.action == 'reject') {
-              // Skip persisting, but still update device attribute below
-              persistedRate = null
-            } else if (decision?.action == 'clip' && decision?.value != null) {
-              persistedRate = cleanDecimalForJson(decision.value as BigDecimal)
-            }
-          }
-          if (persistedRate != null && settings?.enableEwma) {
-            persistedRate = updateEwmaRate(roomId, data.hvacMode, hour, persistedRate as BigDecimal)
-          }
-        } catch (ignore) { }
         sendEvent(vent, [name: ratePropName, value: cleanedRate])
         log(3, 'App', "Updating ${roomName}'s ${ratePropName} to ${roundBigDecimal(cleanedRate)}")
 
@@ -3701,6 +3711,7 @@ def initializeRoomStates(String hvacMode) {
   log(3, 'App', "Initializing room states - setpoint: ${setpoint}, longestTimeToTarget: ${roundBigDecimal(longestTimeToTarget)}")
 
   def calcPercentOpen = calculateOpenPercentageForAllVents(rateAndTempPerVentId, hvacMode, setpoint, longestTimeToTarget, settings.thermostat1CloseInactiveRooms)
+  // Monotonic ordering removed by request; rely on learned efficiency
   if (!calcPercentOpen) {
     log(3, 'App', "No vents are being changed (setpoint: ${setpoint})")
     return
@@ -3711,13 +3722,44 @@ def initializeRoomStates(String hvacMode) {
   // Apply manual overrides and floors before patching vents
   calcPercentOpen = applyOverridesAndFloors(calcPercentOpen)
 
+  def __changeSummary = []
+  int __changeCount = 0
   calcPercentOpen.each { ventId, percentOpen ->
     def vent = getChildDevice(ventId)
     if (vent) {
-      patchVent(vent, roundToNearestMultiple(percentOpen))
+      try {
+        def rateAttr = hvacMode == COOLING ? 'room-cooling-rate' : 'room-heating-rate'
+        def vTemp = getRoomTemp(vent)
+        boolean atSp = hasRoomReachedSetpoint(hvacMode, setpoint, vTemp, REBALANCING_TOLERANCE)
+        boolean overridden = (atomicState?.manualOverrides ?: [:]).containsKey(ventId)
+        Integer finalPct = roundToNearestMultiple(percentOpen)
+        logVentDecision([
+          stage: 'final', hvacMode: hvacMode, ventId: ventId,
+          room: (vent.currentValue('room-name') ?: vent.getLabel()),
+          temp: vTemp, setpoint: setpoint,
+          rate: (vent.currentValue(rateAttr) ?: 0),
+          atSetpoint: atSp, override: overridden, percent: finalPct
+        ])
+      } catch (ignore) { }
+      Integer __current = (vent.currentValue('percent-open') ?: vent.currentValue('level') ?: 0) as int
+      Integer __target = roundToNearestMultiple(percentOpen)
+      if (__current != __target) {
+        __changeCount++
+        def __rn = vent.currentValue('room-name') ?: vent.getLabel()
+        __changeSummary << "${__rn}: ${__current}%->${__target}%"
+      }
+      patchVent(vent, __target)
     }
   }
+  if (__changeCount > 0) {
+    appendDabActivityLog("Applied ${__changeCount} vent change(s): ${__changeSummary.take(3).join(', ')}")
+  }
 }
+
+// Enforce monotonic relationship between temperature delta and vent opening
+// - Cooling: larger (temp - setpoint) => opening must be >= openings of rooms with smaller delta
+// - Heating: larger (setpoint - temp) => opening must be >= openings of rooms with smaller delta
+// enforceMonotonicVentOpenings removed by request
 
 // Enforce global floor and per-vent manual overrides
 private Map applyOverridesAndFloors(Map calc) {
@@ -3834,20 +3876,54 @@ def calculateOpenPercentageForAllVents(rateAndTempPerVentId, String hvacMode, Bi
   rateAndTempPerVentId.each { ventId, stateVal ->
     try {
       def percentageOpen = MIN_PERCENTAGE_OPEN
+      boolean atSetpoint = hasRoomReachedSetpoint(hvacMode, setpoint, stateVal.temp, REBALANCING_TOLERANCE)
+
       if (closeInactive && !stateVal.active) {
         log(3, 'App', "Closing vent on inactive room: ${stateVal.name}")
+      } else if (atSetpoint) {
+        // Room is already on the comfortable side of the setpoint – keep at floor
+        percentageOpen = MIN_PERCENTAGE_OPEN
       } else if (stateVal.rate < MIN_TEMP_CHANGE_RATE) {
-        log(3, 'App', "Opening vent at max since change rate is too low: ${stateVal.name}")
+        // Unknown or too-low learning rate: open fully unless already at/below setpoint
         percentageOpen = MAX_PERCENTAGE_OPEN
+        log(3, 'App', "Opening vent at max since change rate is too low: ${stateVal.name}")
       } else {
         percentageOpen = calculateVentOpenPercentage(stateVal.name, stateVal.temp, setpoint, hvacMode, stateVal.rate, longestTime)
       }
+      // Trace raw decision before overrides/rounding
+      logVentDecision([
+        stage: 'raw', hvacMode: hvacMode, ventId: ventId,
+        room: stateVal.name, temp: stateVal.temp, setpoint: setpoint,
+        rate: stateVal.rate, atSetpoint: atSetpoint, percent: percentageOpen
+      ])
       percentOpenMap[ventId] = percentageOpen
     } catch (err) {
       logError err
     }
   }
   return percentOpenMap
+}
+
+// Append a compact decision entry for diagnostics (keeps last 60)
+private void logVentDecision(Map entry) {
+  try {
+    def list = state.recentVentDecisions ?: []
+    Map e = [
+      ts: new Date().format('HH:mm:ss', location?.timeZone ?: TimeZone.getTimeZone('UTC')),
+      stage: entry.stage ?: 'raw',
+      mode: entry.hvacMode ?: '',
+      room: (entry.room ?: ''),
+      temp: (entry.temp ?: ''),
+      setpoint: (entry.setpoint ?: ''),
+      rate: (entry.rate ?: ''),
+      atSp: (entry.atSetpoint ?: false),
+      override: (entry.override ?: false),
+      pct: (entry.percent ?: '')
+    ]
+    list << e
+    if (list.size() > 60) { list = list[-60..-1] }
+    state.recentVentDecisions = list
+  } catch (ignore) { }
 }
 
 def calculateVentOpenPercentage(String roomName, BigDecimal startTemp, BigDecimal setpoint, String hvacMode, BigDecimal maxRate, BigDecimal longestTime) {
@@ -4029,7 +4105,7 @@ def handleExportEfficiencyData() {
     
     // Set export status message
     def roomCount = efficiencyData.roomEfficiencies.size()
-    state.exportStatus = "ÃŽâ€œÃ‚Â£ÃƒÂ´ Exported efficiency data for ${roomCount} rooms. Copy the JSON data below:"
+    state.exportStatus = "Exported efficiency data for ${roomCount} rooms. Copy the JSON data below:"
     
     // Store the JSON data for display
     state.exportedJsonData = jsonData
@@ -4039,7 +4115,7 @@ def handleExportEfficiencyData() {
   } catch (Exception e) {
     def errorMsg = "Export failed: ${e.message}"
     logError errorMsg
-    state.exportStatus = "ÃŽâ€œÃ‚Â£ÃƒÂ¹ ${errorMsg}"
+    state.exportStatus = "${errorMsg}"
     state.exportedJsonData = null
   }
 }
@@ -4077,7 +4153,7 @@ def handleImportEfficiencyData() {
     // Get JSON data from user input
     def jsonData = settings.importJsonData
     if (!jsonData?.trim()) {
-      state.importStatus = "ÃŽâ€œÃ‚Â£ÃƒÂ¹ No JSON data provided. Please paste the exported efficiency data."
+      state.importStatus = "No JSON data provided. Please paste the exported efficiency data."
       state.importSuccess = false
       return
     }
@@ -4086,7 +4162,7 @@ def handleImportEfficiencyData() {
     def result = importEfficiencyData(jsonData.trim())
     
     if (result.success) {
-      def statusMsg = "ÃŽâ€œÃ‚Â£ÃƒÂ´ Import successful! Updated ${result.roomsUpdated} rooms"
+      def statusMsg = "Import successful! Updated ${result.roomsUpdated} rooms"
       if (result.globalUpdated) {
         statusMsg += " and global efficiency rates"
       }
@@ -4109,7 +4185,7 @@ def handleImportEfficiencyData() {
       log(2, 'App', "Import completed: ${result.roomsUpdated} rooms updated, ${result.roomsSkipped} skipped")
       
     } else {
-      state.importStatus = "ÃŽâ€œÃ‚Â£ÃƒÂ¹ Import failed: ${result.error}"
+      state.importStatus = "Import failed: ${result.error}"
       state.importSuccess = false
       logError "Import failed: ${result.error}"
     }
@@ -4117,7 +4193,7 @@ def handleImportEfficiencyData() {
   } catch (Exception e) {
     def errorMsg = "Import failed: ${e.message}"
     logError errorMsg
-    state.importStatus = "ÃŽâ€œÃ‚Â£ÃƒÂ¹ ${errorMsg}"
+    state.importStatus = "${errorMsg}"
     state.importSuccess = false
   }
 }
@@ -4236,10 +4312,10 @@ private void updateTileForVent(device) {
     html << "<div style='height:8px;width:${level}%;background:#3b82f6'></div>"
     html << "</div>"
     html << "<div style='margin-top:6px;font-size:12px;color:#111'>Vent: <b>${level}%</b>"
-    if (temp != null) { html << " &nbsp; ÃŽâ€œÃƒâ€¡ÃƒÂ³ &nbsp; Temp: <b>${roundBigDecimal(temp)}</b>Ã¢â€Â¬Ã¢â€“â€˜C" }
-    if (battery != null) { html << " &nbsp; ÃŽâ€œÃƒâ€¡ÃƒÂ³ &nbsp; Battery: <b>${battery}%</b>" }
-    if (voltage != null) { html << " &nbsp; ÃŽâ€œÃƒâ€¡ÃƒÂ³ &nbsp; V: <b>${roundBigDecimal(voltage)}</b>" }
-    html << " &nbsp; ÃŽâ€œÃƒâ€¡ÃƒÂ³ &nbsp; Mode: <b>${mode}</b></div>"
+    if (temp != null) { html << " &nbsp; Temp: <b>${roundBigDecimal(temp)}</b>&deg;C" }
+    if (battery != null) { html << " &nbsp; Battery: <b>${battery}%</b>" }
+    if (voltage != null) { html << " &nbsp; V: <b>${roundBigDecimal(voltage)}</b>" }
+    html << " &nbsp; Mode: <b>${mode}</b></div>"
     html << "</div>"
     sendEvent(tile, [name: 'html', value: html.toString()])
     sendEvent(tile, [name: 'level', value: level])
@@ -4492,11 +4568,11 @@ def efficiencyDataPage() {
     }
   }
   
-  dynamicPage(name: 'efficiencyDataPage', title: 'Ã¢â€°Â¡Ã†â€™ÃƒÂ¶ÃƒÂ¤ Backup & Restore Efficiency Data', install: false, uninstall: false) {
+  dynamicPage(name: 'efficiencyDataPage', title: 'Backup & Restore Efficiency Data', install: false, uninstall: false) {
     section {
       paragraph '''
         <div style="background-color: #f0f8ff; padding: 15px; border-left: 4px solid #007bff; margin-bottom: 20px;">
-          <h3 style="margin-top: 0; color: #0056b3;">Ã¢â€°Â¡Ã†â€™ÃƒÂ´ÃƒÅ“ What is this?</h3>
+          <h3 style="margin-top: 0; color: #0056b3;">What is this?</h3>
           <p style="margin-bottom: 0;">Your Flair vents learn how efficiently each room heats and cools over time. This data helps the system optimize energy usage. 
           Use this page to backup your data before app updates or restore it after system resets.</p>
         </div>
@@ -4505,11 +4581,11 @@ def efficiencyDataPage() {
     
     // Show current status
     if (vents.size() > 0) {
-      section("Ã¢â€°Â¡Ã†â€™ÃƒÂ´ÃƒÂ¨ Current Status") {
+      section("Current Status") {
         if (roomsWithData.size() > 0) {
-          paragraph "<div style='color: green; font-weight: bold;'>ÃŽâ€œÃ‚Â£ÃƒÂ´ Your system has learned efficiency data for ${roomsWithData.size()} out of ${vents.size()} rooms</div>"
+          paragraph "<div style='color: green; font-weight: bold;'>Your system has learned efficiency data for ${roomsWithData.size()} out of ${vents.size()} rooms</div>"
         } else {
-          paragraph "<div style='color: orange; font-weight: bold;'>ÃŽâ€œÃƒÅ“ÃƒÂ¡ Your system is still learning (${vents.size()} rooms found, but no efficiency data yet)</div>"
+          paragraph "<div style='color: orange; font-weight: bold;'>Your system is still learning (${vents.size()} rooms found, but no efficiency data yet)</div>"
           paragraph "<small>Let your system run for a few heating/cooling cycles before backing up data.</small>"
         }
       }
@@ -4517,7 +4593,7 @@ def efficiencyDataPage() {
     
     // Export Section - Auto-generated
     if (roomsWithData.size() > 0 && exportJsonData) {
-      section("Ã¢â€°Â¡Ã†â€™Ãƒâ€ Ã¢â€¢â€º Save Your Data (Backup)") {
+      section("Save Your Data (Backup)") {
         // Create base64 encoded download link with current date
         def currentDate = new Date().format("yyyy-MM-dd")
         def fileName = "Flair-Backup-${currentDate}.json"
@@ -4526,21 +4602,21 @@ def efficiencyDataPage() {
         
         paragraph "Your backup data is ready:"
         
-        paragraph "<a href=\"${downloadUrl}\" download=\"${fileName}\">Ã¢â€°Â¡Ã†â€™ÃƒÂ´Ãƒâ€˜ Download ${fileName}</a>"
+        paragraph "<a href=\"${downloadUrl}\" download=\"${fileName}\">Download ${fileName}</a>"
       }
     } else if (vents.size() > 0) {
-      section("Ã¢â€°Â¡Ã†â€™Ãƒâ€ Ã¢â€¢â€º Save Your Data (Backup)") {
+      section("Save Your Data (Backup)") {
         paragraph "System is still learning. Check back after a few heating/cooling cycles."
       }
     }
     
     // Import Section
-    section("Ã¢â€°Â¡Ã†â€™ÃƒÂ´Ãƒâ€˜ Step 2: Restore Your Data (Import)") {
+    section("Step 2: Restore Your Data (Import)") {
       paragraph '''
         <p><strong>When should I do this?</strong></p>
-        <p>ÃŽâ€œÃƒâ€¡ÃƒÂ³ After reinstalling this app<br>
-        ÃŽâ€œÃƒâ€¡ÃƒÂ³ After resetting your Hubitat hub<br>
-        ÃŽâ€œÃƒâ€¡ÃƒÂ³ After replacing hardware</p>
+        <p>- After reinstalling this app<br>
+        - After resetting your Hubitat hub<br>
+        - After replacing hardware</p>
       '''
       
       paragraph '''
@@ -4563,13 +4639,13 @@ def efficiencyDataPage() {
       
       if (state.importStatus) {
         def statusColor = state.importSuccess ? 'green' : 'red'
-        def statusIcon = state.importSuccess ? 'ÃŽâ€œÃ‚Â£ÃƒÂ´' : 'ÃŽâ€œÃ‚Â£ÃƒÂ¹'
+        def statusIcon = state.importSuccess ? '&#10003;' : '&#10007;'
         paragraph "<div style='color: ${statusColor}; font-weight: bold; margin-top: 15px; padding: 10px; background-color: ${state.importSuccess ? '#e8f5e8' : '#ffe8e8'}; border-radius: 5px;'>${statusIcon} ${state.importStatus}</div>"
         
         if (state.importSuccess) {
           paragraph '''
             <div style="background-color: #e8f5e8; padding: 15px; border-radius: 5px; margin-top: 10px;">
-              <h4 style="margin-top: 0; color: #2d5a2d;">Ã¢â€°Â¡Ã†â€™Ãƒâ€žÃƒÂ« Success! What happens now?</h4>
+              <h4 style="margin-top: 0; color: #2d5a2d;">Success! What happens now?</h4>
               <p>Your room learning data has been restored. Your Flair vents will now use the saved efficiency information to:</p>
               <ul>
                 <li>Optimize airflow to each room</li>
@@ -4584,10 +4660,10 @@ def efficiencyDataPage() {
     }
     
     // Help & Tips Section
-    section("ÃŽâ€œÃ‚Â¥ÃƒÂ´ Need Help?") {
+    section("Need Help?") {
       paragraph '''
         <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px;">
-          <h4 style="margin-top: 0;">Ã¢â€°Â¡Ã†â€™Ãƒâ€ ÃƒÂ­ Tips for Success</h4>
+          <h4 style="margin-top: 0;">Tips for Success</h4>
           <ul style="margin-bottom: 10px;">
             <li><strong>Regular Backups:</strong> Save your data monthly or before any system changes</li>
             <li><strong>File Naming:</strong> Include the date in your backup filename (e.g., "Flair-Backup-2025-06-26")</li>
@@ -4595,7 +4671,7 @@ def efficiencyDataPage() {
             <li><strong>When to Restore:</strong> Only restore data when setting up a new system or after data loss</li>
           </ul>
           
-          <h4>Ã¢â€°Â¡Ã†â€™ÃƒÅ“Ã‚Â¿ Troubleshooting</h4>
+          <h4>Troubleshooting</h4>
           <ul style="margin-bottom: 0;">
             <li><strong>Import Failed:</strong> Make sure you copied ALL the text from your backup file</li>
             <li><strong>No Data to Export:</strong> Let your system run for a few heating/cooling cycles first</li>
@@ -4607,13 +4683,13 @@ def efficiencyDataPage() {
     }
     
     section {
-      href name: 'backToMain', title: 'ÃŽâ€œÃƒÂ¥Ãƒâ€° Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+      href name: 'backToMain', title: 'Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
     }
   }
 }
 
 /* DUPLICATE REMOVED def dabHistoryPage() {
-  dynamicPage(name: 'dabHistoryPage', title: 'Ã¢â€°Â¡Ã†â€™ÃƒÂ´ÃƒÅ“ DAB History', install: false, uninstall: false) {
+  dynamicPage(name: 'dabHistoryPage', title: 'DAB History', install: false, uninstall: false) {
     section {
       def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
       Map roomOptions = vents.collectEntries { v ->
@@ -4631,18 +4707,18 @@ def efficiencyDataPage() {
       if (atomicState?.dabHistoryErrors) { allErrors += atomicState.dabHistoryErrors }
       if (result.errors) { allErrors += result.errors }
       if (allErrors) {
-        paragraph "<span style='color:red'>ÃŽâ€œÃƒÅ“ÃƒÂ¡Ã¢Ë†Â©Ã¢â€¢â€¢Ãƒâ€¦ ${allErrors.join('<br>')}</span>"
+        paragraph "<span style='color:red'>${allErrors.join('<br>')}</span>"
       }
       paragraph result.table
     }
     section {
-      href name: 'backToMain', title: 'ÃŽâ€œÃƒÂ¥Ãƒâ€° Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+      href name: 'backToMain', title: 'Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
     }
   }
 } */
 
 def dabActivityLogPage() {
-  dynamicPage(name: 'dabActivityLogPage', title: 'Ã¢â€°Â¡Ã†â€™ÃƒÂ´ÃƒÂ¿ DAB Activity Log', install: false, uninstall: false) {
+  dynamicPage(name: 'dabActivityLogPage', title: 'DAB Activity Log', install: false, uninstall: false) {
     section {
       def entries = atomicState?.dabActivityLog ?: []
       if (entries) {
@@ -4652,13 +4728,13 @@ def dabActivityLogPage() {
       }
     }
     section {
-      href name: 'backToMain', title: 'ÃŽâ€œÃƒÂ¥Ãƒâ€° Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+      href name: 'backToMain', title: 'Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
     }
   }
 }
 
 def dabHistoryPage() {
-  dynamicPage(name: 'dabHistoryPage', title: 'Ã¢â€°Â¡Ã†â€™ÃƒÂ´ÃƒÅ“ DAB History', install: false, uninstall: false) {
+  dynamicPage(name: 'dabHistoryPage', title: 'DAB History', install: false, uninstall: false) {
     section {
       input name: 'historyHvacMode', type: 'enum', title: 'HVAC Mode', required: false, submitOnChange: true,
             options: [(COOLING): 'Cooling', (HEATING): 'Heating', 'both': 'Both']
@@ -4697,39 +4773,39 @@ def dabHistoryPage() {
       }
     }
     section {
-      href name: 'backToMain', title: 'ÃŽâ€œÃƒÂ¥Ãƒâ€° Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+      href name: 'backToMain', title: 'Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
     }
   }
 }
 
 def dabRatesTablePage() {
-  dynamicPage(name: 'dabRatesTablePage', title: 'Ã¢â€°Â¡Ã†â€™ÃƒÂ´ÃƒÂ¯ Hourly DAB Rates Table', install: false, uninstall: false) {
+  dynamicPage(name: 'dabRatesTablePage', title: 'Hourly DAB Rates Table', install: false, uninstall: false) {
     section {
       input name: 'tableHvacMode', type: 'enum', title: 'HVAC Mode', required: false, submitOnChange: true,
             options: [(COOLING): 'Cooling', (HEATING): 'Heating', 'both': 'Both']
       paragraph buildDabRatesTable()
     }
     section {
-      href name: 'backToMain', title: 'ÃŽâ€œÃƒÂ¥Ãƒâ€° Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+      href name: 'backToMain', title: 'Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
     }
   }
 }
 
 def dabChartPage() {
-  dynamicPage(name: 'dabChartPage', title: 'Ã¢â€°Â¡Ã†â€™ÃƒÂ´ÃƒÂ¨ Hourly DAB Rates', install: false, uninstall: false) {
+  dynamicPage(name: 'dabChartPage', title: 'Hourly DAB Rates', install: false, uninstall: false) {
     section {
       input name: 'chartHvacMode', type: 'enum', title: 'HVAC Mode', required: false, submitOnChange: true,
             options: [(COOLING): 'Cooling', (HEATING): 'Heating', 'both': 'Both']
       paragraph buildDabChart()
     }
     section {
-      href name: 'backToMain', title: 'ÃŽâ€œÃƒÂ¥Ãƒâ€° Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+      href name: 'backToMain', title: 'Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
     }
   }
 }
 
 def dabProgressPage() {
-  dynamicPage(name: 'dabProgressPage', title: 'Ã¢â€°Â¡Ã†â€™ÃƒÂ´ÃƒÂª DAB Progress', install: false, uninstall: false) {
+  dynamicPage(name: 'dabProgressPage', title: 'DAB Progress', install: false, uninstall: false) {
     section {
       def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
       boolean hasVents = vents && vents.size() > 0
@@ -4746,19 +4822,19 @@ def dabProgressPage() {
       if (hasVents) { paragraph buildDabProgressTable() }
     }
     section {
-      href name: 'backToMain', title: 'ÃŽâ€œÃƒÂ¥Ãƒâ€° Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+      href name: 'backToMain', title: 'Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
     }
   }
 }
 
 def dabDailySummaryPage() {
-  dynamicPage(name: 'dabDailySummaryPage', title: 'Ã¢â€°Â¡Ã†â€™ÃƒÂ´ÃƒÂ  Daily DAB Summary', install: false, uninstall: false) {
+  dynamicPage(name: 'dabDailySummaryPage', title: 'Daily DAB Summary', install: false, uninstall: false) {
     section {
       input name: 'dailySummaryPage', type: 'number', title: 'Page', required: false, defaultValue: 1, submitOnChange: true
       paragraph buildDabDailySummaryTable()
     }
     section {
-      href name: 'backToMain', title: 'ÃŽâ€œÃƒÂ¥Ãƒâ€° Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+      href name: 'backToMain', title: 'Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
     }
   }
 }
@@ -4882,10 +4958,10 @@ String buildDabChart() {
     ]
   ]
 
-  // Encode the chart config using Base64 to avoid URL length/encoding issues
+  // Build QuickChart URL (use c= JSON param for broad compatibility)
   def configJson = JsonOutput.toJson(config)
-  def encoded = configJson.bytes.encodeBase64().toString()
-  "<img src='https://quickchart.io/chart?b64=${encoded}' style='max-width:100%'>"
+  def urlJson = URLEncoder.encode(configJson, 'UTF-8')
+  "<img src='https://quickchart.io/chart?c=${urlJson}' style='max-width:100%'>"
 }
 
 String buildDabRatesTable() {
