@@ -4398,56 +4398,8 @@ def calculateRoomChangeRate(def lastStartTemp, def currentTemp, def totalMinutes
 }
 
 def calculateRoomChangeRate(BigDecimal lastStartTemp, BigDecimal currentTemp, BigDecimal totalMinutes, int percentOpen, BigDecimal currentRate) {
-  if (totalMinutes < MIN_MINUTES_TO_SETPOINT) {
-    log(3, 'App', "Insufficient number of minutes required to calculate change rate (${totalMinutes} should be greater than ${MIN_MINUTES_TO_SETPOINT})")
-    return -1
-  }
-  
-  // Skip rate calculation if HVAC hasn't run long enough for meaningful temperature changes
-  if (totalMinutes < MIN_RUNTIME_FOR_RATE_CALC) {
-    log(3, 'App', "HVAC runtime too short for rate calculation: ${totalMinutes} minutes < ${MIN_RUNTIME_FOR_RATE_CALC} minutes minimum")
-    return -1
-  }
-  
-  if (percentOpen <= MIN_PERCENTAGE_OPEN) {
-    log(3, 'App', "Vent was opened less than ${MIN_PERCENTAGE_OPEN}% (${percentOpen}), therefore it is being excluded")
-    return -1
-  }
-  
-  BigDecimal diffTemps = Math.abs(lastStartTemp - currentTemp)
-  
-  // Check if temperature change is within sensor noise/accuracy range
-  if (diffTemps < MIN_DETECTABLE_TEMP_CHANGE) {
-    log(2, 'App', "Temperature change (${diffTemps}Ã¢â€Â¬Ã¢â€“â€˜C) is below minimum detectable threshold (${MIN_DETECTABLE_TEMP_CHANGE}Ã¢â€Â¬Ã¢â€“â€˜C) - likely sensor noise")
-    
-    // If no meaningful temperature change but vent was significantly open, assign minimum efficiency
-    if (percentOpen >= 30) {
-      log(2, 'App', "Vent was ${percentOpen}% open but no meaningful temperature change detected - assigning minimum efficiency")
-      return MIN_TEMP_CHANGE_RATE
-    }
-    return -1
-  }
-  
-  // Account for sensor accuracy when detecting minimal changes
-  if (diffTemps < TEMP_SENSOR_ACCURACY) {
-    log(2, 'App', "Temperature change (${diffTemps}Ã¢â€Â¬Ã¢â€“â€˜C) is within sensor accuracy range (Ã¢â€Â¬Ã¢â€“â€™${TEMP_SENSOR_ACCURACY}Ã¢â€Â¬Ã¢â€“â€˜C) - adjusting calculation")
-    // Use a minimum reliable change for calculation to avoid division by near-zero
-    diffTemps = Math.max(diffTemps, MIN_DETECTABLE_TEMP_CHANGE)
-  }
-  
-  BigDecimal rate = diffTemps / totalMinutes
-  BigDecimal pOpen = percentOpen / 100
-  BigDecimal maxRate = rate.max(currentRate)
-  BigDecimal approxRate = maxRate != 0 ? (rate / maxRate) / pOpen : 0
-  if (approxRate > MAX_TEMP_CHANGE_RATE) {
-    log(3, 'App', "Change rate (${roundBigDecimal(approxRate)}) is greater than ${MAX_TEMP_CHANGE_RATE}, therefore it is being excluded")
-    return -1
-  } else if (approxRate < MIN_TEMP_CHANGE_RATE) {
-    log(3, 'App', "Change rate (${roundBigDecimal(approxRate)}) is lower than ${MIN_TEMP_CHANGE_RATE}, adjusting to minimum (startTemp=${lastStartTemp}, currentTemp=${currentTemp}, percentOpen=${percentOpen}%)")
-    // Return minimum rate instead of excluding to prevent zero efficiency
-    return MIN_TEMP_CHANGE_RATE
-  }
-  return approxRate
+  // Delegate to unified implementation
+  return calculateRoomChangeRateRef(lastStartTemp, currentTemp, totalMinutes, percentOpen, currentRate)
 }
 
 // Refactored variant used by finalization path
