@@ -341,7 +341,13 @@ def mainPage() {
               atomicState.ewmaHalfLifeDays = (settings?.ewmaHalfLifeDays ?: 3) as Integer
               atomicState.enableOutlierRejection = settings?.enableOutlierRejection != false
               atomicState.outlierThresholdMad = (settings?.outlierThresholdMad ?: 3) as Integer
-              \n              atomicState.carryForwardLastHour = settings?.carryForwardLastHour != false
+              atomicState.outlierMode = settings?.outlierMode ?: 'clip'
+              atomicState.carryForwardLastHour = settings?.carryForwardLastHour != false
+              atomicState.enableAdaptiveBoost = settings?.enableAdaptiveBoost != false
+              atomicState.adaptiveLookbackPeriods = (settings?.adaptiveLookbackPeriods ?: 3) as Integer
+              atomicState.adaptiveThresholdPercent = (settings?.adaptiveThresholdPercent ?: 25) as BigDecimal
+              atomicState.adaptiveBoostPercent = (settings?.adaptiveBoostPercent ?: 12.5) as BigDecimal
+              atomicState.adaptiveMaxBoostPercent = (settings?.adaptiveMaxBoostPercent ?: 25) as BigDecimal
             } catch (ignore) { }
           }
           
