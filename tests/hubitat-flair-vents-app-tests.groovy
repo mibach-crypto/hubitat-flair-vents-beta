@@ -103,7 +103,8 @@ class Test extends Specification {
     when:
     script.metaClass.getChildDevices = { -> [closedCoolingVent] }
     then:
-    script.calculateHvacMode() == null
+    // Closed vents still contribute to detection now
+    script.calculateHvacMode() == 'cooling'
   }
 
 
