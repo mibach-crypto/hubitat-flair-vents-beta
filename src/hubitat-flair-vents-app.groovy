@@ -4367,6 +4367,35 @@ def handleExportDabHistory() {
   }
 }
 
+// Clear all DAB learned data and history (all rooms)
+def handleClearDabData() {
+  try {
+    def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+    // Reset per-room rates
+    vents.each { v ->
+      try { sendEvent(v, [name: 'room-cooling-rate', value: 0.0]) } catch (ignore) { }
+      try { sendEvent(v, [name: 'room-heating-rate', value: 0.0]) } catch (ignore) { }
+      try { sendEvent(v, [name: 'room-starting-temperature-c', value: null]) } catch (ignore) { }
+    }
+    // Reset history structures
+    atomicState.dabHistory = [entries: [], hourlyRates: [:]]
+    atomicState.dabActivityLog = []
+    atomicState.remove('dabHistoryArchive')
+    atomicState.remove('dabHistoryErrors')
+    atomicState.remove('dabDailyStats')
+    atomicState.remove('dabHistoryStartTimestamp')
+    atomicState.remove('lastHvacMode')
+    try { atomicState.maxCoolingRate = 0.0 } catch (ignore) { }
+    try { atomicState.maxHeatingRate = 0.0 } catch (ignore) { }
+    // Clear any cached export status
+    state.remove('dabHistoryExportStatus')
+    state.remove('dabHistoryExportData')
+    state.clearDabStatus = "\u2713 Cleared all DAB data and room rates."
+  } catch (e) {
+    state.clearDabStatus = "\u2717 Clear failed: ${e?.message}"
+  }
+}
+
 def handleImportEfficiencyData() {
   try {
     log(2, 'App', "Starting efficiency data import")
@@ -4881,6 +4910,19 @@ def efficiencyDataPage() {
             </div>
           '''
         }
+      }
+    }
+
+    // Clear/Reset Section
+    section("Reset DAB Data") {
+      paragraph "Use this to clear learned efficiency rates and history for all rooms. This does not delete devices."
+      input name: 'clearDabDataNow', type: 'button', title: 'Clear All DAB Data', submitOnChange: true
+      if (settings?.clearDabDataNow) {
+        handleClearDabData()
+        app.updateSetting('clearDabDataNow','')
+      }
+      if (state?.clearDabStatus) {
+        paragraph state.clearDabStatus
       }
     }
     
