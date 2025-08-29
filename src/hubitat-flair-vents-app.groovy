@@ -3867,6 +3867,7 @@ def finalizeRoomStates(data) {
     Integer hour = new Date(data.startedCycle).format('H', location?.timeZone ?: TimeZone.getTimeZone('UTC')) as Integer
 
     data.ventIdsByRoomId.each { roomId, ventIds ->
+      try {
       // Compute aggregated percent-open for the whole room (sum, capped to 100)
       int roomPercentOpen = 0
       try {
@@ -3976,6 +3977,9 @@ def finalizeRoomStates(data) {
             }
           }
         }
+      }
+      } catch (Exception e) {
+        logError("Error processing room ${roomId} in finalizeRoomStates: ${e?.message}", 'DAB', roomId)
       }
     }
   } else {
