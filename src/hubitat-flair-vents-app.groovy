@@ -3921,7 +3921,6 @@ def finalizeRoomStates(data) {
         roomRates[roomName] = cleanedRate
         // Record adaptive adjustment mark vs seeded rate
         try {
-          Integer hour = new Date(data.startedCycle).format('H', location?.timeZone ?: TimeZone.getTimeZone('UTC')) as Integer
           def seeded = (atomicState?.lastSeededRate ?: [:])?.get(roomId)?.get(data.hvacMode)?.get(hour as Integer) as BigDecimal
           if (persistedRate != null && (persistedRate as BigDecimal) > 0) {
             BigDecimal base = (seeded != null && seeded > 0) ? seeded : (persistedRate as BigDecimal)
