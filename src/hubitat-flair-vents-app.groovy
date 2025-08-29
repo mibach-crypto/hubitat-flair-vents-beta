@@ -331,7 +331,7 @@ def mainPage() {
               atomicState.ewmaHalfLifeDays = (settings?.ewmaHalfLifeDays ?: 3) as Integer
               atomicState.enableOutlierRejection = settings?.enableOutlierRejection != false
               atomicState.outlierThresholdMad = (settings?.outlierThresholdMad ?: 3) as Integer
-              atomicState.outlierMode = settings?.outlierMode ?: 'clip'
+              \n              atomicState.carryForwardLastHour = settings?.carryForwardLastHour != false
             } catch (ignore) { }
           }
           
@@ -3367,10 +3367,42 @@ def getAverageHourlyRate(String roomId, String hvacMode, Integer hour) {
   if (!rates || rates.size() == 0) {
     rates = getHourlyRates(roomId, hvacMode, hour) ?: []
   }
-  if (!rates || rates.size() == 0) { return 0.0 }
+  // Carry-forward: if no data for this hour, optionally use the most recent prior hour's last observed rate
+  if ((!rates || rates.size() == 0)) {
+    boolean carry = true
+    try { carry = (atomicState?.carryForwardLastHour != false) } catch (ignore) { carry = true }
+    if (carry) {
+      for (int i = 1; i <= 23; i++) {
+        int prevHour = ((hour as int) - i) % 24
+        if (prevHour < 0) { prevHour += 24 }
+        def last = getLastObservedHourlyRate(roomId, hvacMode, prevHour)
+        if (last != null) { return cleanDecimalForJson(last as BigDecimal) }
+      }
+    }
+    return 0.0
+  }
   BigDecimal sum = 0.0
   rates.each { sum += it as BigDecimal }
   return cleanDecimalForJson(sum / rates.size())
+}
+
+// Find the most recent recorded rate for a room/mode/hour within retention
+private BigDecimal getLastObservedHourlyRate(String roomId, String hvacMode, Integer hour) {
+  try {
+    def hist = atomicState?.dabHistory
+    def entries = (hist instanceof List) ? (hist as List) : (hist?.entries ?: [])
+    if (!entries) { return null }
+    // Iterate from newest to oldest
+    for (int idx = entries.size()-1; idx >= 0; idx--) {
+      def e = entries[idx]
+      try {
+        if (e[1] == roomId && e[2] == hvacMode && (e[3] as Integer) == (hour as Integer)) {
+          return (e[4] as BigDecimal)
+        }
+      } catch (ignore) { }
+    }
+  } catch (ignoreOuter) { }
+  return null
 }
 
 // Append a new efficiency rate to the rolling 10-day hourly history
@@ -5733,4 +5765,5 @@ def dabHealthMonitor() {
     try { logWarn("Health monitor error: ${e?.message}", 'DAB') } catch (ignore) { }
   }
 }
+
 
