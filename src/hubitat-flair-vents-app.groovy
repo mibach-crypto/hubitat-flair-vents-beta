@@ -430,8 +430,8 @@ def mainPage() {
         vents.each { v ->
           input name: "vent${v.getId()}Weight", type: 'number', title: "Weight for ${v.getLabel()} (default 1.0)", defaultValue: 1.0, submitOnChange: true
         }
-        paragraph '<small>When a room has multiple vents, the system calculates a room-level target and then vents are adjusted individually. '
-                + 'Weights bias openings within a room: higher weight => relatively more opening. Leave at 1.0 for equal weighting.</small>'
+        paragraph '<small>When a room has multiple vents, the system calculates a room-level target and then vents are adjusted individually. ' +
+                  'Weights bias openings within a room: higher weight => relatively more opening. Leave at 1.0 for equal weighting.</small>'
       }
 
       if (state.ventPatchDiscrepancies) {
