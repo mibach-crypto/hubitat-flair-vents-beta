@@ -575,7 +575,14 @@ def diagnosticsPage() {
         try { state.diagnosticsJson = buildDiagnosticsJson() } catch (ignore) { state.diagnosticsJson = '{}' }
         app.updateSetting('exportDiagnosticsNow','')
       }
-      paragraph 'Copy JSON from app logs (next release will render textarea safely).'
+      if (state?.diagnosticsJson) {
+        def enc = ''
+        try { enc = URLEncoder.encode(state.diagnosticsJson, 'UTF-8') } catch (ignore) { enc = '' }
+        paragraph "<a href='data:application/json;charset=utf-8,${enc}' download='flair-diagnostics.json'>Download diagnostics.json</a>"
+        paragraph "<textarea rows='10' cols='100' readonly>" + state.diagnosticsJson + "</textarea>"
+      } else {
+        paragraph 'Press Export Snapshot to generate JSON.'
+      }
     }
     section('Raw Data Cache') {
       def entries = (atomicState?.rawDabSamplesEntries ?: [])
@@ -3224,6 +3231,44 @@ def reBalanceVents() {
     def changed = decisions.findAll { it.pct != null }
     def summary = changed.takeRight(5).collect { d -> "${d.room}:${d.pct}%" }
     if (summary) { appendDabActivityLog("Changes: ${summary.join(', ')}") }
+  } catch (ignore) { }
+}
+
+// Schedule rebalancing at an approximate interval using Hubitat-supported helpers
+def scheduleRebalanceForInterval(Integer mins) {
+  try { unschedule('reBalanceVents') } catch (ignore) { }
+  try {
+    if (!mins || mins <= 5) {
+      runEvery5Minutes('reBalanceVents')
+    } else if (mins <= 10) {
+      runEvery10Minutes('reBalanceVents')
+    } else if (mins <= 15) {
+      runEvery15Minutes('reBalanceVents')
+    } else if (mins <= 30) {
+      runEvery30Minutes('reBalanceVents')
+    } else {
+      runEvery1Hour('reBalanceVents')
+    }
+  } catch (ignore) { }
+}
+
+// Minimal control loop for Lightweight Mode: open active rooms fully when heating/cooling
+def applyLightweightControl(String hvacMode) {
+  try {
+    def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+    if (!vents) { return }
+    int floorPct = 0
+    try { floorPct = (settings?.allowFullClose ? 0 : ((settings?.minVentFloorPercent ?: 0) as int)) } catch (ignore) { floorPct = 0 }
+    boolean running = (hvacMode in [COOLING, HEATING])
+    vents.each { v ->
+      try {
+        boolean active = (v.currentValue('room-active') ?: 'false') == 'true'
+        int target = running ? (active ? 100 : floorPct) : floorPct
+        int current = ((v.currentValue('percent-open') ?: v.currentValue('level') ?: 0) as int)
+        if (current != target) { patchVent(v, target) }
+      } catch (ignore) { }
+    }
+    appendDabActivityLog(running ? "LW apply: ${hvacMode} (active->100%, others->floor)" : 'LW apply: idle (all->floor)')
   } catch (ignore) { }
 }
 
