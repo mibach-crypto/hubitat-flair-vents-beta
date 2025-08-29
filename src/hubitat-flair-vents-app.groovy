@@ -5673,6 +5673,8 @@ def quickControlsPage() {
       def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
       // Build 1 row per room
       def byRoom = [:]
+      state.qcDeviceMap = [:]
+      state.qcRoomMap = [:]
       vents.each { v ->
         def rid = v.currentValue('room-id') ?: v.getDeviceNetworkId()
         if (!byRoom.containsKey(rid)) { byRoom[rid] = v }
@@ -5690,10 +5692,14 @@ def quickControlsPage() {
         def fmt1 = { x -> x != null ? (((x as BigDecimal) * 10).round() / 10) : '-' }
         def tempF = fmt1(toF(tempC))
         def setpF = fmt1(toF(setpC))
+        def vidKey = vid.replaceAll('[^A-Za-z0-9_]', '_')
+        def roomKey = roomId.replaceAll('[^A-Za-z0-9_]', '_')
+        state.qcDeviceMap[vidKey] = vid
+        state.qcRoomMap[roomKey] = roomId
         paragraph "<b>${roomName}</b> - Vent: ${cur}% | Temp: ${tempF} °F | Setpoint: ${setpF} °F | Active: ${active ?: 'false'}" + (batt ? " | Battery: ${batt}%" : "") + (upd ? " | Updated: ${upd}" : "")
-        input name: "qc_${vid}_percent", type: 'number', title: 'Set vent percent', required: false, submitOnChange: false
-        input name: "qc_room_${roomId}_setpoint", type: 'number', title: 'Set room setpoint (°F)', required: false, submitOnChange: false
-        input name: "qc_room_${roomId}_active", type: 'enum', title: 'Set room active', options: ['true','false'], required: false, submitOnChange: false
+        input name: "qc_${vidKey}_percent", type: 'number', title: 'Set vent percent', required: false, submitOnChange: false
+        input name: "qc_room_${roomKey}_setpoint", type: 'number', title: 'Set room setpoint (°F)', required: false, submitOnChange: false
+        input name: "qc_room_${roomKey}_active", type: 'enum', title: 'Set room active', options: ['true','false'], required: false, submitOnChange: false
       }
       input name: 'applyQuickControlsNow', type: 'button', title: 'Apply All Changes', submitOnChange: true
     }
@@ -5725,58 +5731,63 @@ def quickControlsPage() {
   }
 }
 
-private void applyQuickControls() {
-  def overrides = atomicState?.manualOverrides ?: [:]
-  def allKeys = (settings?.keySet() ?: []) as List
-  // Per-vent percent controls
-  def pctKeys = allKeys.findAll { (it as String).startsWith('qc_') && (it as String).endsWith('_percent') }
-  pctKeys.each { k ->
-    def vid = (k as String).replace('qc_','').replace('_percent','')
-    def v = getChildDevice(vid)
-    if (!v) { return }
-    def val = settings[k]
-    if (val != null && val != '') {
-      Integer pct = (val as Integer)
-      // Enforce floor for manual entries unless full close allowed
-      try {
-        if (!(settings?.allowFullClose == true)) {
-          int floor = ((settings?.minVentFloorPercent ?: 0) as int)
-          if (pct < floor) { pct = floor }
-        }
-      } catch (ignore) { }
-      overrides[vid] = pct
-      patchVent(v, pct)
-      app.updateSetting(k, '')
+  private void applyQuickControls() {
+    def overrides = atomicState?.manualOverrides ?: [:]
+    def allKeys = (settings?.keySet() ?: []) as List
+    def deviceMap = state?.qcDeviceMap ?: [:]
+    def roomMap = state?.qcRoomMap ?: [:]
+    // Per-vent percent controls
+    def pctKeys = allKeys.findAll { (it as String).startsWith('qc_') && (it as String).endsWith('_percent') }
+    pctKeys.each { k ->
+      def sid = (k as String).replace('qc_','').replace('_percent','')
+      def vid = deviceMap[sid] ?: sid
+      def v = getChildDevice(vid)
+      if (!v) { return }
+      def val = settings[k]
+      if (val != null && val != '') {
+        Integer pct = (val as Integer)
+        // Enforce floor for manual entries unless full close allowed
+        try {
+          if (!(settings?.allowFullClose == true)) {
+            int floor = ((settings?.minVentFloorPercent ?: 0) as int)
+            if (pct < floor) { pct = floor }
+          }
+        } catch (ignore) { }
+        overrides[vid] = pct
+        patchVent(v, pct)
+        app.updateSetting(k, '')
+      }
     }
-  }
-  // Per-room setpoint controls
-  def spKeys = allKeys.findAll { (it as String).startsWith('qc_room_') && (it as String).endsWith('_setpoint') }
-  spKeys.each { k ->
-    def roomId = (k as String).replace('qc_room_','').replace('_setpoint','')
-    def v = getChildDevices()?.find { it.hasAttribute('percent-open') && (it.currentValue('room-id')?.toString() == roomId) }
-    def val = settings[k]
-    if (v && val != null && val != '') {
-      try {
-        BigDecimal temp = (val as BigDecimal)
-        patchRoomSetPoint(v, temp)
-      } catch (ignore) { }
-      app.updateSetting(k, '')
+    // Per-room setpoint controls
+    def spKeys = allKeys.findAll { (it as String).startsWith('qc_room_') && (it as String).endsWith('_setpoint') }
+    spKeys.each { k ->
+      def sid = (k as String).replace('qc_room_','').replace('_setpoint','')
+      def roomId = roomMap[sid] ?: sid
+      def v = getChildDevices()?.find { it.hasAttribute('percent-open') && (it.currentValue('room-id')?.toString() == roomId) }
+      def val = settings[k]
+      if (v && val != null && val != '') {
+        try {
+          BigDecimal temp = (val as BigDecimal)
+          patchRoomSetPoint(v, temp)
+        } catch (ignore) { }
+        app.updateSetting(k, '')
+      }
     }
-  }
-  // Per-room active controls
-  def activeKeys = allKeys.findAll { (it as String).startsWith('qc_room_') && (it as String).endsWith('_active') }
-  activeKeys.each { k ->
-    def roomId = (k as String).replace('qc_room_','').replace('_active','')
-    def v = getChildDevices()?.find { it.hasAttribute('percent-open') && (it.currentValue('room-id')?.toString() == roomId) }
-    def val = settings[k]
-    if (v && (val == 'true' || val == 'false')) {
-      patchRoom(v, val)
-      app.updateSetting(k, '')
+    // Per-room active controls
+    def activeKeys = allKeys.findAll { (it as String).startsWith('qc_room_') && (it as String).endsWith('_active') }
+    activeKeys.each { k ->
+      def sid = (k as String).replace('qc_room_','').replace('_active','')
+      def roomId = roomMap[sid] ?: sid
+      def v = getChildDevices()?.find { it.hasAttribute('percent-open') && (it.currentValue('room-id')?.toString() == roomId) }
+      def val = settings[k]
+      if (v && (val == 'true' || val == 'false')) {
+        patchRoom(v, val)
+        app.updateSetting(k, '')
+      }
     }
+    atomicState.manualOverrides = overrides
+    refreshVentTiles()
   }
-  atomicState.manualOverrides = overrides
-  refreshVentTiles()
-}
 
 private void openAllSelected(Integer pct) {
   def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
@@ -5798,17 +5809,19 @@ private void openAllSelected(Integer pct) {
   atomicState.manualOverrides = overrides
 }
 
-private void manualAllEditedVents() {
-  def keys = settings?.keySet()?.findAll { (it as String).startsWith('qc_') && (it as String).endsWith('_percent') } ?: []
-  def overrides = atomicState?.manualOverrides ?: [:]
-  keys.each { k ->
-    def vid = (k as String).replace('qc_','').replace('_percent','')
-    def val = settings[k]
-    if (val != null && val != '') { overrides[vid] = (val as Integer) }
+  private void manualAllEditedVents() {
+    def keys = settings?.keySet()?.findAll { (it as String).startsWith('qc_') && (it as String).endsWith('_percent') } ?: []
+    def overrides = atomicState?.manualOverrides ?: [:]
+    def deviceMap = state?.qcDeviceMap ?: [:]
+    keys.each { k ->
+      def sid = (k as String).replace('qc_','').replace('_percent','')
+      def vid = deviceMap[sid] ?: sid
+      def val = settings[k]
+      if (val != null && val != '') { overrides[vid] = (val as Integer) }
+    }
+    atomicState.manualOverrides = overrides
+    refreshVentTiles()
   }
-  atomicState.manualOverrides = overrides
-  refreshVentTiles()
-}
 
 
 
