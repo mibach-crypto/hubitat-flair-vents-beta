@@ -1,4 +1,4 @@
-﻿/**
+/**
  *  Hubitat Flair Vents Integration
  *  Version 0.239
  *
@@ -224,11 +224,48 @@ def mainPage() {
     }
 
     if (state.flairAccessToken) {
+      // Optional structure selector for multi‑home users
+      section('Structure') {
+        input name: 'refreshStructures', type: 'button', title: 'Refresh Structures', submitOnChange: true
+        if (settings?.refreshStructures) {
+          try {
+            def uri = "${BASE_URL}/api/structures"
+            httpGet([uri: uri, headers: [Authorization: "Bearer ${state.flairAccessToken}"], timeout: HTTP_TIMEOUT_SECS, contentType: CONTENT_TYPE]) { resp ->
+              def data = resp?.getData()
+              def opts = [:]
+              data?.data?.each { s ->
+                try {
+                  def sid = s?.id?.toString()
+                  def nm = s?.attributes?.name ?: sid
+                  if (sid) { opts[sid] = "${nm} (${sid})" }
+                } catch (ignore) { }
+              }
+              state.structureOptions = opts
+            }
+          } catch (e) {
+            paragraph "Failed to load structures: ${e?.message}"
+          }
+          app.updateSetting('refreshStructures','')
+        }
+        def opts = state?.structureOptions ?: [:]
+        if (opts) {
+          input name: 'structureId', type: 'enum', title: 'Select Structure', options: opts, submitOnChange: true, required: true
+        } else {
+          paragraph 'No structures cached. Tap Refresh to list.'
+        }
+      }
       // Fast access to Quick Controls at the top
       section('\u26A1 Quick Controls') {
         href name: 'quickControlsLinkTop', title: '\u26A1 Open Quick Controls',
              description: 'Rapid per-room manual control, setpoints, and bulk actions',
              page: 'quickControlsPage'
+      }
+      // Lightweight mode and HVAC overrides are available even without full DAB
+      section('HVAC Detection & Overrides') {
+        input name: 'lightweightMode', type: 'bool', title: 'Enable Lightweight Control (no learning)', defaultValue: false, submitOnChange: true
+        input name: 'hvacModeOverride', type: 'enum', title: 'HVAC Mode Override', options: ['auto','heating','cooling','idle'], defaultValue: 'auto', submitOnChange: true
+        input name: 'ductTempDiffThresholdC', type: 'number', title: 'Duct-room diff threshold (°C)', defaultValue: 0.5, submitOnChange: true
+        paragraph '<small>Lightweight mode reacts to HVAC state only: opens active rooms fully during heating/cooling; closes to floor when idle. Override forces a mode regardless of detection.</small>'
       }
       section('Device Discovery') {
         input name: 'discoverDevices', type: 'button', title: 'Discover', submitOnChange: true
@@ -485,6 +522,7 @@ def mainPage() {
     section('Debug Options') {
       input name: 'debugLevel', type: 'enum', title: 'Choose debug level', defaultValue: 0,
             options: [0: 'None', 1: 'Level 1 (All)', 2: 'Level 2', 3: 'Level 3'], submitOnChange: true
+      input name: 'disableInstanceCaching', type: 'bool', title: 'Disable API caches (rooms/devices)', defaultValue: false, submitOnChange: true
       href name: 'diagnosticsLink', title: 'View Diagnostics',
            description: 'Troubleshoot vent data and logs', page: 'diagnosticsPage'
     }
@@ -995,8 +1033,8 @@ def calculateHvacModeRobust() {
   def sorted = diffs.sort()
   BigDecimal median = sorted[sorted.size().intdiv(2)] as BigDecimal
   log(4, 'DAB', "Median duct-room temp diff=${median}C")
-  if (median > DUCT_TEMP_DIFF_THRESHOLD) { return HEATING }
-  if (median < -DUCT_TEMP_DIFF_THRESHOLD) { return COOLING }
+  if (median > getDuctTempDiffThreshold()) { return HEATING }
+  if (median < -getDuctTempDiffThreshold()) { return COOLING }
   return fallbackFromThermostat()
 }
 
@@ -1207,6 +1245,11 @@ private initializeInstanceCaches() {
   }
 }
 
+// Global toggle to bypass instance room/device caches
+private boolean isInstanceCachingDisabled() {
+  try { return settings?.disableInstanceCaching == true } catch (ignore) { return false }
+}
+
 // ------------------------------
 // Raw DAB Data Cache (24h rolling)
 // ------------------------------
@@ -1290,6 +1333,7 @@ def sampleRawDabData() {
 
 // Room data caching methods
 def cacheRoomData(String roomId, Map roomData) {
+  if (isInstanceCachingDisabled()) { return }
   initializeInstanceCaches()
   def instanceId = getInstanceId()
   def cacheKey = "instanceCache_${instanceId}"
@@ -1320,6 +1364,7 @@ def cacheRoomData(String roomId, Map roomData) {
 }
 
 def getCachedRoomData(String roomId) {
+  if (isInstanceCachingDisabled()) { return null }
   initializeInstanceCaches()
   def instanceId = getInstanceId()
   def cacheKey = "instanceCache_${instanceId}"
@@ -1401,6 +1446,7 @@ def clearPendingRequest(String requestId) {
 
 // Device reading caching methods
 def cacheDeviceReading(String deviceKey, Map deviceData) {
+  if (isInstanceCachingDisabled()) { return }
   initializeInstanceCaches()
   def instanceId = getInstanceId()
   def cacheKey = "instanceCache_${instanceId}"
@@ -1431,6 +1477,7 @@ def cacheDeviceReading(String deviceKey, Map deviceData) {
 }
 
 def getCachedDeviceReading(String deviceKey) {
+  if (isInstanceCachingDisabled()) { return null }
   initializeInstanceCaches()
   def instanceId = getInstanceId()
   def cacheKey = "instanceCache_${instanceId}"
@@ -3070,17 +3117,17 @@ def thermostat1ChangeStateHandler(evt) {
       unschedule('initializeRoomStates')
       runInMillis(POST_STATE_CHANGE_DELAY_MS, 'initializeRoomStates', [data: hvacMode])
       recordStartingTemperatures()
-      runEvery5Minutes('evaluateRebalancingVents')
-      runEvery30Minutes('reBalanceVents')
+    runEvery5Minutes('evaluateRebalancingVents')
+    scheduleRebalanceForInterval((settings?.dabRebalanceIntervalMins ?: 5) as Integer)
       
       // Update polling to active interval when HVAC is running
       updateDevicePollingInterval((settings?.pollingIntervalActive ?: POLLING_INTERVAL_ACTIVE) as Integer)
       break
     default:
-      unschedule('initializeRoomStates')
-      unschedule('finalizeRoomStates')
-      unschedule('evaluateRebalancingVents')
-      unschedule('reBalanceVents')
+    unschedule('initializeRoomStates')
+    unschedule('finalizeRoomStates')
+    unschedule('evaluateRebalancingVents')
+    unschedule('reBalanceVents')
       if (atomicState.thermostat1State) {
         atomicStateUpdate('thermostat1State', 'finishedRunning', now())
         def params = [
@@ -3107,9 +3154,9 @@ def thermostat1ChangeStateHandler(evt) {
 // Periodically evaluate duct temperatures to determine HVAC state
 // without relying on an external thermostat.
 def updateHvacStateFromDuctTemps() {
-  if (!settings?.dabEnabled) { return }
+  if (!(settings?.dabEnabled == true || settings?.lightweightMode == true)) { return }
   String previousMode = atomicState.thermostat1State?.mode ?: 'idle'
-  String hvacMode = calculateHvacModeRobust()
+  String hvacMode = getEffectiveHvacMode()
   if (hvacMode != previousMode) {
     appendDabActivityLog("Start: ${previousMode} ÃŽâ€œÃƒÂ¥Ãƒâ€  ${hvacMode ?: 'idle'}")
   }
@@ -3117,28 +3164,39 @@ def updateHvacStateFromDuctTemps() {
     if (!atomicState.thermostat1State || atomicState.thermostat1State?.mode != hvacMode) {
       atomicStateUpdate('thermostat1State', 'mode', hvacMode)
       atomicStateUpdate('thermostat1State', 'startedRunning', now())
-      unschedule('initializeRoomStates')
-      runInMillis(POST_STATE_CHANGE_DELAY_MS, 'initializeRoomStates', [data: hvacMode])
-      recordStartingTemperatures()
-      runEvery5Minutes('evaluateRebalancingVents')
-      runEvery30Minutes('reBalanceVents')
+      if (isDabEnabled()) {
+        unschedule('initializeRoomStates')
+        runInMillis(POST_STATE_CHANGE_DELAY_MS, 'initializeRoomStates', [data: hvacMode])
+        recordStartingTemperatures()
+        runEvery5Minutes('evaluateRebalancingVents')
+        scheduleRebalanceForInterval((settings?.dabRebalanceIntervalMins ?: 5) as Integer)
+      } else if (isLightweightMode()) {
+        // Lightweight: react directly
+        runInMillis(POST_STATE_CHANGE_DELAY_MS, 'applyLightweightControl', [data: hvacMode])
+      }
       updateDevicePollingInterval((settings?.pollingIntervalActive ?: POLLING_INTERVAL_ACTIVE) as Integer)
     }
   } else {
     if (atomicState.thermostat1State) {
-      unschedule('initializeRoomStates')
-      unschedule('finalizeRoomStates')
-      unschedule('evaluateRebalancingVents')
-      unschedule('reBalanceVents')
+      if (isDabEnabled()) {
+        unschedule('initializeRoomStates')
+        unschedule('finalizeRoomStates')
+        unschedule('evaluateRebalancingVents')
+        unschedule('reBalanceVents')
+      }
       atomicStateUpdate('thermostat1State', 'finishedRunning', now())
-      def params = [
-        ventIdsByRoomId: atomicState.ventsByRoomId,
-        startedCycle: atomicState.thermostat1State?.startedCycle,
-        startedRunning: atomicState.thermostat1State?.startedRunning,
-        finishedRunning: atomicState.thermostat1State?.finishedRunning,
-        hvacMode: atomicState.thermostat1State?.mode
-      ]
-      runInMillis(TEMP_READINGS_DELAY_MS, 'finalizeRoomStates', [data: params])
+      if (isDabEnabled()) {
+        def params = [
+          ventIdsByRoomId: atomicState.ventsByRoomId,
+          startedCycle: atomicState.thermostat1State?.startedCycle,
+          startedRunning: atomicState.thermostat1State?.startedRunning,
+          finishedRunning: atomicState.thermostat1State?.finishedRunning,
+          hvacMode: atomicState.thermostat1State?.mode
+        ]
+        runInMillis(TEMP_READINGS_DELAY_MS, 'finalizeRoomStates', [data: params])
+      } else if (isLightweightMode()) {
+        runInMillis(POST_STATE_CHANGE_DELAY_MS, 'applyLightweightControl', [data: null])
+      }
       atomicState.remove('thermostat1State')
       updateDevicePollingInterval((settings?.pollingIntervalIdle ?: POLLING_INTERVAL_IDLE) as Integer)
     }
@@ -3359,6 +3417,31 @@ private boolean isDabEnabled() {
   } catch (ignore) { }
   // Fallback to mirrored state (used by CI/tests)
   return (atomicState?.dabEnabled == true)
+}
+
+// Lightweight control enabled toggle
+private boolean isLightweightMode() {
+  try { return settings?.lightweightMode == true } catch (ignore) { return false }
+}
+
+// Effective duct-room threshold, allowing override in settings
+private BigDecimal getDuctTempDiffThreshold() {
+  try {
+    def v = settings?.ductTempDiffThresholdC
+    if (v != null) { return (v as BigDecimal) }
+  } catch (ignore) { }
+  return DUCT_TEMP_DIFF_THRESHOLD
+}
+
+// Return manual override if set, otherwise auto-detect
+private String getEffectiveHvacMode() {
+  try {
+    def o = settings?.hvacModeOverride?.toString()?.toLowerCase()
+    if (o && o != 'auto') {
+      return (o in [COOLING, HEATING, 'idle']) ? (o == 'idle' ? null : o) : null
+    }
+  } catch (ignore) { }
+  return calculateHvacModeRobust()
 }
 
 // Retrieve the average hourly efficiency rate for a room and HVAC mode
@@ -5669,6 +5752,10 @@ def asyncHttpGetWrapper(response, Map data) {
 
 def quickControlsPage() {
   dynamicPage(name: 'quickControlsPage', title: '\u26A1 Quick Controls', install: false, uninstall: false) {
+    section('Status') {
+      paragraph 'Quick Controls loaded. If empty below, see Diagnostics.'
+    }
+    try {
     section('Per-Room Status & Controls') {
       def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
       // Build 1 row per room
@@ -5690,12 +5777,16 @@ def quickControlsPage() {
         def fmt1 = { x -> x != null ? (((x as BigDecimal) * 10).round() / 10) : '-' }
         def tempF = fmt1(toF(tempC))
         def setpF = fmt1(toF(setpC))
-        paragraph "<b>${roomName}</b> - Vent: ${cur}% | Temp: ${tempF} °F | Setpoint: ${setpF} °F | Active: ${active ?: 'false'}" + (batt ? " | Battery: ${batt}%" : "") + (upd ? " | Updated: ${upd}" : "")
+        paragraph "<b>${roomName}</b> - Vent: ${cur}% | Temp: ${tempF} &deg;F | Setpoint: ${setpF} &deg;F | Active: ${active ?: 'false'}" + (batt ? " | Battery: ${batt}%" : "") + (upd ? " | Updated: ${upd}" : "")
         input name: "qc_${vid}_percent", type: 'number', title: 'Set vent percent', required: false, submitOnChange: false
-        input name: "qc_room_${roomId}_setpoint", type: 'number', title: 'Set room setpoint (°F)', required: false, submitOnChange: false
+        input name: "qc_room_${roomId}_setpoint", type: 'number', title: 'Set room setpoint (F)', required: false, submitOnChange: false
         input name: "qc_room_${roomId}_active", type: 'enum', title: 'Set room active', options: ['true','false'], required: false, submitOnChange: false
       }
       input name: 'applyQuickControlsNow', type: 'button', title: 'Apply All Changes', submitOnChange: true
+    }
+    }
+    catch (e) {
+      section('Diagnostics') { paragraph "Render error: ${e?.message ?: e}" }
     }
     section('Active Rooms Now') {
       def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
