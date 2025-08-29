@@ -497,7 +497,6 @@ def diagnosticsPage() {
         app.updateSetting('exportDiagnosticsNow','')
       }
       paragraph 'Copy JSON from app logs (next release will render textarea safely).'
-      try { log(2, 'App', 'Diagnostics JSON: ' + state.diagnosticsJson) } catch (ignore) { }
     }
     
     section('Actions') {
