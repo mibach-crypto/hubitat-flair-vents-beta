@@ -224,6 +224,19 @@ def mainPage() {
     }
 
     if (state.flairAccessToken) {
+      section('HVAC Status') {
+        input name: 'refreshHvacNow', type: 'button', title: 'Refresh HVAC Status', submitOnChange: true
+        if (settings?.refreshHvacNow) {
+          try { updateHvacStateFromDuctTemps() } catch (ignore) { }
+          app.updateSetting('refreshHvacNow','')
+        }
+        def cur = atomicState?.thermostat1State?.mode ?: (atomicState?.hvacCurrentMode ?: 'idle')
+        def last = atomicState?.hvacLastMode ?: '-'
+        def ts = atomicState?.hvacLastChangeTs
+        def tz = location?.timeZone ?: TimeZone.getTimeZone('UTC')
+        def tsStr = ts ? new Date(ts as Long).format('yyyy-MM-dd HH:mm:ss', tz) : '-'
+        paragraph "Current: <b>${cur}</b> | Last: <b>${last}</b> | Changed: <b>${tsStr}</b>"
+      }
       // Fast access to Quick Controls at the top
       section('\u26A1 Quick Controls') {
         href name: 'quickControlsLinkTop', title: '\u26A1 Open Quick Controls',
@@ -3121,6 +3134,9 @@ def updateHvacStateFromDuctTemps() {
   String hvacMode = (calculateHvacModeRobust() ?: 'idle')
   if (hvacMode != previousMode) {
     appendDabActivityLog("Start: ${previousMode} -> ${hvacMode}")
+    try { atomicState.hvacLastMode = previousMode } catch (ignore) { }
+    try { atomicState.hvacCurrentMode = hvacMode } catch (ignore) { }
+    try { atomicState.hvacLastChangeTs = now() } catch (ignore) { }
   }
   if (hvacMode in [COOLING, HEATING]) {
     if (!atomicState.thermostat1State || atomicState.thermostat1State?.mode != hvacMode) {
