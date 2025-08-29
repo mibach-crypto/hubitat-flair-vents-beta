@@ -88,6 +88,9 @@ import java.net.URLEncoder
 
 // Maximum iterations for the while-loop when adjusting vent openings.
 @Field static final Integer MAX_ITERATIONS = 500
+// Quick controls verification timing
+@Field static final Integer VENT_VERIFY_DELAY_MS = 5000
+@Field static final Integer MAX_VENT_VERIFY_ATTEMPTS = 3
 
 // HTTP timeout for API requests (in seconds).
 @Field static final Integer HTTP_TIMEOUT_SECS = 5
@@ -3787,13 +3790,22 @@ def recordHistoryError(String message) {
 }
 
 private boolean isFanActive(String opState = null) {
-  opState = opState ?: settings.thermostat1?.currentValue('thermostatOperatingState')
-  if (opState == 'fan only') { return true }
-  if (opState == 'idle') {
-    def fanMode = settings.thermostat1?.currentValue('thermostatFanMode')
-    return fanMode in ['on', 'circulate']
+  // With thermostat: rely on operating/fan state
+  if (settings?.thermostat1) {
+    opState = opState ?: settings.thermostat1?.currentValue('thermostatOperatingState')
+    if (opState == 'fan only') { return true }
+    if (opState == 'idle') {
+      def fanMode = settings.thermostat1?.currentValue('thermostatFanMode')
+      return fanMode in ['on', 'circulate']
+    }
+    return false
   }
-  return false
+  // No thermostat: treat HVAC idle (no heat/cool) as "fan/idle" state
+  // so that "Fan-only: open all vents" can still be honored.
+  try {
+    String mode = calculateHvacModeRobust()
+    return (mode == null)
+  } catch (ignore) { return false }
 }
 
 def finalizeRoomStates(data) {
@@ -5720,6 +5732,13 @@ private void applyQuickControls() {
     def val = settings[k]
     if (val != null && val != '') {
       Integer pct = (val as Integer)
+      // Enforce floor for manual entries unless full close allowed
+      try {
+        if (!(settings?.allowFullClose == true)) {
+          int floor = ((settings?.minVentFloorPercent ?: 0) as int)
+          if (pct < floor) { pct = floor }
+        }
+      } catch (ignore) { }
       overrides[vid] = pct
       patchVent(v, pct)
       app.updateSetting(k, '')
@@ -5756,6 +5775,13 @@ private void applyQuickControls() {
 
 private void openAllSelected(Integer pct) {
   def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+  // Enforce floor unless full close allowed
+  try {
+    if (!(settings?.allowFullClose == true)) {
+      int floor = ((settings?.minVentFloorPercent ?: 0) as int)
+      if (pct < floor) { pct = floor }
+    }
+  } catch (ignore) { }
   // Set a manual override for stickiness and patch
   def overrides = atomicState?.manualOverrides ?: [:]
   vents.each { v ->
