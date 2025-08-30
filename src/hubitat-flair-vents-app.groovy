@@ -23,9 +23,8 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.net.URLEncoder
 
-// Include Hubitat Libraries (installed in "Libraries" section)
-library "bot.flair.DabManager", "0.240.0"
-library "bot.flair.DabUIManager", "0.240.0"
+#include yourns.dab.DabManager
+#include yourns.dab.DabUIManager
 
 // ------------------------------
 // Constants and Configuration
@@ -207,15 +206,18 @@ def mainPage() {
       if (validation.errors.clientId) {
         paragraph "<span style='color: red;'>${validation.errors.clientId}</span>"
       }
-      
+
       if (validation.errors.clientSecret) {
         paragraph "<span style='color: red;'>${validation.errors.clientSecret}</span>"
-      }      if (settings?.clientId && settings?.clientSecret) {
+      }
+
+      if (settings?.clientId && settings?.clientSecret) {
         if (!state.flairAccessToken && !state.authInProgress) {
           state.authInProgress = true
           state.remove('authError')  // Clear any previous error when starting new auth
           runIn(2, 'autoAuthenticate')
-        }        if (state.flairAccessToken && !state.authError) {
+        }
+        if (state.flairAccessToken && !state.authError) {
           paragraph "<span style='color: green;'>Authenticated successfully</span>"
         } else if (state.authError && !state.authInProgress) {
           section {
@@ -228,7 +230,11 @@ def mainPage() {
           paragraph "<small>This may take 10-15 seconds. The page will refresh automatically when complete.</small>"
         } else {
           paragraph "<span style='color: orange;'>Ready to authenticate...</span>"
-        }      }    }    if (state.flairAccessToken) {
+        }
+      }
+    }
+
+    if (state.flairAccessToken) {
       section('HVAC Status') {
         input name: 'refreshHvacNow', type: 'button', title: 'Refresh HVAC Status', submitOnChange: true
         if (settings?.refreshHvacNow) {
