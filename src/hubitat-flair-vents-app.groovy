@@ -1056,6 +1056,324 @@ def decrementActiveRequests() {
   } catch (ignored) { }
 }
 
+// Concurrency gate for async HTTP
+def canMakeRequest() {
+  try { return (atomicState?.activeRequests ?: 0) < (MAX_CONCURRENT_REQUESTS ?: 4) } catch (ignored) { return true }
+}
+
+// Initialize DAB tracking structures and state mirrors
+def initializeDabTracking() {
+  try {
+    atomicState.dabEwma = atomicState.dabEwma ?: [:]
+    atomicState.dabDailyStats = atomicState.dabDailyStats ?: [:]
+    atomicState.dabActivityLog = atomicState.dabActivityLog ?: []
+    atomicState.recentVentDecisions = atomicState.recentVentDecisions ?: []
+    state.recentErrors = state.recentErrors ?: []
+  } catch (ignored) { }
+}
+
+// Clean up any previously stored BigDecimals to hub-safe doubles where necessary
+def cleanupExistingDecimalPrecision() {
+  try {
+    def fixMap = { m ->
+      if (!(m instanceof Map)) return m
+      m.collectEntries { k, v ->
+        if (v instanceof BigDecimal) {
+          [(k): (cleanDecimalForJson(v))]
+        } else if (v instanceof Map) {
+          [(k): fixMap(v)]
+        } else if (v instanceof List) {
+          [(k): v.collect { it instanceof BigDecimal ? cleanDecimalForJson(it) : it }]
+        } else {
+          [(k): v]
+        }
+      }
+    }
+    try { atomicState.dabEwma = fixMap(atomicState?.dabEwma ?: [:]) } catch (ignored2) { }
+    try { atomicState.dabDailyStats = fixMap(atomicState?.dabDailyStats ?: [:]) } catch (ignored3) { }
+  } catch (ignored) { }
+}
+
+// Instance cache helpers for room/device caching
+def cacheRoomData(String roomId, def data) {
+  try {
+    def base = "instanceCache_${getInstanceId()}"
+    def cache = state."${base}_roomCache" ?: [:]
+    def ts = state."${base}_roomCacheTimestamps" ?: [:]
+    cache[roomId] = data
+    ts[roomId] = getCurrentTime()
+    // enforce max size
+    if (cache.size() > (MAX_CACHE_SIZE ?: 50)) {
+      def firstKey = (cache.keySet() as List).first()
+      cache.remove(firstKey)
+      ts.remove(firstKey)
+    }
+    state."${base}_roomCache" = cache
+    state."${base}_roomCacheTimestamps" = ts
+  } catch (ignored) { }
+}
+
+def cacheDeviceReading(String deviceKey, def data) {
+  try {
+    def base = "instanceCache_${getInstanceId()}"
+    def cache = state."${base}_deviceCache" ?: [:]
+    def ts = state."${base}_deviceCacheTimestamps" ?: [:]
+    cache[deviceKey] = data
+    ts[deviceKey] = getCurrentTime()
+    if (cache.size() > (MAX_CACHE_SIZE ?: 50)) {
+      def firstKey = (cache.keySet() as List).first()
+      cache.remove(firstKey)
+      ts.remove(firstKey)
+    }
+    state."${base}_deviceCache" = cache
+    state."${base}_deviceCacheTimestamps" = ts
+  } catch (ignored) { }
+}
+
+// Response validation helper
+def isValidResponse(resp) {
+  try {
+    if (!resp) return false
+    if (resp.hasError()) return false
+    def st = resp.getStatus() as int
+    return (st >= 200 && st < 300)
+  } catch (ignored) { return false }
+}
+
+// Async HTTP wrappers unified to a single callback
+def getDataAsync(String uri, String originalCallback, Map data = [:]) {
+  if (!state?.flairAccessToken) { return }
+  if (!canMakeRequest()) { return }
+  incrementActiveRequests()
+  try {
+    def httpParams = [
+      uri: uri,
+      headers: [Authorization: "Bearer ${state.flairAccessToken}"],
+      timeout: HTTP_TIMEOUT_SECS,
+      contentType: CONTENT_TYPE
+    ]
+    def cbData = [originalCallback: originalCallback, uri: uri]
+    if (data) { cbData.putAll(data) }
+    asynchttpGet('asyncHttpCallback', httpParams, cbData)
+  } catch (Exception e) {
+    logWarn "GET ${uri} failed: ${e?.message}", 'HTTP'
+    decrementActiveRequests()
+  }
+}
+
+def patchDataAsync(String uri, String originalCallback = null, Object body = null, Map data = [:]) {
+  if (!state?.flairAccessToken) { return }
+  if (!canMakeRequest()) { return }
+  incrementActiveRequests()
+  try {
+    def httpParams = [
+      uri: uri,
+      headers: [
+        Authorization: "Bearer ${state.flairAccessToken}",
+        'Content-Type': CONTENT_TYPE
+      ],
+      body: body ? groovy.json.JsonOutput.toJson(body) : null,
+      timeout: HTTP_TIMEOUT_SECS,
+      contentType: CONTENT_TYPE
+    ]
+    def cbData = [originalCallback: (originalCallback ?: 'noOpHandler'), uri: uri]
+    if (data) { cbData.putAll(data) }
+    try {
+      asynchttpPatch('asyncHttpCallback', httpParams, cbData)
+    } catch (Exception e) {
+      // Fallback to POST with method override if PATCH not supported in environment
+      try {
+        httpParams.headers['X-HTTP-Method-Override'] = 'PATCH'
+        asynchttpPost('asyncHttpCallback', httpParams, cbData)
+      } catch (Exception ee) {
+        logWarn "PATCH ${uri} failed: ${ee?.message}", 'HTTP'
+        decrementActiveRequests()
+      }
+    }
+  } catch (Exception e) {
+    logWarn "PATCH ${uri} build failed: ${e?.message}", 'HTTP'
+    decrementActiveRequests()
+  }
+}
+
+// Raw data sampling and pruning
+def getLatestRawSample(String ventId) {
+  try {
+    def last = atomicState?.rawDabLastByVent ?: [:]
+    return last[ventId]
+  } catch (ignored) { return null }
+}
+
+def sampleRawDabData() {
+  try {
+    def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+    if (!vents) { return }
+    def entries = (atomicState?.rawDabSamplesEntries ?: []) as List
+    def lastByVent = (atomicState?.rawDabLastByVent ?: [:]) as Map
+    def ts = now()
+    vents.each { v ->
+      try {
+        def vid = v.getDeviceNetworkId()
+        def roomId = v.currentValue('room-id') ?: v.getId()
+        BigDecimal duct = (v.currentValue('duct-temperature-c') ?: 0) as BigDecimal
+        BigDecimal room = (v.currentValue('room-current-temperature-c') ?: 0) as BigDecimal
+        Integer pct = (v.currentValue('percent-open') ?: v.currentValue('level') ?: 0) as Integer
+        def rec = [ts, roomId, vid, pct, duct, room]
+        entries << rec
+        lastByVent[vid] = rec
+      } catch (ignored) { }
+    }
+    // cap entries list
+    if (entries.size() > (RAW_CACHE_MAX_ENTRIES ?: 20000)) {
+      entries = entries[-(RAW_CACHE_MAX_ENTRIES)..-1]
+    }
+    atomicState.rawDabSamplesEntries = entries
+    atomicState.rawDabLastByVent = lastByVent
+  } catch (ignored) { }
+}
+
+def pruneRawCache() {
+  try {
+    def entries = (atomicState?.rawDabSamplesEntries ?: []) as List
+    int hours = (settings?.rawDataRetentionHours ?: RAW_CACHE_DEFAULT_HOURS) as int
+    long cutoff = now() - (hours * 60L * 60L * 1000L)
+    atomicState.rawDabSamplesEntries = entries.findAll { e -> (e[0] as Long) >= cutoff }
+  } catch (ignored) { }
+}
+
+// Daily aggregation wrapper (delegates to manager if available)
+def aggregateDailyDabStats() { try { return dabManager?.aggregateDailyDabStats() } catch (ignored) { } }
+
+// Activity log helper used by DabManager
+def appendDabActivityLog(String msg) {
+  try {
+    def arr = (atomicState?.dabActivityLog ?: []) as List
+    arr << (new Date().format('yyyy-MM-dd HH:mm:ss', location?.timeZone ?: TimeZone.getTimeZone('UTC')) + ' - ' + msg)
+    // cap log length
+    if (arr.size() > 200) { arr = arr[-200..-1] }
+    atomicState.dabActivityLog = arr
+  } catch (ignored) { }
+}
+
+// Misc helpers
+def getRetentionDays() {
+  try { return (settings?.historyRetentionDays ?: DEFAULT_HISTORY_RETENTION_DAYS) as Integer } catch (ignored) { return DEFAULT_HISTORY_RETENTION_DAYS }
+}
+
+def isDabEnabled() { try { return settings?.dabEnabled == true } catch (ignored) { return false } }
+
+def isFanActive() {
+  try {
+    def st = settings?.thermostat1?.currentValue('thermostatOperatingState')
+    return (st?.toString()?.toLowerCase() in ['fan only', 'fan', 'fan_only'])
+  } catch (ignored) { return false }
+}
+
+def getThermostat1Mode() {
+  try { return settings?.thermostat1?.currentValue('thermostatOperatingState') } catch (ignored) { }
+  try { return settings?.thermostat1?.currentValue('thermostatMode') } catch (ignored2) { }
+  return null
+}
+
+// Tile support
+def syncVentTiles() {
+  try {
+    def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+    vents.each { v ->
+      try {
+        String tileDni = "tile-${v.getDeviceNetworkId()}"
+        def existing = getChildDevice(tileDni)
+        if (!existing) {
+          addChildDevice('bot.flair', 'Flair Vent Tile', tileDni, [label: "Tile - ${v.getLabel()}", isComponent: false])
+        }
+      } catch (e) { logWarn("Tile create error: ${e?.message}", 'Tile') }
+    }
+  } catch (ignored) { }
+}
+
+def subscribeToVentEventsForTiles() {
+  try {
+    def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+    vents.each { v ->
+      try {
+        unsubscribe(v)
+        subscribe(v, 'percent-open', 'ventEventHandler')
+        subscribe(v, 'room-current-temperature-c', 'ventEventHandler')
+        subscribe(v, 'room-set-point-c', 'ventEventHandler')
+      } catch (ignored) { }
+    }
+  } catch (ignored) { }
+}
+
+def ventEventHandler(evt) { try { refreshVentTiles() } catch (ignored) { } }
+
+def refreshVentTiles() {
+  try {
+    def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+    def tiles = getChildDevices()?.findAll { it.getTypeName() == 'Flair Vent Tile' } ?: []
+    if (!tiles) { return }
+    // Simple HTML: list room name, percent, temp
+    vents.each { v ->
+      try {
+        String tileDni = "tile-${v.getDeviceNetworkId()}"
+        def tile = getChildDevice(tileDni)
+        if (!tile) { return }
+        def name = v.getLabel()
+        def pct = v.currentValue('percent-open') ?: v.currentValue('level') ?: 0
+        def tC = v.currentValue('room-current-temperature-c')
+        def tF = (tC != null) ? (((tC as BigDecimal) * 9/5) + 32) : null
+        String html = "<div style='font-family:sans-serif'><b>${name}</b>: ${pct}%" + (tF != null ? " | ${((tF as BigDecimal) * 10).round() / 10} °F" : '') + "</div>"
+        sendEvent(tile, [name: 'html', value: html])
+        sendEvent(tile, [name: 'level', value: (pct as int)])
+      } catch (ignored) { }
+    }
+  } catch (ignored) { }
+}
+
+// Commands invoked by tile driver
+def tileSetVentPercent(String ventDni, Integer pct) {
+  try {
+    def v = getChildDevice(ventDni)
+    if (v) { patchVent(v, pct) }
+  } catch (ignored) { }
+}
+
+def tileSetManualMode(String ventDni) {
+  try {
+    def overrides = atomicState?.manualOverrides ?: [:]
+    overrides[ventDni] = (getChildDevice(ventDni)?.currentValue('percent-open') ?: 0) as Integer
+    atomicState.manualOverrides = overrides
+  } catch (ignored) { }
+}
+
+def tileSetAutoMode(String ventDni) {
+  try {
+    def overrides = atomicState?.manualOverrides ?: [:]
+    overrides.remove(ventDni)
+    atomicState.manualOverrides = overrides
+  } catch (ignored) { }
+}
+
+// Night override helpers
+def activateNightOverride() {
+  try {
+    def vents = (settings?.nightOverrideRooms ?: [])
+    Integer pct = (settings?.nightOverridePercent ?: 100) as Integer
+    vents?.each { v -> try { patchVent(v, pct) } catch (ignored) { } }
+  } catch (ignored) { }
+}
+
+def deactivateNightOverride() {
+  try {
+    clearAllManualOverrides()
+  } catch (ignored) { }
+}
+
+def clearAllManualOverrides() { try { atomicState.remove('manualOverrides') } catch (ignored) { } }
+
+// Async convenience wrapper
+def getStructureDataAsync() { try { getStructureData(0) } catch (ignored) { } }
+
 def removeChildren() {
   try {
     getChildDevices()?.each { child ->
