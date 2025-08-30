@@ -166,6 +166,7 @@ definition(
 preferences {
   page(name: 'mainPage')
   page(name: 'flairControlPanel')
+  page(name: 'flairControlPanel2')
   page(name: 'efficiencyDataPage')
   page(name: 'dabChartPage')
   page(name: 'dabRatesTablePage')
@@ -187,7 +188,7 @@ def mainPage() {
     section('Flair Control Panel') {
       href name: 'flairControlPanelLink', title: 'Open Flair Control Panel',
            description: 'Room-centric overview and quick adjustments',
-           page: 'flairControlPanel'
+           page: 'flairControlPanel2'
     }
     section('OAuth Setup') {
       input name: 'clientId', type: 'text', title: 'Client Id (OAuth 2.0)', required: true, submitOnChange: true
@@ -654,6 +655,113 @@ def diagnosticsPage() {
       input name: 'resyncVents', type: 'button', title: 'Re-Sync Vents'
     }
   }
+}
+
+// New, styled control panel compatible with Hubitat pages (no JS required)
+def flairControlPanel2() {
+  dynamicPage(name: 'flairControlPanel2', title: 'Flair Control Panel', install: false, uninstall: false) {
+    section {
+      paragraph """
+        <style>
+          .flair-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px}
+          .room-card{background:#f9f9f9;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.12);padding:12px;border-left:5px solid #9ca3af}
+          .room-card.cooling{border-left-color:#3b82f6}
+          .room-card.heating{border-left-color:#f59e0b}
+          .room-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+          .room-name{font-weight:600}
+          .room-meta{font-size:12px;color:#374151}
+          .vent-item{font-size:12px;color:#111}
+        </style>
+      """
+    }
+
+    def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+    if (!vents) {
+      section { paragraph 'No vents available. Run discovery from the main page.' }
+      return
+    }
+
+    def rooms = [:]
+    vents.each { dv ->
+      def rid = dv.currentValue('room-id') ?: dv.getDeviceNetworkId()
+      (rooms[rid] = (rooms[rid] ?: []) ) << dv
+    }
+
+    rooms.each { roomId, list ->
+      def v = list[0]
+      def roomName = v.currentValue('room-name') ?: v.getLabel()
+      def tempC = v.currentValue('room-current-temperature-c')
+      def setpC = v.currentValue('room-set-point-c')
+      def active = (v.currentValue('room-active') ?: 'false')
+      def toF = { c -> c != null ? (((c as BigDecimal) * 9/5) + 32) : null }
+      def fmt1 = { x -> x != null ? (((x as BigDecimal) * 10).round() / 10) : '-' }
+      def tempF = fmt1(toF(tempC))
+      def setpF = fmt1(toF(setpC))
+      def hvacMode = (atomicState?.thermostat1State?.mode ?: atomicState?.hvacCurrentMode ?: 'idle')
+
+      section(roomName) {
+        paragraph """
+          <div class='flair-grid'>
+            <div class='room-card ${hvacMode}'>
+              <div class='room-head'>
+                <div class='room-name'>${roomName}</div>
+                <div class='room-meta'>Active: <b>${active}</b></div>
+              </div>
+              <div class='room-meta'>Temp: <b>${tempF}&deg;F</b> &nbsp;|&nbsp; Setpoint: <b>${setpF}&deg;F</b></div>
+            </div>
+          </div>
+        """
+        input name: "cp2_room_${roomId}_sp_down", type: 'button', title: 'Setpoint -1°F', submitOnChange: true
+        input name: "cp2_room_${roomId}_sp_up", type: 'button', title: 'Setpoint +1°F', submitOnChange: true
+        input name: "cp2_room_${roomId}_active", type: 'enum', title: 'Set room active', options: ['true','false'], submitOnChange: true
+
+        list.each { dv ->
+          def lvl = (dv.currentValue('percent-open') ?: dv.currentValue('level') ?: 0)
+          paragraph "<div class='vent-item'>&ndash; ${dv.getLabel()}: ${lvl}%</div>"
+        }
+
+        if (settings?."cp2_room_${roomId}_sp_up") {
+          try { if (setpF != '-') { patchRoomSetPoint(v, ((setpF as BigDecimal) + 1) as BigDecimal) } } catch (ignore) { }
+          app.updateSetting("cp2_room_${roomId}_sp_up", '')
+        }
+        if (settings?."cp2_room_${roomId}_sp_down") {
+          try { if (setpF != '-') { patchRoomSetPoint(v, ((setpF as BigDecimal) - 1) as BigDecimal) } } catch (ignore) { }
+          app.updateSetting("cp2_room_${roomId}_sp_down", '')
+        }
+        def sel = settings?."cp2_room_${roomId}_active"
+        if (sel != null && sel != '') {
+          try { patchRoom(v, sel) } catch (ignore) { }
+          app.updateSetting("cp2_room_${roomId}_active", '')
+        }
+      }
+    }
+
+    section { href name: 'backToMain', title: 'Back to Main', description: 'Return to main settings', page: 'mainPage' }
+  }
+}
+
+// Backend helper for future client use (JSON string)
+String getRoomDataForPanel() {
+  def out = []
+  def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+  def rooms = [:]
+  vents.each { dv ->
+    def rid = dv.currentValue('room-id') ?: dv.getDeviceNetworkId()
+    (rooms[rid] = (rooms[rid] ?: []) ) << dv
+  }
+  rooms.each { rid, list ->
+    def v = list[0]
+    def toF = { c -> c != null ? (((c as BigDecimal) * 9/5) + 32) : null }
+    out << [
+      id: rid,
+      name: v.currentValue('room-name') ?: v.getLabel(),
+      tempF: toF(v.currentValue('room-current-temperature-c')),
+      setpointF: toF(v.currentValue('room-set-point-c')),
+      active: (v.currentValue('room-active') ?: 'false'),
+      vents: list.collect { dv -> [name: dv.getLabel(), level: (dv.currentValue('percent-open') ?: dv.currentValue('level') ?: 0)] }
+    ]
+  }
+  try { return groovy.json.JsonOutput.toJson(out) } catch (ignore) { return '[]' }
 }
 
 def performHealthCheck() {
@@ -6001,6 +6109,7 @@ def dabHealthMonitor() {
     try { logWarn("Health monitor error: ${e?.message}", 'DAB') } catch (ignore) { }
   }
 }
+
 
 
 
