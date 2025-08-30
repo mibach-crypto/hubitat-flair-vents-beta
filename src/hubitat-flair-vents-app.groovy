@@ -730,7 +730,7 @@ def flairControlPanel2() {
           app.updateSetting("cp2_room_${roomId}_sp_down", '')
         }
         def sel = settings?."cp2_room_${roomId}_active"
-        if (sel != null && sel != '') {
+        if (sel != null && sel != "") {
           try { patchRoom(v, sel) } catch (ignore) { }
           app.updateSetting("cp2_room_${roomId}_active", '')
         }
@@ -5956,7 +5956,7 @@ def quickControlsPage() {
       def v = getChildDevice(vid)
       if (!v) { return }
       def val = settings[k]
-      if (val != null && val != '') {
+      if (val != null && val != "") {
         Integer pct = (val as Integer)
         // Enforce floor for manual entries unless full close allowed
         try {
@@ -5977,7 +5977,7 @@ def quickControlsPage() {
       def roomId = roomMap[sid] ?: sid
       def v = getChildDevices()?.find { it.hasAttribute('percent-open') && (it.currentValue('room-id')?.toString() == roomId) }
       def val = settings[k]
-      if (v && val != null && val != '') {
+      if (v && val != null && val != "") {
         try {
           BigDecimal temp = (val as BigDecimal)
           patchRoomSetPoint(v, temp)
@@ -6029,7 +6029,7 @@ private void openAllSelected(Integer pct) {
       def sid = (k as String).replace('qc_','').replace('_percent','')
       def vid = deviceMap[sid] ?: sid
       def val = settings[k]
-      if (val != null && val != '') { overrides[vid] = (val as Integer) }
+      if (val != null && val != "") { overrides[vid] = (val as Integer) }
     }
     atomicState.manualOverrides = overrides
     refreshVentTiles()
