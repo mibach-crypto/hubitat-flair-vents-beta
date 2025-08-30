@@ -509,6 +509,9 @@ def mainPage() {
       input name: 'failFastFinalization', type: 'bool', title: 'Enable Fail Fast Mode for Finalization', defaultValue: false, submitOnChange: true
       href name: 'diagnosticsLink', title: 'View Diagnostics',
            description: 'Troubleshoot vent data and logs', page: 'diagnosticsPage'
+      href name: 'dabLiveDiagnosticsLink', title: 'DAB Live Diagnostics',
+           description: 'Run a live simulation of the DAB calculation',
+           page: 'dabLiveDiagnosticsPage'
     }
   }
 }
@@ -6230,3 +6233,4 @@ String renderDabDiagnosticResults() {
   sb << '</table>'
   return sb.toString()
 }
+
