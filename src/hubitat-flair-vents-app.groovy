@@ -1032,6 +1032,8 @@ private atomicStateUpdate(String stateKey, String key, value) {
 
 def getThermostatSetpoint(String hvacMode) {
   def thermostat = settings?.thermostat1
+  // Make thermostat truly optional; if none selected, defer to non-thermostat logic
+  if (!thermostat) { return null }
   BigDecimal setpoint
 
   if (hvacMode == COOLING) {
@@ -1044,10 +1046,7 @@ def getThermostatSetpoint(String hvacMode) {
   if (setpoint == null) {
     setpoint = thermostat?.currentValue('thermostatSetpoint')
   }
-  if (setpoint == null) {
-    logError 'Thermostat has no setpoint property, please choose a valid thermostat'
-    return null
-  }
+  if (setpoint == null) { return null }
   if (settings.thermostat1TempUnit == '2') {
     setpoint = convertFahrenheitToCentigrade(setpoint)
   }
