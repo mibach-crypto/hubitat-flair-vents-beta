@@ -183,12 +183,16 @@ preferences {
   page(name: 'dabProgressPage')
   page(name: 'quickControlsPage')
   page(name: 'diagnosticsPage')
-}\r\n\r\ndef mainPage() {
+}
+
+def mainPage() {
   def validation = validatePreferences()
   if (settings?.validateNow) {
     performValidationTest()
     app.updateSetting('validateNow', null)
-  }\r\n\r\n  dynamicPage(name: 'mainPage', title: 'Setup', install: validation.valid, uninstall: true) {
+  }
+
+  dynamicPage(name: 'mainPage', title: 'Setup', install: validation.valid, uninstall: true) {
     section('Flair Control Panel') {
       href name: 'flairControlPanelLink', title: 'Open Flair Control Panel',
            description: 'Room-centric overview and quick adjustments',
