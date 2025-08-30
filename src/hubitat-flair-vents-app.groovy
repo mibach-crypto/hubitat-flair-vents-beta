@@ -24,9 +24,13 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.net.URLEncoder
 
+// Include Hubitat Libraries (installed in "Libraries" section)
+library "bot.flair.DabManager", "0.240.0"
+library "bot.flair.DabUIManager", "0.240.0"
+
 // --- Library Instances ---
-DabManager dabManager
-DabUIManager dabUIManager
+def dabManager
+def dabUIManager
 
 definition(
     name: 'Flair Vents',

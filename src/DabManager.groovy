@@ -1,4 +1,7 @@
 // File: DabManager.groovy
+/*
+library marker bot.flair.DabManager, 0.240.0, library
+*/
 
 import groovy.transform.Field
 
@@ -373,3 +376,7 @@ class DabManager {
         } catch (ignore) { }
     }
 }
+
+/*
+library marker bot.flair.DabManager, 0.240.0
+*/

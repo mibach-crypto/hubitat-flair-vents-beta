@@ -1,4 +1,7 @@
 // File: DabUIManager.groovy
+/*
+library marker bot.flair.DabUIManager, 0.240.0, library
+*/
 import groovy.transform.Field
 
 class DabUIManager {
@@ -395,3 +398,7 @@ class DabUIManager {
     // ... other builder methods like buildDabChart, buildDabRatesTable etc. would go here ...
     // They would call dabManager.getAverageHourlyRate() etc. to get their data.
 }
+
+/*
+library marker bot.flair.DabUIManager, 0.240.0
+*/
