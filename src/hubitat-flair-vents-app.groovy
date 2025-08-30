@@ -1034,10 +1034,12 @@ private atomicStateUpdate(String stateKey, String key, value) {
   log(1, 'App', "atomicStateUpdate(${stateKey}, ${key}, ${value})")
 }
 
+
 def getThermostatSetpoint(String hvacMode) {
-  def thermostat = settings?.thermostat1
-  // Make thermostat truly optional; if none selected, defer to non-thermostat logic
-  if (!thermostat) { return null }
+  // First, check if a thermostat has been selected. If not, return null immediately.
+  if (!settings?.thermostat1) { return null }
+
+  def thermostat = settings.thermostat1
   BigDecimal setpoint
 
   if (hvacMode == COOLING) {
@@ -1050,7 +1052,11 @@ def getThermostatSetpoint(String hvacMode) {
   if (setpoint == null) {
     setpoint = thermostat?.currentValue('thermostatSetpoint')
   }
-  if (setpoint == null) { return null }
+  if (setpoint == null) {
+    // A thermostat is selected but has no readable setpoint
+    logError 'A thermostat is selected, but it has no readable setpoint property. Please check the device.'
+    return null
+  }
   if (settings.thermostat1TempUnit == '2') {
     setpoint = convertFahrenheitToCentigrade(setpoint)
   }
@@ -1852,7 +1858,7 @@ def getDataAsync(String uri, String callback, data = null, int retryCount = 0) {
     def httpParams = [ uri: uri, headers: headers, contentType: CONTENT_TYPE, timeout: HTTP_TIMEOUT_SECS ]
 
     try {
-      asynchttpGet('asyncHttpGetWrapper', httpParams, [uri: uri, callback: callback, data: data, retryCount: retryCount])
+      asynchttpGet('asyncHttpCallback', httpParams, [originalCallback: callback, uri: uri, data: data, retryCount: retryCount])
     } catch (Exception e) {
       log(2, 'App', "HTTP GET exception: ${e.message}")
       // Decrement on exception since the request didn't actually happen
@@ -1944,7 +1950,7 @@ def patchDataAsync(String uri, String callback, body, data = null, int retryCoun
     ]
 
     try {
-      asynchttpPatch('asyncHttpGetWrapper', httpParams, [callback: callback, uri: uri, data: data, retryCount: retryCount])
+      asynchttpPatch('asyncHttpCallback', httpParams, [originalCallback: callback, uri: uri, data: data, retryCount: retryCount])
     } catch (Exception e) {
       log(2, 'App', "HTTP PATCH exception: ${e.message}")
       // Decrement on exception since the request didn't actually happen
@@ -4100,7 +4106,7 @@ def finalizeRoomStates(data) {
         BigDecimal currentTemp = getRoomTemp(vent)
         BigDecimal lastStartTemp = vent.currentValue('room-starting-temperature-c') ?: 0
         BigDecimal currentRate = vent.currentValue(ratePropName) ?: 0
-        def newRate = calculateRoomChangeRateRef(lastStartTemp, currentTemp, totalCycleMinutes, percentOpen, currentRate)
+        def newRate = calculateRoomChangeRate(lastStartTemp, currentTemp, totalCycleMinutes, percentOpen, currentRate)
         
         if (newRate <= 0) {
           log(3, 'App', "New rate for ${roomName} is ${newRate}")
@@ -4566,34 +4572,82 @@ def calculateLongestMinutesToTarget(rateAndTempPerVentId, String hvacMode, BigDe
 }
 
 // Overloaded method for backward compatibility with tests
-def calculateRoomChangeRate(def lastStartTemp, def currentTemp, def totalMinutes, def percentOpen, def currentRate) {
-  // Null safety checks
-  if (lastStartTemp == null || currentTemp == null || totalMinutes == null || percentOpen == null || currentRate == null) {
-    log(3, 'App', "calculateRoomChangeRate: null parameter detected")
-    return -1
-  }
-  
-  try {
-    return calculateRoomChangeRate(
-      lastStartTemp as BigDecimal, 
-      currentTemp as BigDecimal, 
-      totalMinutes as BigDecimal, 
-      percentOpen as int, 
-      currentRate as BigDecimal
-    )
-  } catch (Exception e) {
-    log(3, 'App', "calculateRoomChangeRate casting error: ${e.message}")
-    return -1
-  }
-}
+
+
 
 def calculateRoomChangeRate(BigDecimal lastStartTemp, BigDecimal currentTemp, BigDecimal totalMinutes, int percentOpen, BigDecimal currentRate) {
-  // Delegate to unified implementation
-  return calculateRoomChangeRateRef(lastStartTemp, currentTemp, totalMinutes, percentOpen, currentRate)
+  if (!_validateRateCalculationInputs(lastStartTemp, currentTemp, totalMinutes, percentOpen, currentRate)) {
+    return -1
+  }
+  def diffTemps = (lastStartTemp - currentTemp).abs()
+  if (!_isTemperatureChangeSignificant(diffTemps, totalMinutes, percentOpen)) {
+    return _handleInsignificantTemperatureChange(percentOpen)
+  }
+  def adjustedDiffTemps = _adjustForSensorAccuracy(diffTemps)
+  def rate = adjustedDiffTemps / totalMinutes
+  def pOpen = percentOpen / 100
+  def maxRate = rate.max(currentRate)
+  def approxRate = maxRate != 0 ? (rate / maxRate) / pOpen : 0
+  return _clampAndCleanRate(approxRate)
+}
+
+private boolean _validateRateCalculationInputs(BigDecimal lastStartTemp, BigDecimal currentTemp, BigDecimal totalMinutes, int percentOpen, BigDecimal currentRate) {
+  if (lastStartTemp == null || currentTemp == null || totalMinutes == null || percentOpen == null || currentRate == null) {
+    log(3, 'App', 'calculateRoomChangeRate: null parameter detected')
+    return false
+  }
+  if (totalMinutes < MIN_MINUTES_TO_SETPOINT) {
+    log(3, 'App', "Insufficient number of minutes required to calculate change rate (${totalMinutes} should be greater than ${MIN_MINUTES_TO_SETPOINT})")
+    return false
+  }
+  if (totalMinutes < MIN_RUNTIME_FOR_RATE_CALC) {
+    log(3, 'App', "HVAC runtime too short for rate calculation: ${totalMinutes} minutes < ${MIN_RUNTIME_FOR_RATE_CALC} minutes minimum")
+    return false
+  }
+  if (percentOpen <= MIN_PERCENTAGE_OPEN) {
+    log(3, 'App', "Vent was opened less than ${MIN_PERCENTAGE_OPEN}% (${percentOpen}), therefore it is being excluded")
+    return false
+  }
+  return true
+}
+
+private boolean _isTemperatureChangeSignificant(BigDecimal diffTemps, BigDecimal totalMinutes, int percentOpen) {
+  if (diffTemps < MIN_DETECTABLE_TEMP_CHANGE) {
+    log(2, 'App', "Temperature change (${diffTemps} C) is below minimum detectable threshold (${MIN_DETECTABLE_TEMP_CHANGE} C) - likely sensor noise")
+    return false
+  }
+  return true
+}
+
+private BigDecimal _handleInsignificantTemperatureChange(int percentOpen) {
+  if (percentOpen >= 30) {
+    log(2, 'App', "Vent was ${percentOpen}% open but no meaningful temperature change detected - assigning minimum efficiency")
+    return MIN_TEMP_CHANGE_RATE
+  }
+  return -1
+}
+
+private BigDecimal _adjustForSensorAccuracy(BigDecimal diffTemps) {
+  if (diffTemps < TEMP_SENSOR_ACCURACY) {
+    log(2, 'App', "Temperature change (${diffTemps} C) is within sensor accuracy range (+/-${TEMP_SENSOR_ACCURACY} C) - adjusting calculation")
+    return diffTemps.max(MIN_DETECTABLE_TEMP_CHANGE)
+  }
+  return diffTemps
+}
+
+private BigDecimal _clampAndCleanRate(BigDecimal approxRate) {
+  if (approxRate > MAX_TEMP_CHANGE_RATE) {
+    log(3, 'App', "Change rate (${roundBigDecimal(approxRate)}) is greater than ${MAX_TEMP_CHANGE_RATE}, therefore it is being excluded")
+    return -1
+  } else if (approxRate < MIN_TEMP_CHANGE_RATE) {
+    log(3, 'App', "Change rate (${roundBigDecimal(approxRate)}) is lower than ${MIN_TEMP_CHANGE_RATE}, adjusting to minimum")
+    return MIN_TEMP_CHANGE_RATE
+  }
+  return approxRate
 }
 
 // Refactored variant used by finalization path
-def calculateRoomChangeRateRef(BigDecimal lastStartTemp, BigDecimal currentTemp, BigDecimal totalMinutes, int percentOpen, BigDecimal currentRate) {
+def calculateRoomChangeRate(BigDecimal lastStartTemp, BigDecimal currentTemp, BigDecimal totalMinutes, int percentOpen, BigDecimal currentRate) {
   if (!_validateRateInputsRef(lastStartTemp, currentTemp, totalMinutes, percentOpen, currentRate)) { return -1 }
   BigDecimal diff = (lastStartTemp - currentTemp).abs()
   if (!_isSignificantTempChangeRef(diff)) { return _onInsignificantChangeRef(percentOpen) }
@@ -6232,6 +6286,25 @@ String renderDabDiagnosticResults() {
   }
   sb << '</table>'
   return sb.toString()
+}
+
+
+
+
+
+
+// Centralized async HTTP callback handler
+def asyncHttpCallback(response, Map data) {
+  try {
+    String originalCallback = data.originalCallback
+    if (originalCallback) {
+      this."$originalCallback"(response, data)
+    }
+  } catch (Exception e) {
+    logError("Error in async callback for ${data.uri}: ${e.message}", 'HTTP', data.uri)
+  } finally {
+    decrementActiveRequests()
+  }
 }
 
 
