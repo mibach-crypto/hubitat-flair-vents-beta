@@ -1852,7 +1852,7 @@ def getDataAsync(String uri, String callback, data = null, int retryCount = 0) {
     def httpParams = [ uri: uri, headers: headers, contentType: CONTENT_TYPE, timeout: HTTP_TIMEOUT_SECS ]
 
     try {
-      asynchttpGet('asyncHttpGetWrapper', httpParams, [uri: uri, callback: callback, data: data, retryCount: retryCount, authRetry: authRetry])
+      asynchttpGet('asyncHttpGetWrapper', httpParams, [uri: uri, callback: callback, data: data, retryCount: retryCount])
     } catch (Exception e) {
       log(2, 'App', "HTTP GET exception: ${e.message}")
       // Decrement on exception since the request didn't actually happen
@@ -1920,7 +1920,7 @@ def retryGetDataAsyncWrapper(data) {
     getRoomDataWithCache(device, deviceId, isPuck)
   } else {
     // Normal retry for non-room requests
-    getDataAsync(data.uri, data.callback, data.data, data.retryCount, data.authRetry)
+    getDataAsync(data.uri, data.callback, data.data, data.retryCount)
   }
 }
 
@@ -1944,7 +1944,7 @@ def patchDataAsync(String uri, String callback, body, data = null, int retryCoun
     ]
 
     try {
-      asynchttpPatch(callback, httpParams, data)
+      asynchttpPatch('asyncHttpGetWrapper', httpParams, [callback: callback, uri: uri, data: data, retryCount: retryCount])
     } catch (Exception e) {
       log(2, 'App', "HTTP PATCH exception: ${e.message}")
       // Decrement on exception since the request didn't actually happen
@@ -6233,4 +6233,7 @@ String renderDabDiagnosticResults() {
   sb << '</table>'
   return sb.toString()
 }
+
+
+
 
