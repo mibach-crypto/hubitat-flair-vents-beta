@@ -4646,10 +4646,7 @@ private BigDecimal _clampAndCleanRate(BigDecimal approxRate) {
   return approxRate
 }
 
-// Refactored variant used by finalization path
-def calculateRoomChangeRate(BigDecimal lastStartTemp, BigDecimal currentTemp, BigDecimal totalMinutes, int percentOpen, BigDecimal currentRate) {
-  if (!_validateRateInputsRef(lastStartTemp, currentTemp, totalMinutes, percentOpen, currentRate)) { return -1 }
-  BigDecimal diff = (lastStartTemp - currentTemp).abs()
+BigDecimal diff = (lastStartTemp - currentTemp).abs()
   if (!_isSignificantTempChangeRef(diff)) { return _onInsignificantChangeRef(percentOpen) }
   BigDecimal adj = _adjustForAccuracyRef(diff)
   BigDecimal rate = adj / totalMinutes
@@ -6306,6 +6303,7 @@ def asyncHttpCallback(response, Map data) {
     decrementActiveRequests()
   }
 }
+
 
 
 
