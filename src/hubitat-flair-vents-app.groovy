@@ -166,6 +166,7 @@ definition(
 preferences {
   page(name: 'mainPage')
   page(name: 'flairControlPanel')
+  page(name: 'dabLiveDiagnosticsPage')
   page(name: 'flairControlPanel2')
   page(name: 'efficiencyDataPage')
   page(name: 'dabChartPage')
@@ -6117,3 +6118,115 @@ def dabHealthMonitor() {
 
 
 
+
+
+
+// DAB Live Diagnostics page to run a one-off calculation and display details
+def dabLiveDiagnosticsPage() {
+  dynamicPage(name: 'dabLiveDiagnosticsPage', title: 'DAB Live Diagnostics', install: false, uninstall: false) {
+    section('Controls') {
+      input name: 'runDabDiagnostic', type: 'button', title: 'Run DAB Calculation Now', submitOnChange: true
+      if (settings?.runDabDiagnostic) {
+        try { runDabDiagnostic() } catch (e) { paragraph "Error: " }
+        app.updateSetting('runDabDiagnostic','')
+      }
+    }
+    if (state?.dabDiagnosticResult) {
+      section('DAB Calculation Results') {
+        paragraph renderDabDiagnosticResults()
+      }
+    }
+  }
+}
+
+// Execute a live diagnostic pass of DAB calculations without changing device state
+void runDabDiagnostic() {
+  def results = [:]
+
+  // Inputs
+  String hvacMode = calculateHvacModeRobust() ?: 'idle'
+  BigDecimal globalSp = getGlobalSetpoint(hvacMode)
+  results.inputs = [ hvacMode: hvacMode, globalSetpoint: globalSp, rooms: [:] ]
+
+  def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+  vents.each { vent ->
+    try {
+      def roomId = vent.currentValue('room-id')?.toString()
+      if (roomId && !results.inputs.rooms[roomId]) {
+        results.inputs.rooms[roomId] = [
+          name: vent.currentValue('room-name') ?: roomId,
+          temp: vent.currentValue('room-current-temperature-c'),
+          rate: getAverageHourlyRate(roomId, hvacMode, (new Date().format('H', location?.timeZone ?: TimeZone.getTimeZone('UTC')) as Integer))
+        ]
+      }
+    } catch (ignore) { }
+  }
+
+  // Build ventsByRoomId mapping (roomId -> List of ventIds)
+  def ventsByRoomId = [:]
+  vents.each { v ->
+    try {
+      def rid = v.currentValue('room-id')?.toString()
+      if (!rid) { return }
+      def list = ventsByRoomId[rid] ?: []
+      list << v.getDeviceNetworkId()
+      ventsByRoomId[rid] = list
+    } catch (ignore) { }
+  }
+
+  // Calculations
+  def rateAndTempPerVentId = getAttribsPerVentIdWeighted(ventsByRoomId, hvacMode)
+  def longestTimeToTarget = calculateLongestMinutesToTarget(rateAndTempPerVentId, hvacMode, globalSp, (atomicState.maxHvacRunningTime ?: MAX_MINUTES_TO_SETPOINT), settings.thermostat1CloseInactiveRooms)
+  def initialPositions = calculateOpenPercentageForAllVents(rateAndTempPerVentId, hvacMode, globalSp, longestTimeToTarget, settings.thermostat1CloseInactiveRooms)
+  def minAirflowAdjusted = adjustVentOpeningsToEnsureMinimumAirflowTarget(rateAndTempPerVentId, hvacMode, initialPositions, settings.thermostat1AdditionalStandardVents)
+  def finalPositions = applyOverridesAndFloors(minAirflowAdjusted)
+
+  results.calculations = [ longestTimeToTarget: longestTimeToTarget, initialVentPositions: initialPositions ]
+  results.adjustments = [ minimumAirflowAdjustments: minAirflowAdjusted ]
+  results.finalOutput = [ finalVentPositions: finalPositions ]
+
+  state.dabDiagnosticResult = results
+}
+
+// Render diagnostic results as an HTML snippet (paragraph-safe)
+String renderDabDiagnosticResults() {
+  def results = state?.dabDiagnosticResult
+  if (!results) { return '<p>No diagnostic results to display.</p>' }
+
+  def sb = new StringBuilder()
+  sb << '<h3>Inputs</h3>'
+  sb << "<p><b>HVAC Mode:</b> </p>"
+  sb << "<p><b>Global Setpoint:</b>  &amp;deg;C</p>"
+  sb << '<h4>Room Data</h4>'
+  sb << "<table border='1' style='width:100%'><tr><th>Room</th><th>Temp (&amp;deg;C)</th><th>Rate</th></tr>"
+  results.inputs.rooms.each { roomId, roomData ->
+    sb << "<tr><td></td><td></td><td></td></tr>"
+  }
+  sb << '</table>'
+
+  sb << '<h3>Calculations</h3>'
+  sb << "<p><b>Longest Time to Target:</b>  minutes</p>"
+  sb << '<h4>Initial Vent Positions</h4>'
+  sb << "<table border='1' style='width:100%'><tr><th>Vent</th><th>Position</th></tr>"
+  results.calculations.initialVentPositions?.each { ventId, pos ->
+    try { sb << "<tr><td></td><td>%</td></tr>" } catch (ignore) { }
+  }
+  sb << '</table>'
+
+  sb << '<h3>Adjustments</h3>'
+  sb << '<h4>Minimum Airflow Adjustments</h4>'
+  sb << "<table border='1' style='width:100%'><tr><th>Vent</th><th>Position</th></tr>"
+  results.adjustments.minimumAirflowAdjustments?.each { ventId, pos ->
+    try { sb << "<tr><td></td><td>%</td></tr>" } catch (ignore) { }
+  }
+  sb << '</table>'
+
+  sb << '<h3>Final Output</h3>'
+  sb << '<h4>Final Vent Positions</h4>'
+  sb << "<table border='1' style='width:100%'><tr><th>Vent</th><th>Position</th></tr>"
+  results.finalOutput.finalVentPositions?.each { ventId, pos ->
+    try { sb << "<tr><td></td><td>%</td></tr>" } catch (ignore) { }
+  }
+  sb << '</table>'
+  return sb.toString()
+}
