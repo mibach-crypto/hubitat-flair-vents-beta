@@ -1,11 +1,6 @@
-// File: DabUIManager.groovy
 /*
- * Library: bot.flair.DabUIManager
- * Version: 0.240.0
- * Description: UI Pages and builders for DAB
- *
- * library marker bot.flair.DabUIManager, 0.240.0, library
- */
+library marker bot.flair.DabUIManager, 0.240.0, library
+*/
 import groovy.transform.Field
 
 class DabUIManager {
@@ -404,5 +399,5 @@ class DabUIManager {
 }
 
 /*
- * library marker bot.flair.DabUIManager, 0.240.0
- */
+library marker bot.flair.DabUIManager, 0.240.0
+*/

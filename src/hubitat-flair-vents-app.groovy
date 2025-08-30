@@ -183,12 +183,12 @@ preferences {
   page(name: 'dabProgressPage')
   page(name: 'quickControlsPage')
   page(name: 'diagnosticsPage')
-}def mainPage() {
+}\r\n\r\ndef mainPage() {
   def validation = validatePreferences()
   if (settings?.validateNow) {
     performValidationTest()
     app.updateSetting('validateNow', null)
-  }  dynamicPage(name: 'mainPage', title: 'Setup', install: validation.valid, uninstall: true) {
+  }\r\n\r\n  dynamicPage(name: 'mainPage', title: 'Setup', install: validation.valid, uninstall: true) {
     section('Flair Control Panel') {
       href name: 'flairControlPanelLink', title: 'Open Flair Control Panel',
            description: 'Room-centric overview and quick adjustments',
@@ -3068,6 +3068,9 @@ def dabDailySummaryPage() { return dabUIManager.dabDailySummaryPage() }
 // Async builder wrappers used by UI pages
 def buildDabRatesTableWrapper(Map data) { dabUIManager.buildDabRatesTable(data) }
 def buildDabProgressTableWrapper(Map data) { dabUIManager.buildDabProgressTable(data) }
+
+
+
 
 
 

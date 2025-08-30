@@ -1,11 +1,6 @@
-// File: DabManager.groovy
 /*
- * Library: bot.flair.DabManager
- * Version: 0.240.0
- * Description: Dynamic Airflow Balancing core logic
- *
- * library marker bot.flair.DabManager, 0.240.0, library
- */
+library marker bot.flair.DabManager, 0.240.0, library
+*/
 
 import groovy.transform.Field
 
@@ -382,5 +377,5 @@ class DabManager {
 }
 
 /*
- * library marker bot.flair.DabManager, 0.240.0
- */
+library marker bot.flair.DabManager, 0.240.0
+*/
