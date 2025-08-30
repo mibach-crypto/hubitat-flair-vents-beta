@@ -4646,41 +4646,6 @@ private BigDecimal _clampAndCleanRate(BigDecimal approxRate) {
   return approxRate
 }
 
-BigDecimal diff = (lastStartTemp - currentTemp).abs()
-  if (!_isSignificantTempChangeRef(diff)) { return _onInsignificantChangeRef(percentOpen) }
-  BigDecimal adj = _adjustForAccuracyRef(diff)
-  BigDecimal rate = adj / totalMinutes
-  BigDecimal pOpen = percentOpen / 100
-  BigDecimal maxRate = rate.max(currentRate)
-  BigDecimal approx = maxRate != 0 ? (rate / maxRate) / pOpen : 0
-  return _clampRateRef(approx)
-}
-
-private boolean _validateRateInputsRef(BigDecimal lastStartTemp, BigDecimal currentTemp, BigDecimal totalMinutes, int percentOpen, BigDecimal currentRate) {
-  if (lastStartTemp == null || currentTemp == null || totalMinutes == null || currentRate == null) { return false }
-  if (totalMinutes < MIN_MINUTES_TO_SETPOINT) { return false }
-  if (totalMinutes < MIN_RUNTIME_FOR_RATE_CALC) { return false }
-  if (percentOpen <= MIN_PERCENTAGE_OPEN) { return false }
-  return true
-}
-
-private boolean _isSignificantTempChangeRef(BigDecimal diffTemps) {
-  return !(diffTemps < MIN_DETECTABLE_TEMP_CHANGE)
-}
-
-private BigDecimal _onInsignificantChangeRef(int percentOpen) {
-  return (percentOpen >= 30) ? MIN_TEMP_CHANGE_RATE : -1
-}
-
-private BigDecimal _adjustForAccuracyRef(BigDecimal diffTemps) {
-  return (diffTemps < TEMP_SENSOR_ACCURACY) ? diffTemps.max(MIN_DETECTABLE_TEMP_CHANGE) : diffTemps
-}
-
-private BigDecimal _clampRateRef(BigDecimal approxRate) {
-  if (approxRate > MAX_TEMP_CHANGE_RATE) { return -1 }
-  if (approxRate < MIN_TEMP_CHANGE_RATE) { return MIN_TEMP_CHANGE_RATE }
-  return approxRate
-}
 
 // ------------------------------
 // Dynamic Polling Control
