@@ -76,5 +76,13 @@ class DabManager {
             }
         }
     }
-}
 
+    // --- Pass-through stubs to app methods (to be migrated) ---
+    def updateHvacStateFromDuctTemps() { app.updateHvacStateFromDuctTemps() }
+    def initializeRoomStates(String hvacMode) { app.initializeRoomStates(hvacMode) }
+    def finalizeRoomStates(data) { app.finalizeRoomStates(data) }
+    def aggregateDailyDabStats() { app.aggregateDailyDabStats() }
+    def sampleRawDabData() { app.sampleRawDabData() }
+    def pruneRawCache() { app.pruneRawCache() }
+    def dabHealthMonitor() { app.dabHealthMonitor() }
+}
