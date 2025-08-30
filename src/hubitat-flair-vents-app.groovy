@@ -873,6 +873,9 @@ def getStructureId() {
 
 def updated() {
   log.debug 'Hubitat Flair App updating'
+  // Clear cached HTML so pages rebuild after setting changes
+  try { state.remove('dabRatesTableHtml') } catch (ignore) { }
+  try { state.remove('dabProgressTableHtml') } catch (ignore2) { }
   initializeDabHistory()
   initialize()
 }
@@ -1037,8 +1040,10 @@ private atomicStateUpdate(String stateKey, String key, value) {
 
 def getThermostatSetpoint(String hvacMode) {
   // First, check if a thermostat has been selected. If not, return null immediately.
-  if (!settings?.thermostat1) { return null }
-
+  if (!settings?.thermostat1) {
+    return null
+  }
+  
   def thermostat = settings.thermostat1
   BigDecimal setpoint
 
@@ -1053,7 +1058,7 @@ def getThermostatSetpoint(String hvacMode) {
     setpoint = thermostat?.currentValue('thermostatSetpoint')
   }
   if (setpoint == null) {
-    // A thermostat is selected but has no readable setpoint
+    // We only log this error if a thermostat is selected but has no setpoint property.
     logError 'A thermostat is selected, but it has no readable setpoint property. Please check the device.'
     return null
   }
@@ -1860,7 +1865,7 @@ def getDataAsync(String uri, String callback, data = null, int retryCount = 0) {
     try {
       asynchttpGet('asyncHttpCallback', httpParams, [originalCallback: callback, uri: uri, data: data, retryCount: retryCount])
     } catch (Exception e) {
-      log(2, 'App', "HTTP GET exception: ${e.message}")
+      logError("HTTP GET exception for ${uri}: ${e.message}", "HTTP", uri)
       // Decrement on exception since the request didn't actually happen
       decrementActiveRequests()
       return
@@ -1952,7 +1957,7 @@ def patchDataAsync(String uri, String callback, body, data = null, int retryCoun
     try {
       asynchttpPatch('asyncHttpCallback', httpParams, [originalCallback: callback, uri: uri, data: data, retryCount: retryCount])
     } catch (Exception e) {
-      log(2, 'App', "HTTP PATCH exception: ${e.message}")
+      logError("HTTP PATCH exception for ${uri}: ${e.message}", "HTTP", uri)
       // Decrement on exception since the request didn't actually happen
       decrementActiveRequests()
       return
@@ -3374,17 +3379,30 @@ def updateHvacStateFromDuctTemps() {
 }
 
 def reBalanceVents() {
+  // New: Add a check to ensure the HVAC has been running long enough
+  def thermostatState = atomicState.thermostat1State
+  if (!thermostatState || !thermostatState.startedRunning) {
+    log(3, 'App', 'Skipping rebalance: HVAC cycle not properly started.')
+    return
+  }
+  
+  def runningMinutes = (now() - thermostatState.startedRunning) / (1000 * 60)
+  if (runningMinutes < MIN_RUNTIME_FOR_RATE_CALC) {
+    log(3, 'App', "Skipping rebalance: HVAC has only been running for ${runningMinutes} minutes.")
+    return
+  }
+
   log(3, 'App', 'Rebalancing Vents!!!')
   appendDabActivityLog("Rebalancing vents")
   def params = [
     ventIdsByRoomId: atomicState.ventsByRoomId,
-    startedCycle: atomicState.thermostat1State?.startedCycle,
-    startedRunning: atomicState.thermostat1State?.startedRunning,
+    startedCycle: thermostatState.startedCycle,
+    startedRunning: thermostatState.startedRunning,
     finishedRunning: now(),
-    hvacMode: atomicState.thermostat1State?.mode
+    hvacMode: thermostatState.mode
   ]
   finalizeRoomStates(params)
-  initializeRoomStates(atomicState.thermostat1State?.mode)
+  initializeRoomStates(thermostatState.mode)
   try {
     def decisions = (state.recentVentDecisions ?: []).findAll { it.stage == 'final' }
     def changed = decisions.findAll { it.pct != null }
@@ -3394,9 +3412,17 @@ def reBalanceVents() {
 }
 
 def evaluateRebalancingVents() {
-  if (!atomicState.thermostat1State) { return }
+  def thermostatState = atomicState.thermostat1State
+  if (!thermostatState) { return }
+  
+  // New: Check if a rebalance has happened recently to prevent rapid looping
+  def lastRebalance = atomicState.lastRebalanceTime ?: 0
+  if ((now() - lastRebalance) < (MIN_RUNTIME_FOR_RATE_CALC * 60 * 1000)) {
+      return // Don't re-evaluate immediately after a rebalance
+  }
+
   def ventIdsByRoomId = atomicState.ventsByRoomId
-  String hvacMode = atomicState.thermostat1State?.mode
+  String hvacMode = thermostatState.mode
   def setPoint = getGlobalSetpoint(hvacMode)
 
   ventIdsByRoomId.each { roomId, ventIds ->
@@ -3412,6 +3438,10 @@ def evaluateRebalancingVents() {
           continue
         }
         log(3, 'App', "Rebalancing Vents - '${vent.currentValue('room-name')}' is at ${roomTemp}Ã¢â€Â¬Ã¢â€“â€˜ (target: ${setPoint})")
+        
+        // New: Set a timestamp to prevent immediate re-triggering
+        atomicState.lastRebalanceTime = now()
+        
         reBalanceVents()
         return // Exit after first rebalancing to avoid multiple adjustments per evaluation
       } catch (err) {
@@ -5412,7 +5442,23 @@ def dabRatesTablePage() {
     section {
       input name: 'tableHvacMode', type: 'enum', title: 'HVAC Mode', required: false, submitOnChange: true,
             options: [(COOLING): 'Cooling', (HEATING): 'Heating', 'both': 'Both']
-      paragraph buildDabRatesTable()
+      
+      // Invalidate cached HTML when relevant settings change
+      try {
+        def prevMode = atomicState?.prev_tableHvacMode
+        def nowMode = settings?.tableHvacMode
+        if (prevMode != nowMode) {
+          state.dabRatesTableHtml = null
+          atomicState.prev_tableHvacMode = nowMode
+        }
+      } catch (ignore) { }
+      
+      if (!state.dabRatesTableHtml) {
+        paragraph "Loading..."
+        runInMillis(100, "buildDabRatesTable", [data: [overwrite: true]])
+      } else {
+        paragraph state.dabRatesTableHtml
+      }
     }
     section {
       href name: 'backToMain', title: 'Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
@@ -5448,7 +5494,34 @@ def dabProgressPage() {
             options: [(COOLING): 'Cooling', (HEATING): 'Heating', 'both': 'Both']
       input name: 'progressStart', type: 'date', title: 'Start Date', required: false, submitOnChange: true
       input name: 'progressEnd', type: 'date', title: 'End Date', required: false, submitOnChange: true
-      if (hasVents) { paragraph buildDabProgressTable() }
+      
+      // Invalidate cached HTML when relevant settings change
+      try {
+        def prevRoom = atomicState?.prev_progressRoom
+        def prevMode = atomicState?.prev_progressHvacMode
+        def prevStart = atomicState?.prev_progressStart
+        def prevEnd = atomicState?.prev_progressEnd
+        def nowRoom = settings?.progressRoom
+        def nowMode = settings?.progressHvacMode
+        def nowStart = settings?.progressStart
+        def nowEnd = settings?.progressEnd
+        if (prevRoom != nowRoom || prevMode != nowMode || prevStart != nowStart || prevEnd != nowEnd) {
+          state.dabProgressTableHtml = null
+          atomicState.prev_progressRoom = nowRoom
+          atomicState.prev_progressHvacMode = nowMode
+          atomicState.prev_progressStart = nowStart
+          atomicState.prev_progressEnd = nowEnd
+        }
+      } catch (ignore2) { }
+      
+      if (hasVents) {
+        if (!state.dabProgressTableHtml) {
+          paragraph "Loading..."
+          runInMillis(100, "buildDabProgressTable", [data: [overwrite: true]])
+        } else {
+          paragraph state.dabProgressTableHtml
+        }
+      }
     }
     section {
       href name: 'backToMain', title: 'Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
@@ -5629,6 +5702,13 @@ String buildDabRatesTable() {
   }
   html << '</table>'
   html.toString()
+}
+
+// Async-friendly wrapper to generate and cache the rates table HTML
+def buildDabRatesTable(Map data) {
+  try {
+    state.dabRatesTableHtml = buildDabRatesTable()
+  } catch (ignore) { }
 }
 
 String buildDabProgressTable() {
@@ -5883,20 +5963,7 @@ String buildDabDailySummaryTable() {
 // HTTP Async Callback Shims
 // ------------------------------
 
-// Some async HTTP calls are configured to use 'asyncHttpGetWrapper' as callback.
-// Provide a safe generic handler to avoid MissingMethodException and to centralize logging.
-// Hubitat passes (hubitat.scheduling.AsyncResponse response, data) where 'data' is the map
-// provided in the original asynchttpGet options.
-def asyncHttpGetWrapper(response, Map data) {
-  try {
-    // Minimal defensive logging without assuming specific response API
-    def code = null
-    try { code = response?.status } catch (ignore) { }
-    log(3, 'HTTP', "Async GET callback for ${data?.uri ?: ''}${data?.path ?: ''} status=${code}")
-  } catch (Exception e) {
-    try { log(1, 'HTTP', "Async GET callback error: ${e?.message}") } catch (ignore) { }
-  }
-}
+// (removed) legacy asyncHttpGetWrapper shim; replaced by centralized asyncHttpCallback
 
 def quickControlsPage() {
   dynamicPage(name: 'quickControlsPage', title: '\u26A1 Quick Controls', install: false, uninstall: false) {
@@ -6259,14 +6326,24 @@ String renderDabDiagnosticResults() {
 def asyncHttpCallback(response, Map data) {
   try {
     String originalCallback = data.originalCallback
-    if (originalCallback) {
+    if (originalCallback && this.metaClass.respondsTo(this, originalCallback)) {
+      // Dynamically call the original intended callback
       this."$originalCallback"(response, data)
     }
   } catch (Exception e) {
-    logError("Error in async callback for ${data.uri}: ${e.message}", 'HTTP', data.uri)
+    logError("Error in async callback for ${data?.uri}: ${e.message}", "HTTP", data?.uri)
   } finally {
+    // This is the crucial part: decrement the counter no matter what.
     decrementActiveRequests()
   }
+}
+
+// Async-friendly wrapper to generate and cache the progress table HTML
+def buildDabProgressTable(Map data) {
+  try { atomicState.progressRoom = settings?.progressRoom } catch (ignore) { }
+  try {
+    state.dabProgressTableHtml = buildDabProgressTable()
+  } catch (ignore2) { }
 }
 
 
