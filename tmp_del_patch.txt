@@ -1,0 +1,3 @@
+﻿*** Begin Patch
+*** Delete File: src/hubitat-flair-vents-app.groovy
+*** End Patch

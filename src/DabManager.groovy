@@ -1,5 +1,5 @@
 ﻿/*
- *  Library marker , , library
+ *  Library marker yourns.dab.DabManager, 1.0.0, library
  */
 
 import groovy.transform.Field
@@ -379,4 +379,5 @@ class DabManager {
 /*
  *  Library marker , 
  */
+
 
