@@ -546,8 +546,8 @@ def flairControlPanel() {
       section("${roomName}") {
         paragraph "Temp: <b>${tempF}&deg;F</b> | Setpoint: <b>${setpF}&deg;F</b> | Active: <b>${active}</b>"
         // Per-room setpoint nudge buttons
-        input name: "cp_room_${roomId}_sp_down", type: 'button', title: 'Setpoint -1°F', submitOnChange: true
-        input name: "cp_room_${roomId}_sp_up", type: 'button', title: 'Setpoint +1°F', submitOnChange: true
+        input name: "cp_room_${roomId}_sp_down", type: 'button', title: 'Setpoint -1 F', submitOnChange: true
+        input name: "cp_room_${roomId}_sp_up", type: 'button', title: 'Setpoint +1 F', submitOnChange: true
         input name: "cp_room_${roomId}_active", type: 'enum', title: 'Set room active', options: ['true','false'], submitOnChange: true
 
         // Render vents
@@ -571,8 +571,8 @@ def flairControlPanel() {
           } catch (ignore) { }
           app.updateSetting("cp_room_${roomId}_sp_down", '')
         }
-        def sel = settings?."cp_room_${roomId}_active”
-        if (sel != null && sel != '') {
+        def sel = settings?."cp_room_${roomId}_active"
+        if (sel != null && sel != "") {
           try { patchRoom(v, sel) } catch (ignore) { }
           app.updateSetting("cp_room_${roomId}_active", '')
         }
@@ -711,8 +711,8 @@ def flairControlPanel2() {
             </div>
           </div>
         """
-        input name: "cp2_room_${roomId}_sp_down", type: 'button', title: 'Setpoint -1°F', submitOnChange: true
-        input name: "cp2_room_${roomId}_sp_up", type: 'button', title: 'Setpoint +1°F', submitOnChange: true
+        input name: "cp2_room_${roomId}_sp_down", type: 'button', title: 'Setpoint -1 F', submitOnChange: true
+        input name: "cp2_room_${roomId}_sp_up", type: 'button', title: 'Setpoint +1 F', submitOnChange: true
         input name: "cp2_room_${roomId}_active", type: 'enum', title: 'Set room active', options: ['true','false'], submitOnChange: true
 
         list.each { dv ->
@@ -6108,6 +6108,7 @@ def dabHealthMonitor() {
     try { logWarn("Health monitor error: ${e?.message}", 'DAB') } catch (ignore) { }
   }
 }
+
 
 
 
