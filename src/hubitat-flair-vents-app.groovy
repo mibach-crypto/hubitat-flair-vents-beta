@@ -2304,6 +2304,7 @@ def handleVentVerify(resp, data) {
 }\r\n\r\n// Periodically evaluate duct temperatures to determine HVAC state
 // without relying on an external thermostat.
 def updateHvacStateFromDuctTemps() {
+  return dabManager.updateHvacStateFromDuctTemps()
   // Detection runs even if DAB is disabled; only DAB actions are gated by dabEnabled
   String previousMode = atomicState.thermostat1State?.mode ?: 'idle'
   String hvacMode = (calculateHvacModeRobust() ?: 'idle')
@@ -3051,6 +3052,10 @@ def handleImportEfficiencyData() { dabUIManager.handleImportEfficiencyData() }
 
 def handleClearExportData() { dabUIManager.handleClearExportData() }
 
+// DAB lifecycle wrappers to delegate logic to DabManager (ensure consistent runtime usage)
+def initializeRoomStates(hvacMode) { return dabManager.initializeRoomStates(hvacMode) }
+def finalizeRoomStates(data) { return dabManager.finalizeRoomStates(data) }
+
 // --- DAB UI Page Wrappers (delegated to DabUIManager) ---
 def efficiencyDataPage() { return dabUIManager.efficiencyDataPage() }
 def dabChartPage() { return dabUIManager.dabChartPage() }
@@ -3063,4 +3068,5 @@ def dabDailySummaryPage() { return dabUIManager.dabDailySummaryPage() }
 // Async builder wrappers used by UI pages
 def buildDabRatesTableWrapper(Map data) { dabUIManager.buildDabRatesTable(data) }
 def buildDabProgressTableWrapper(Map data) { dabUIManager.buildDabProgressTable(data) }
+
 
