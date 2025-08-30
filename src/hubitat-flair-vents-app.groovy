@@ -1,4 +1,4 @@
-﻿/**
+/**
  *  Hubitat Flair Vents Integration
  *  Version 0.239
  *
@@ -26,6 +26,9 @@ import java.net.URLEncoder
 // ------------------------------
 // Constants and Configuration
 // ------------------------------
+
+@Field def dab = new DabManager(this)
+@Field def dabUI = new DabUIManager(this)
 
 // Base URL for Flair API endpoints.
 @Field static final String BASE_URL = 'https://api.flair.co'
@@ -55,22 +58,22 @@ import java.net.URLEncoder
 @Field static final BigDecimal MIN_PERCENTAGE_OPEN = 0.0
 @Field static final BigDecimal MAX_PERCENTAGE_OPEN = 100.0
 
-// Threshold (in Ã¢â€Â¬Ã¢â€“â€˜C) used to trigger a pre-adjustment of vent settings before the setpoint is reached.
+// Threshold (in â”¬â–‘C) used to trigger a pre-adjustment of vent settings before the setpoint is reached.
 @Field static final BigDecimal VENT_PRE_ADJUST_THRESHOLD = 0.2
 
 // HVAC timing constants.
 @Field static final BigDecimal MAX_MINUTES_TO_SETPOINT = 60       // Maximum minutes to reach setpoint.
 @Field static final BigDecimal MIN_MINUTES_TO_SETPOINT = 1        // Minimum minutes required to compute temperature change rate.
 
-// Temperature offset (in Ã¢â€Â¬Ã¢â€“â€˜C) applied to thermostat setpoints.
+// Temperature offset (in â”¬â–‘C) applied to thermostat setpoints.
 @Field static final BigDecimal SETPOINT_OFFSET = 0.7
 
-// Acceptable temperature change rate limits (in Ã¢â€Â¬Ã¢â€“â€˜C per minute).
+// Acceptable temperature change rate limits (in â”¬â–‘C per minute).
 @Field static final BigDecimal MAX_TEMP_CHANGE_RATE = 1.5
 @Field static final BigDecimal MIN_TEMP_CHANGE_RATE = 0.001
 
 // Temperature sensor accuracy and noise filtering
-@Field static final BigDecimal TEMP_SENSOR_ACCURACY = 0.5  // Ã¢â€Â¬Ã¢â€“â€™0.5Ã¢â€Â¬Ã¢â€“â€˜C typical sensor accuracy
+@Field static final BigDecimal TEMP_SENSOR_ACCURACY = 0.5  // â”¬â–’0.5â”¬â–‘C typical sensor accuracy
 @Field static final BigDecimal MIN_DETECTABLE_TEMP_CHANGE = 0.1  // Minimum change to consider real
 @Field static final Integer MIN_RUNTIME_FOR_RATE_CALC = 5  // Minimum minutes before calculating rate
 
@@ -79,7 +82,7 @@ import java.net.URLEncoder
 
 // INCREMENT_PERCENTAGE is used as a base multiplier when incrementally increasing vent open percentages
 // during airflow adjustments. For example, if the computed proportion for a vent is 0.5,
-// then the ventÃŽâ€œÃƒâ€¡Ãƒâ€“s open percentage will be increased by 1.5 * 0.5 = 0.75% in that iteration.
+// then the ventÎ“Ã‡Ã–s open percentage will be increased by 1.5 * 0.5 = 0.75% in that iteration.
 // This increment is applied repeatedly until the total combined airflow meets the minimum target.
 @Field static final BigDecimal INCREMENT_PERCENTAGE = 1.5
 
@@ -98,16 +101,16 @@ import java.net.URLEncoder
 // Default opening percentage for standard (non-Flair) vents (in %).
 @Field static final Integer STANDARD_VENT_DEFAULT_OPEN = 50
 
-// Temperature tolerance for rebalancing vent operations (in Ã¢â€Â¬Ã¢â€“â€˜C).
+// Temperature tolerance for rebalancing vent operations (in â”¬â–‘C).
 @Field static final BigDecimal REBALANCING_TOLERANCE = 0.5
 
-// Temperature boundary adjustment for airflow calculations (in Ã¢â€Â¬Ã¢â€“â€˜C).
+// Temperature boundary adjustment for airflow calculations (in â”¬â–‘C).
 @Field static final BigDecimal TEMP_BOUNDARY_ADJUSTMENT = 0.1
 
-// Thermostat hysteresis to prevent cycling (in Ã¢â€Â¬Ã¢â€“â€˜C).
-@Field static final BigDecimal THERMOSTAT_HYSTERESIS = 0.6  // ~1Ã¢â€Â¬Ã¢â€“â€˜F
+// Thermostat hysteresis to prevent cycling (in â”¬â–‘C).
+@Field static final BigDecimal THERMOSTAT_HYSTERESIS = 0.6  // ~1â”¬â–‘F
 
-// Minimum average difference between duct and room temperature (in Ã¢â€Â¬Ã¢â€“â€˜C)
+// Minimum average difference between duct and room temperature (in â”¬â–‘C)
 // required to determine that the HVAC system is actively heating or cooling.
 @Field static final BigDecimal DUCT_TEMP_DIFF_THRESHOLD = 0.5
 
@@ -281,7 +284,7 @@ def mainPage() {
         section('Thermostat & Globals') {
           input name: 'thermostat1', type: 'capability.thermostat', title: 'Optional: Thermostat for global setpoint', multiple: false, required: false
           input name: 'thermostat1TempUnit', type: 'enum', title: 'Units used by Thermostat', defaultValue: 2,
-                options: [1: 'Celsius (Ã¢â€Â¬Ã¢â€“â€˜C)', 2: 'Fahrenheit (Ã¢â€Â¬Ã¢â€“â€˜F)']
+                options: [1: 'Celsius (â”¬â–‘C)', 2: 'Fahrenheit (â”¬â–‘F)']
           input name: 'thermostat1AdditionalStandardVents', type: 'number', title: 'Count of conventional Vents', defaultValue: 0, submitOnChange: true
           paragraph '<small>Enter the total number of standard (non-Flair) adjustable vents in the home associated ' +
                     'with the chosen thermostat, excluding Flair vents. This ensures the combined airflow does not drop ' +
@@ -354,7 +357,7 @@ def mainPage() {
             input name: 'enableEwma', type: 'bool', title: 'Use EWMA smoothing for hourly averages', defaultValue: false, submitOnChange: true
             input name: 'ewmaHalfLifeDays', type: 'number', title: 'EWMA half-life (days per hour-slot)', defaultValue: 3, submitOnChange: true
             input name: 'enableOutlierRejection', type: 'bool', title: 'Robust outlier handling (MAD)', defaultValue: true, submitOnChange: true
-            input name: 'outlierThresholdMad', type: 'number', title: 'Outlier threshold (k Ã¢â€Å“ÃƒÂ¹ MAD)', defaultValue: 3, submitOnChange: true
+            input name: 'outlierThresholdMad', type: 'number', title: 'Outlier threshold (k â”œÃ¹ MAD)', defaultValue: 3, submitOnChange: true
             input name: 'outlierMode', type: 'enum', title: 'Outlier mode', options: ['reject':'Reject', 'clip':'Clip to bound'], defaultValue: 'clip', submitOnChange: true
             // Mirror to atomicState for CI-safe access
             try {
@@ -1013,13 +1016,13 @@ private BigDecimal getRoomTemp(def vent) {
       log(2, 'App', "WARNING: Temperature device ${tempDevice?.getLabel() ?: 'Unknown'} for room '${roomName}' is not reporting temperature!")
       // Fall back to room temperature
       def roomTemp = vent.currentValue('room-current-temperature-c') ?: 0
-      log(2, 'App', "Falling back to room temperature for '${roomName}': ${roomTemp}Ã¢â€Â¬Ã¢â€“â€˜C")
+      log(2, 'App', "Falling back to room temperature for '${roomName}': ${roomTemp}â”¬â–‘C")
       return roomTemp
     }
     if (settings.thermostat1TempUnit == '2') {
       temp = convertFahrenheitToCentigrade(temp)
     }
-    log(2, 'App', "Got temp from ${tempDevice?.getLabel() ?: 'Unknown'} for '${roomName}': ${temp}Ã¢â€Â¬Ã¢â€“â€˜C")
+    log(2, 'App', "Got temp from ${tempDevice?.getLabel() ?: 'Unknown'} for '${roomName}': ${temp}â”¬â–‘C")
     return temp
   }
   
@@ -1028,7 +1031,7 @@ private BigDecimal getRoomTemp(def vent) {
     log(2, 'App', "ERROR: No temperature available for room '${roomName}' - neither from Puck nor from room API!")
     return 0
   }
-  log(2, 'App', "Using room temperature for '${roomName}': ${roomTemp}Ã¢â€Â¬Ã¢â€“â€˜C")
+  log(2, 'App', "Using room temperature for '${roomName}': ${roomTemp}â”¬â–‘C")
   return roomTemp
 }
 
@@ -2740,8 +2743,8 @@ def handlePuckGet(resp, data) {
     if (puckData?.attributes?.'current-temperature-c' != null) {
       def tempC = puckData.attributes['current-temperature-c']
       def tempF = (tempC * 9/5) + 32
-      sendEvent(data.device, [name: 'temperature', value: tempF, unit: 'Ã¢â€Â¬Ã¢â€“â€˜F'])
-      log(2, 'App', "Puck temperature: ${tempF}Ã¢â€Â¬Ã¢â€“â€˜F")
+      sendEvent(data.device, [name: 'temperature', value: tempF, unit: 'â”¬â–‘F'])
+      log(2, 'App', "Puck temperature: ${tempF}â”¬â–‘F")
     }
     if (puckData?.attributes?.'current-humidity' != null) {
       sendEvent(data.device, [name: 'humidity', value: puckData.attributes['current-humidity'], unit: '%'])
@@ -2801,8 +2804,8 @@ def handlePuckReadingGet(resp, data) {
     if (reading.attributes?.'room-temperature-c' != null) {
       def tempC = reading.attributes['room-temperature-c']
       def tempF = (tempC * 9/5) + 32
-      sendEvent(data.device, [name: 'temperature', value: tempF, unit: 'Ã¢â€Â¬Ã¢â€“â€˜F'])
-      log(2, 'App', "Puck temperature from reading: ${tempF}Ã¢â€Â¬Ã¢â€“â€˜F")
+      sendEvent(data.device, [name: 'temperature', value: tempF, unit: 'â”¬â–‘F'])
+      log(2, 'App', "Puck temperature from reading: ${tempF}â”¬â–‘F")
     }
     if (reading.attributes?.humidity != null) {
       sendEvent(data.device, [name: 'humidity', value: reading.attributes.humidity, unit: '%'])
@@ -3225,7 +3228,7 @@ def patchRoomSetPoint(device, temp) {
   if (getTemperatureScale() == 'F') {
     tempC = convertFahrenheitToCentigrade(tempC)
   }
-  log(3, 'App', "Setting set-point to ${tempC}Ã¢â€Â¬Ã¢â€“â€˜C for '${device.currentValue('room-name')}'")
+  log(3, 'App', "Setting set-point to ${tempC}â”¬â–‘C for '${device.currentValue('room-name')}'")
   def uri = "${BASE_URL}/api/rooms/${roomId}"
   def body = [ data: [ type: 'rooms', attributes: [ 'set-point-c': tempC ] ] ]
   patchDataAsync(uri, 'handleRoomSetPointPatch', body, [device: device])
@@ -3251,13 +3254,13 @@ def thermostat1ChangeTemp(evt) {
   
   if (tempDiff >= THERMOSTAT_HYSTERESIS) {
     atomicState.lastSignificantTemp = temp
-    log(2, 'App', "Significant temperature change detected: ${tempDiff}Ã¢â€Â¬Ã¢â€“â€˜C (threshold: ${THERMOSTAT_HYSTERESIS}Ã¢â€Â¬Ã¢â€“â€˜C)")
+    log(2, 'App', "Significant temperature change detected: ${tempDiff}â”¬â–‘C (threshold: ${THERMOSTAT_HYSTERESIS}â”¬â–‘C)")
     
     if (isThermostatAboutToChangeState(hvacMode, thermostatSetpoint, temp)) {
       runInMillis(INITIALIZATION_DELAY_MS, 'initializeRoomStates', [data: hvacMode])
     }
   } else {
-    log(3, 'App', "Temperature change ${tempDiff}Ã¢â€Â¬Ã¢â€“â€˜C is below hysteresis threshold ${THERMOSTAT_HYSTERESIS}Ã¢â€Â¬Ã¢â€“â€˜C - ignoring")
+    log(3, 'App', "Temperature change ${tempDiff}â”¬â–‘C is below hysteresis threshold ${THERMOSTAT_HYSTERESIS}â”¬â–‘C - ignoring")
   }
 }
 
@@ -3378,78 +3381,9 @@ def updateHvacStateFromDuctTemps() {
   }
 }
 
-def reBalanceVents() {
-  // New: Add a check to ensure the HVAC has been running long enough
-  def thermostatState = atomicState.thermostat1State
-  if (!thermostatState || !thermostatState.startedRunning) {
-    log(3, 'App', 'Skipping rebalance: HVAC cycle not properly started.')
-    return
-  }
-  
-  def runningMinutes = (now() - thermostatState.startedRunning) / (1000 * 60)
-  if (runningMinutes < MIN_RUNTIME_FOR_RATE_CALC) {
-    log(3, 'App', "Skipping rebalance: HVAC has only been running for ${runningMinutes} minutes.")
-    return
-  }
+def reBalanceVents() { dab.reBalanceVents() }
 
-  log(3, 'App', 'Rebalancing Vents!!!')
-  appendDabActivityLog("Rebalancing vents")
-  def params = [
-    ventIdsByRoomId: atomicState.ventsByRoomId,
-    startedCycle: thermostatState.startedCycle,
-    startedRunning: thermostatState.startedRunning,
-    finishedRunning: now(),
-    hvacMode: thermostatState.mode
-  ]
-  finalizeRoomStates(params)
-  initializeRoomStates(thermostatState.mode)
-  try {
-    def decisions = (state.recentVentDecisions ?: []).findAll { it.stage == 'final' }
-    def changed = decisions.findAll { it.pct != null }
-    def summary = changed.takeRight(5).collect { d -> "${d.room}:${d.pct}%" }
-    if (summary) { appendDabActivityLog("Changes: ${summary.join(', ')}") }
-  } catch (ignore) { }
-}
-
-def evaluateRebalancingVents() {
-  def thermostatState = atomicState.thermostat1State
-  if (!thermostatState) { return }
-  
-  // New: Check if a rebalance has happened recently to prevent rapid looping
-  def lastRebalance = atomicState.lastRebalanceTime ?: 0
-  if ((now() - lastRebalance) < (MIN_RUNTIME_FOR_RATE_CALC * 60 * 1000)) {
-      return // Don't re-evaluate immediately after a rebalance
-  }
-
-  def ventIdsByRoomId = atomicState.ventsByRoomId
-  String hvacMode = thermostatState.mode
-  def setPoint = getGlobalSetpoint(hvacMode)
-
-  ventIdsByRoomId.each { roomId, ventIds ->
-    for (ventId in ventIds) {
-      try {
-        def vent = getChildDevice(ventId)
-        if (!vent) { continue }
-        if (vent.currentValue('room-active') != 'true') { continue }
-        def currPercentOpen = (vent.currentValue('percent-open') ?: 0).toInteger()
-        if (currPercentOpen <= STANDARD_VENT_DEFAULT_OPEN) { continue }
-        def roomTemp = getRoomTemp(vent)
-        if (!hasRoomReachedSetpoint(hvacMode, setPoint, roomTemp, REBALANCING_TOLERANCE)) {
-          continue
-        }
-        log(3, 'App', "Rebalancing Vents - '${vent.currentValue('room-name')}' is at ${roomTemp}Ã¢â€Â¬Ã¢â€“â€˜ (target: ${setPoint})")
-        
-        // New: Set a timestamp to prevent immediate re-triggering
-        atomicState.lastRebalanceTime = now()
-        
-        reBalanceVents()
-        return // Exit after first rebalancing to avoid multiple adjustments per evaluation
-      } catch (err) {
-        logError err
-      }
-    }
-  }
-}
+def evaluateRebalancingVents() { dab.evaluateRebalancingVents() }
 
 // Retrieve all stored rates for a specific room, HVAC mode, and hour
 def getHourlyRates(String roomId, String hvacMode, Integer hour) {
@@ -4229,7 +4163,7 @@ def recordStartingTemperatures() {
         }
         BigDecimal currentTemp = getRoomTemp(vent)
         sendEvent(vent, [name: 'room-starting-temperature-c', value: currentTemp])
-        log(2, 'App', "Starting temperature for '${vent.currentValue('room-name')}': ${currentTemp}Ã¢â€Â¬Ã¢â€“â€˜C")
+        log(2, 'App', "Starting temperature for '${vent.currentValue('room-name')}': ${currentTemp}â”¬â–‘C")
       } catch (err) {
         logError err
       }
@@ -4436,7 +4370,7 @@ def getAttribsPerVentId(ventsByRoomId, String hvacMode) {
         // Log rooms with zero efficiency for debugging
         if (rate == 0) {
           def tempSource = settings."vent${ventId}Thermostat" ? "Puck ${settings."vent${ventId}Thermostat".getLabel()}" : "Room API"
-          log(2, 'App', "Room '${roomName}' has zero ${hvacMode} efficiency rate, temp=${roomTemp}Ã¢â€Â¬Ã¢â€“â€˜C from ${tempSource}")
+          log(2, 'App', "Room '${roomName}' has zero ${hvacMode} efficiency rate, temp=${roomTemp}â”¬â–‘C from ${tempSource}")
         }
         
         rateAndTemp[ventId] = [ rate: rate, temp: roomTemp, active: isActive, name: roomName ]
@@ -4580,7 +4514,7 @@ def calculateLongestMinutesToTarget(rateAndTempPerVentId, String hvacMode, BigDe
         minutesToTarget = Math.abs(spForVent - stateVal.temp) / stateVal.rate
         // Check for unrealistic time estimates due to minimal temperature change
         if (minutesToTarget > maxRunningTime * 2) {
-          logWarn "'${stateVal.name}' shows minimal temperature change (rate: ${roundBigDecimal(stateVal.rate)}Ã¢â€Â¬Ã¢â€“â€˜C/min). " +
+          logWarn "'${stateVal.name}' shows minimal temperature change (rate: ${roundBigDecimal(stateVal.rate)}â”¬â–‘C/min). " +
                   "Estimated time ${roundBigDecimal(minutesToTarget)} minutes is unrealistic."
           minutesToTarget = maxRunningTime  // Cap at max running time
         }
@@ -5994,9 +5928,9 @@ def quickControlsPage() {
         def roomKey = roomId.replaceAll('[^A-Za-z0-9_]', '_')
         state.qcDeviceMap[vidKey] = vid
         state.qcRoomMap[roomKey] = roomId
-        paragraph "<b>${roomName}</b> - Vent: ${cur}% | Temp: ${tempF} °F | Setpoint: ${setpF} °F | Active: ${active ?: 'false'}" + (batt ? " | Battery: ${batt}%" : "") + (upd ? " | Updated: ${upd}" : "")
+        paragraph "<b>${roomName}</b> - Vent: ${cur}% | Temp: ${tempF} �F | Setpoint: ${setpF} �F | Active: ${active ?: 'false'}" + (batt ? " | Battery: ${batt}%" : "") + (upd ? " | Updated: ${upd}" : "")
         input name: "qc_${vidKey}_percent", type: 'number', title: 'Set vent percent', required: false, submitOnChange: false
-        input name: "qc_room_${roomKey}_setpoint", type: 'number', title: 'Set room setpoint (°F)', required: false, submitOnChange: false
+        input name: "qc_room_${roomKey}_setpoint", type: 'number', title: 'Set room setpoint (�F)', required: false, submitOnChange: false
         input name: "qc_room_${roomKey}_active", type: 'enum', title: 'Set room active', options: ['true','false'], required: false, submitOnChange: false
       }
       input name: 'applyQuickControlsNow', type: 'button', title: 'Apply All Changes', submitOnChange: true
@@ -6345,6 +6279,7 @@ def buildDabProgressTable(Map data) {
     state.dabProgressTableHtml = buildDabProgressTable()
   } catch (ignore2) { }
 }
+
 
 
 
