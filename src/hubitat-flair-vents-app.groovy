@@ -998,7 +998,8 @@ def getInstanceId() {
 }
 
 def getCurrentTime() {
-  try { return now() } catch (ignored) { return System.currentTimeMillis() }
+  // Hubitat sandbox compliance: avoid System.currentTimeMillis()
+  try { return now() } catch (ignored) { return new Date().getTime() }
 }
 
 def initializeInstanceCaches() {
@@ -1161,7 +1162,8 @@ def patchDataAsync(String uri, String originalCallback = null, Object body = nul
       uri: uri,
       headers: [
         Authorization: "Bearer ${state.flairAccessToken}",
-        'Content-Type': CONTENT_TYPE
+        'Content-Type': CONTENT_TYPE,
+        'X-HTTP-Method-Override': 'PATCH' // Hubitat sandbox compliance: emulate PATCH via POST + X-HTTP-Method-Override
       ],
       body: body ? groovy.json.JsonOutput.toJson(body) : null,
       timeout: HTTP_TIMEOUT_SECS,
@@ -1169,18 +1171,7 @@ def patchDataAsync(String uri, String originalCallback = null, Object body = nul
     ]
     def cbData = [originalCallback: (originalCallback ?: 'noOpHandler'), uri: uri]
     if (data) { cbData.putAll(data) }
-    try {
-      asynchttpPatch('asyncHttpCallback', httpParams, cbData)
-    } catch (Exception e) {
-      // Fallback to POST with method override if PATCH not supported in environment
-      try {
-        httpParams.headers['X-HTTP-Method-Override'] = 'PATCH'
-        asynchttpPost('asyncHttpCallback', httpParams, cbData)
-      } catch (Exception ee) {
-        logWarn "PATCH ${uri} failed: ${ee?.message}", 'HTTP'
-        decrementActiveRequests()
-      }
-    }
+    asynchttpPost('asyncHttpCallback', httpParams, cbData)
   } catch (Exception e) {
     logWarn "PATCH ${uri} build failed: ${e?.message}", 'HTTP'
     decrementActiveRequests()

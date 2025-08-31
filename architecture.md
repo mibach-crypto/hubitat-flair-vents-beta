@@ -77,10 +77,11 @@ state.devices = [device1, device2]      // Wrong - memory leak
 ```
 
 ### 3. Asynchronous Programming
-- ALWAYS use async HTTP methods: `asynchttpGet()`, `asynchttpPatch()`
+- ALWAYS use async HTTP methods: `asynchttpGet()`, `asynchttpPost()` (emulate PATCH with `asynchttpPost()` + `X-HTTP-Method-Override: PATCH`)
 - NEVER use blocking calls: `httpGet()`, `httpPost()`
 - Implement proper callbacks for all async operations
 - Handle timeouts gracefully (5 second limit)
+- Note: Hubitat environments may not provide asynchttpPatch, so standardized approach avoids runtime errors
 
 ### 4. Error Handling
 ```groovy
