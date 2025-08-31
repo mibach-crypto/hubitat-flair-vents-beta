@@ -740,25 +740,64 @@ String getRoomDataForPanel() {
 def performHealthCheck() {
   def results = []
   results << (state.flairAccessToken ? 'Auth token present' : 'Auth token missing')
-  try {
-    httpGet([
-      uri: "${BASE_URL}/api/structures",
-      headers: [Authorization: "Bearer ${state.flairAccessToken}"],
-      timeout: HTTP_TIMEOUT_SECS,
-      contentType: CONTENT_TYPE
-    ]) { resp ->
-      results << "API reachable: HTTP ${resp.status}"
-    }
-  } catch (e) {
-    results << "API error: ${e.message}"
-  }
-
-def ventCount = getChildDevices().findAll { it.hasAttribute('percent-open') }.size()
+  
+  def ventCount = getChildDevices().findAll { it.hasAttribute('percent-open') }.size()
   results << "Vents discovered: ${ventCount}"
+  
+  // Perform async health check if we have token
+  if (state.flairAccessToken) {
+    performHealthCheckAsync()
+    results << "API health check initiated (async)"
+  } else {
+    results << "API health check skipped (no token)"
+  }
+  
   state.healthCheckResults = [
     timestamp: new Date().format('yyyy-MM-dd HH:mm:ss', location.timeZone ?: TimeZone.getTimeZone('UTC')),
     results: results
   ]
+}
+
+def performHealthCheckAsync() {
+  if (!canMakeRequest()) {
+    log(2, 'HealthCheck', 'Cannot make health check request - too many active requests')
+    return
+  }
+  
+  incrementActiveRequests()
+  try {
+    def httpParams = [
+      uri: "${BASE_URL}/api/structures",
+      headers: [Authorization: "Bearer ${state.flairAccessToken}"],
+      timeout: HTTP_TIMEOUT_SECS,
+      contentType: CONTENT_TYPE
+    ]
+    asynchttpGet('handleHealthCheckResponse', httpParams)
+  } catch (Exception e) {
+    log(1, 'HealthCheck', "Health check request failed: ${e.message}")
+    decrementActiveRequests()
+  }
+}
+
+def handleHealthCheckResponse(resp, data) {
+  decrementActiveRequests()
+  try {
+    def currentResults = state.healthCheckResults?.results ?: []
+    if (isValidResponse(resp)) {
+      currentResults << "API reachable: HTTP ${resp.status}"
+      log(3, 'HealthCheck', "API health check successful: HTTP ${resp.status}")
+    } else {
+      currentResults << "API error: HTTP ${resp.status ?: 'unknown'}"
+      log(2, 'HealthCheck', "API health check failed: HTTP ${resp.status ?: 'unknown'}")
+    }
+    
+    // Update health check results
+    if (state.healthCheckResults) {
+      state.healthCheckResults.results = currentResults
+    }
+  } catch (Exception e) {
+    log(1, 'HealthCheck', "Health check response handling failed: ${e.message}")
+  }
 }
 
 def resetCaches() {
@@ -924,6 +963,7 @@ def initialize() {
   runEvery5Minutes('cleanupPendingRequests')
   runEvery10Minutes('clearRoomCache')
   runEvery5Minutes('clearDeviceCache')
+  runEvery15Minutes('activeRequestsWatchdog')
 
   // Schedule/subscribe for tiles and overrides
   if (settings?.enableDashboardTiles) {
@@ -951,6 +991,12 @@ def initialize() {
 // 2) log("message", level)
 def log(Integer level, String domain, String message, Object ref = null) {
   try {
+    // Honor debugLevel setting - only log messages at or below the configured level
+    Integer configuredLevel = (settings?.debugLevel ?: 0) as Integer
+    if (level > 0 && level > configuredLevel && configuredLevel != 1) {
+      return // Suppress higher-level debug messages (except level 1 shows all)
+    }
+    
     String prefix = domain ? "[${domain}] " : ''
     String suffix = ref ? " | ${ref}" : ''
     String msg = "${prefix}${message}${suffix}"
@@ -966,6 +1012,12 @@ def log(Integer level, String domain, String message, Object ref = null) {
 
 def log(String message, Integer level = 2) {
   try {
+    // Honor debugLevel setting
+    Integer configuredLevel = (settings?.debugLevel ?: 0) as Integer
+    if (level > 0 && level > configuredLevel && configuredLevel != 1) {
+      return // Suppress higher-level debug messages (except level 1 shows all)
+    }
+    
     switch(level) {
       case 4: this.log.trace(message); break
       case 3: this.log.debug(message); break
@@ -998,7 +1050,7 @@ def getInstanceId() {
 }
 
 def getCurrentTime() {
-  try { return now() } catch (ignored) { return System.currentTimeMillis() }
+  try { return now() } catch (ignored) { return new Date().getTime() }
 }
 
 def initializeInstanceCaches() {
@@ -1037,14 +1089,27 @@ def incrementActiveRequests() {
   try {
     Integer cur = (atomicState?.activeRequests ?: 0) as Integer
     atomicState.activeRequests = cur + 1
-  } catch (ignored) { }
+  } catch (Exception e) { 
+    log(4, 'Request', "Failed to increment active requests: ${e.message}")
+  }
 }
 
 def decrementActiveRequests() {
   try {
     Integer cur = (atomicState?.activeRequests ?: 0) as Integer
-    atomicState.activeRequests = Math.max(0, cur - 1)
-  } catch (ignored) { }
+    Integer newVal = Math.max(0, cur - 1)
+    atomicState.activeRequests = newVal
+    
+    // Record callback time for watchdog
+    atomicState.lastCallbackTime = getCurrentTime()
+    
+    // Log if we had to clamp to prevent negative
+    if (cur < 1 && newVal == 0) {
+      log(3, 'Request', "Active request counter was already at ${cur}, clamped to 0")
+    }
+  } catch (Exception e) { 
+    log(4, 'Request', "Failed to decrement active requests: ${e.message}")
+  }
 }
 
 // Concurrency gate for async HTTP
@@ -1170,16 +1235,12 @@ def patchDataAsync(String uri, String originalCallback = null, Object body = nul
     def cbData = [originalCallback: (originalCallback ?: 'noOpHandler'), uri: uri]
     if (data) { cbData.putAll(data) }
     try {
-      asynchttpPatch('asyncHttpCallback', httpParams, cbData)
+      // Use POST with method override for PATCH operations
+      httpParams.headers['X-HTTP-Method-Override'] = 'PATCH'
+      asynchttpPost('asyncHttpCallback', httpParams, cbData)
     } catch (Exception e) {
-      // Fallback to POST with method override if PATCH not supported in environment
-      try {
-        httpParams.headers['X-HTTP-Method-Override'] = 'PATCH'
-        asynchttpPost('asyncHttpCallback', httpParams, cbData)
-      } catch (Exception ee) {
-        logWarn "PATCH ${uri} failed: ${ee?.message}", 'HTTP'
-        decrementActiveRequests()
-      }
+      logWarn "PATCH ${uri} failed: ${e?.message}", 'HTTP'
+      decrementActiveRequests()
     }
   } catch (Exception e) {
     logWarn "PATCH ${uri} build failed: ${e?.message}", 'HTTP'
@@ -2240,6 +2301,31 @@ def cleanupPendingRequests() {
   }
 }
 
+def activeRequestsWatchdog() {
+  try {
+    def currentActiveRequests = atomicState.activeRequests ?: 0
+    def watchdogTimeout = 900000 // 15 minutes in milliseconds
+    def lastCallbackTime = atomicState.lastCallbackTime ?: getCurrentTime()
+    def timeSinceLastCallback = getCurrentTime() - lastCallbackTime
+    
+    // If we have active requests but no callbacks in the timeout period, reset
+    if (currentActiveRequests > 0 && timeSinceLastCallback > watchdogTimeout) {
+      log(1, 'Watchdog', "CRITICAL: No callbacks received for ${timeSinceLastCallback / 60000} minutes with ${currentActiveRequests} active requests - resetting to 0")
+      atomicState.activeRequests = 0
+      
+      // Record diagnostic event
+      def diagnostics = atomicState.diagnostics ?: [:]
+      diagnostics.watchdogResets = (diagnostics.watchdogResets ?: 0) + 1
+      diagnostics.lastWatchdogReset = getCurrentTime()
+      atomicState.diagnostics = diagnostics
+      
+      log(1, 'Watchdog', "Reset active request counter due to timeout")
+    }
+  } catch (Exception e) {
+    log(4, 'Watchdog', "Watchdog check failed: ${e.message}")
+  }
+}
+
 def handleDeviceGet(resp, data) {
   decrementActiveRequests()  // Always decrement when response comes back
   if (!isValidResponse(resp) || !data?.device) { return }
@@ -2544,26 +2630,46 @@ def retryGetStructureDataAsyncWrapper(data) {
 }
 
 def handleStructureResponse(resp, data) {
+  def retryCount = data?.retryCount ?: 0
   decrementActiveRequests()  // Always decrement when response comes back
+  
   try {
     if (!isValidResponse(resp)) { 
-      logError "Structure data request failed"
+      if (retryCount < MAX_API_RETRY_ATTEMPTS) {
+        log(2, 'App', "Structure data response failed (attempt ${retryCount + 1}/${MAX_API_RETRY_ATTEMPTS}): HTTP ${resp?.status ?: 'unknown'}")
+        runInMillis(API_CALL_DELAY_MS, 'retryGetStructureDataWrapper', [data: [retryCount: retryCount + 1]])
+      } else {
+        logError "Structure data request failed after ${MAX_API_RETRY_ATTEMPTS} attempts: HTTP ${resp?.status ?: 'unknown'}"
+      }
       return 
     }
 
-def response = resp.getJson()
+    def response = resp.getJson()
     if (!response?.data?.first()) {
       logError 'No structure data available'
       return
     }
 
-def myStruct = response.data.first()
-    if (myStruct?.id) {
-      app.updateSetting('structureId', myStruct.id)
-      log(2, 'App', "Structure loaded: id=${myStruct.id}, name=${myStruct.attributes?.name}")
+    def myStruct = response.data.first()
+    if (!myStruct?.attributes) {
+      logError 'getStructureData: no structure data'
+      return
     }
+    
+    // Log only essential fields at level 3
+    log(3, 'App', "Structure loaded: id=${myStruct.id}, name=${myStruct.attributes.name}, mode=${myStruct.attributes.mode}")
+    app.updateSetting('structureId', myStruct.id)
+    
+    // Only log full response at debug level 1
+    logDetails 'Structure response: ', response, 1
+    
   } catch (Exception e) {
-    logError "Structure data processing failed: ${e.message}"
+    if (retryCount < MAX_API_RETRY_ATTEMPTS) {
+      log(2, 'App', "Structure data processing failed (attempt ${retryCount + 1}/${MAX_API_RETRY_ATTEMPTS}): ${e.message}")
+      runInMillis(API_CALL_DELAY_MS, 'retryGetStructureDataWrapper', [data: [retryCount: retryCount + 1]])
+    } else {
+      logError "Structure data processing failed after ${MAX_API_RETRY_ATTEMPTS} attempts: ${e.message}"
+    }
   }
 }
 
@@ -2590,29 +2696,7 @@ def uri = "${BASE_URL}/api/structures"
   incrementActiveRequests()
   
   try {
-    httpGet(httpParams) { resp ->
-      decrementActiveRequests()
-      
-      if (!resp.success) { 
-        throw new Exception("HTTP request failed with status: ${resp.status}")
-      }
-
-def response = resp.getData()
-      if (!response) {
-        logError 'getStructureData: no data'
-        return
-      }
-// Only log full response at debug level 1
-      logDetails 'Structure response: ', response, 1
-      def myStruct = response.data.first()
-      if (!myStruct?.attributes) {
-        logError 'getStructureData: no structure data'
-        return
-      }
-// Log only essential fields at level 3
-      log(3, 'App', "Structure loaded: id=${myStruct.id}, name=${myStruct.attributes.name}, mode=${myStruct.attributes.mode}")
-      app.updateSetting('structureId', myStruct.id)
-    }
+    asynchttpGet('handleStructureResponse', httpParams, [retryCount: retryCount])
   } catch (Exception e) {
     decrementActiveRequests()
     
@@ -2623,6 +2707,7 @@ def response = resp.getData()
     } else {
       logError "getStructureData failed after ${MAX_API_RETRY_ATTEMPTS} attempts: ${e.message}"
     }
+  }
   }
 }// Wrapper method for synchronous getStructureData retry
 def retryGetStructureDataWrapper(data) {
