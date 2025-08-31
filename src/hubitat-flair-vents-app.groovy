@@ -1,6 +1,6 @@
 /**
  *  Hubitat Flair Vents Integration
- *  Version 0.239
+ *  Version 0.240
  *
  *  Copyright 2024 Jaime Botero. All Rights Reserved
  *
@@ -313,11 +313,6 @@ def cur = atomicState?.thermostat1State?.mode ?: (atomicState?.hvacCurrentMode ?
             input name: 'clearManualOverrides', type: 'button', title: 'Clear Manual Overrides', submitOnChange: true
             if (settings?.applyNightOverrideNow) { activateNightOverride(); app.updateSetting('applyNightOverrideNow','') }
       if (settings?.clearManualOverrides) { clearAllManualOverrides(); app.updateSetting('clearManualOverrides','') }
-          }
-// Polling intervals (registered so validators accept settings reads)
-          section('Polling Intervals') {
-            input name: 'pollingIntervalActive', type: 'number', title: 'Active HVAC polling interval (minutes)', defaultValue: 1, submitOnChange: true
-            input name: 'pollingIntervalIdle', type: 'number', title: 'Idle polling interval (minutes)', defaultValue: 10, submitOnChange: true
           }
 // Dashboard tiles
       section('Dashboard Tiles') {
@@ -759,24 +754,32 @@ def performHealthCheck() {
 }
 
 def performHealthCheckAsync() {
+  // Rate limiting: only allow health check once per minute
+  def lastHealthCheck = atomicState.lastHealthCheckTime ?: 0
+  def timeSinceLastCheck = getCurrentTime() - lastHealthCheck
+  def minHealthCheckInterval = 60000 // 1 minute
+  
+  if (timeSinceLastCheck < minHealthCheckInterval) {
+    log(3, 'HealthCheck', "Health check rate limited - last check ${timeSinceLastCheck / 1000}s ago")
+    return
+  }
+  
   if (!canMakeRequest()) {
     log(2, 'HealthCheck', 'Cannot make health check request - too many active requests')
     return
   }
   
-  incrementActiveRequests()
-  try {
-    def httpParams = [
-      uri: "${BASE_URL}/api/structures",
-      headers: [Authorization: "Bearer ${state.flairAccessToken}"],
-      timeout: HTTP_TIMEOUT_SECS,
-      contentType: CONTENT_TYPE
-    ]
-    asynchttpGet('handleHealthCheckResponse', httpParams)
-  } catch (Exception e) {
-    log(1, 'HealthCheck', "Health check request failed: ${e.message}")
-    decrementActiveRequests()
-  }
+  atomicState.lastHealthCheckTime = getCurrentTime()
+  
+  // Use unified retry helper
+  def httpParams = [
+    uri: "${BASE_URL}/api/structures",
+    headers: [Authorization: "Bearer ${state.flairAccessToken}"],
+    timeout: HTTP_TIMEOUT_SECS,
+    contentType: CONTENT_TYPE
+  ]
+  
+  retryAsyncHttpRequest('get', httpParams, 'handleHealthCheckResponse', [:], 0, 3) // Max 3 retries for health check
 }
 
 def handleHealthCheckResponse(resp, data) {
@@ -808,7 +811,94 @@ def resetCaches() {
     state.remove("${cacheKey}_${suffix}")
   }
   log 'Instance caches cleared', 2
-}// ------------------------------
+}
+
+// Internal diagnostics method returning JSON summary
+def getDiagnosticsSummary() {
+  try {
+    def summary = [:]
+    def now = getCurrentTime()
+    
+    // Request management
+    summary.requestManagement = [
+      activeRequests: atomicState.activeRequests ?: 0,
+      lastCallbackTime: atomicState.lastCallbackTime ?: 0,
+      timeSinceLastCallback: now - (atomicState.lastCallbackTime ?: now),
+      maxConcurrentRequests: MAX_CONCURRENT_REQUESTS,
+      apiCallDelayMs: API_CALL_DELAY_MS,
+      maxRetryAttempts: MAX_API_RETRY_ATTEMPTS
+    ]
+    
+    // Diagnostics counters
+    def diagnostics = atomicState.diagnostics ?: [:]
+    summary.diagnostics = [
+      hardResets: diagnostics.hardResets ?: 0,
+      stuckWarnings: diagnostics.stuckWarnings ?: 0,
+      lastHardReset: diagnostics.lastHardReset ?: 0,
+      lastStuckWarning: diagnostics.lastStuckWarning ?: 0
+    ]
+    
+    // Cache status
+    def instanceId = getInstanceId()
+    def cacheKey = "instanceCache_${instanceId}"
+    def roomCache = state."${cacheKey}_roomCache" ?: [:]
+    def deviceCache = state."${cacheKey}_deviceCache" ?: [:]
+    summary.caching = [
+      instanceId: instanceId,
+      roomCacheEntries: roomCache.size(),
+      deviceCacheEntries: deviceCache.size(),
+      roomCacheDurationMs: ROOM_CACHE_DURATION_MS,
+      deviceCacheDurationMs: DEVICE_CACHE_DURATION_MS,
+      maxCacheSize: MAX_CACHE_SIZE
+    ]
+    
+    // Device status
+    def children = getChildDevices()
+    def vents = children.findAll { it.hasAttribute('percent-open') }
+    def pucks = children.findAll { it.hasAttribute('temperature') && !it.hasAttribute('percent-open') }
+    summary.devices = [
+      totalChildren: children.size(),
+      vents: vents.size(),
+      pucks: pucks.size(),
+      ventIds: vents.collect { it.getId() },
+      puckIds: pucks.collect { it.getId() }
+    ]
+    
+    // HVAC state
+    summary.hvacState = [
+      thermostatState: atomicState.thermostat1State ?: [:],
+      ductTempsEnabled: settings?.enableDuctBasedHvacDetection == true,
+      dabEnabled: settings?.dabEnabled == true,
+      currentHvacMode: getHvacMode()
+    ]
+    
+    // App info
+    summary.appInfo = [
+      version: '0.240',
+      libraryVersions: [
+        dabManager: '0.240.0',
+        dabUIManager: '0.240.0'
+      ],
+      lastUpdated: now,
+      authStatus: state.flairAccessToken ? 'authenticated' : 'not_authenticated'
+    ]
+    
+    // Settings summary (no sensitive data)
+    summary.settings = [
+      pollingIntervalActive: atomicState.pollingIntervalActive ?: POLLING_INTERVAL_ACTIVE,
+      pollingIntervalIdle: atomicState.pollingIntervalIdle ?: POLLING_INTERVAL_IDLE,
+      dabHistoryRetentionDays: atomicState.dabHistoryRetentionDays ?: DEFAULT_HISTORY_RETENTION_DAYS,
+      dashboardTilesEnabled: atomicState.enableDashboardTiles == true,
+      nightOverrideActive: isNightOverrideActive()
+    ]
+    
+    return groovy.json.JsonOutput.toJson(summary)
+  } catch (Exception e) {
+    return groovy.json.JsonOutput.toJson([error: "Failed to generate diagnostics: ${e?.message}"])
+  }
+}
+
+// ------------------------------
 // List and Device Discovery Functions
 // ------------------------------
 def listDiscoveredDevices() {
@@ -880,6 +970,13 @@ def getStructureId() {
 
 def updated() {
   log.debug 'Hubitat Flair App updating'
+  
+  // Validate and clamp settings
+  validateAndClampSettings()
+  
+  // Mirror settings to atomicState
+  mirrorSettingsToAtomicState()
+  
   // Clear cached HTML so pages rebuild after setting changes
   try { state.remove('dabRatesTableHtml') } catch (ignore) { }
   try { state.remove('dabProgressTableHtml') } catch (ignore2) { }
@@ -1115,6 +1212,251 @@ def decrementActiveRequests() {
 // Concurrency gate for async HTTP
 def canMakeRequest() {
   try { return (atomicState?.activeRequests ?: 0) < (MAX_CONCURRENT_REQUESTS ?: 4) } catch (ignored) { return true }
+}
+
+// Unified retry/backoff helper for async HTTP requests
+def retryAsyncHttpRequest(String method, Map httpParams, String callbackMethod, Map callbackData = [:], Integer retryCount = 0, Integer maxRetries = MAX_API_RETRY_ATTEMPTS) {
+  if (retryCount >= maxRetries) {
+    logError "${method.toUpperCase()} ${httpParams.uri} failed after ${maxRetries} retries"
+    return false
+  }
+  
+  if (!canMakeRequest()) {
+    // If we can't make request now, schedule retry with exponential backoff
+    def backoffDelay = API_CALL_DELAY_MS * Math.pow(2, retryCount)
+    def maxBackoff = 30000 // Cap at 30 seconds
+    def actualDelay = Math.min(backoffDelay as Long, maxBackoff)
+    
+    log(3, 'HTTP', "${method.toUpperCase()} ${httpParams.uri} delayed ${actualDelay}ms (retry ${retryCount + 1}/${maxRetries})")
+    runInMillis(actualDelay, 'executeRetryHttpRequest', [
+      method: method,
+      httpParams: httpParams,
+      callbackMethod: callbackMethod,
+      callbackData: callbackData + [retryCount: retryCount + 1],
+      maxRetries: maxRetries
+    ])
+    return false
+  }
+  
+  incrementActiveRequests()
+  try {
+    switch (method.toLowerCase()) {
+      case 'get':
+        asynchttpGet(callbackMethod, httpParams, callbackData + [retryCount: retryCount])
+        break
+      case 'post':
+        asynchttpPost(callbackMethod, httpParams, callbackData + [retryCount: retryCount])
+        break
+      case 'put':
+        asynchttpPut(callbackMethod, httpParams, callbackData + [retryCount: retryCount])
+        break
+      case 'delete':
+        asynchttpDelete(callbackMethod, httpParams, callbackData + [retryCount: retryCount])
+        break
+      default:
+        throw new IllegalArgumentException("Unsupported HTTP method: ${method}")
+    }
+    return true
+  } catch (Exception e) {
+    decrementActiveRequests()
+    log(2, 'HTTP', "${method.toUpperCase()} ${httpParams.uri} request exception (retry ${retryCount + 1}/${maxRetries}): ${e.message}")
+    
+    // Schedule retry with exponential backoff
+    def backoffDelay = API_CALL_DELAY_MS * Math.pow(2, retryCount)
+    def maxBackoff = 30000 // Cap at 30 seconds
+    def actualDelay = Math.min(backoffDelay as Long, maxBackoff)
+    
+    runInMillis(actualDelay, 'executeRetryHttpRequest', [
+      method: method,
+      httpParams: httpParams,
+      callbackMethod: callbackMethod,
+      callbackData: callbackData + [retryCount: retryCount + 1],
+      maxRetries: maxRetries
+    ])
+    return false
+  }
+}
+
+// Wrapper for scheduled retry execution
+def executeRetryHttpRequest(data) {
+  retryAsyncHttpRequest(
+    data.method,
+    data.httpParams,
+    data.callbackMethod,
+    data.callbackData ?: [:],
+    data.callbackData?.retryCount ?: 0,
+    data.maxRetries ?: MAX_API_RETRY_ATTEMPTS
+  )
+}
+
+// Enhanced callback timeout detection
+def enhanceCallbackTimeout() {
+  def timeoutMs = 900000 // 15 minutes
+  def stuckThreshold = 300000 // 5 minutes for "stuck" detection
+  def lastCallbackTime = atomicState.lastCallbackTime ?: getCurrentTime()
+  def timeSinceLastCallback = getCurrentTime() - lastCallbackTime
+  def activeRequests = atomicState.activeRequests ?: 0
+  
+  if (activeRequests > 0) {
+    if (timeSinceLastCallback > timeoutMs) {
+      // Hard reset after 15 minutes
+      log(1, 'Watchdog', "CRITICAL: Hard reset ${activeRequests} stuck requests after ${timeSinceLastCallback / 60000} minutes")
+      atomicState.activeRequests = 0
+      
+      // Record diagnostic event
+      def diagnostics = atomicState.diagnostics ?: [:]
+      diagnostics.hardResets = (diagnostics.hardResets ?: 0) + 1
+      diagnostics.lastHardReset = getCurrentTime()
+      atomicState.diagnostics = diagnostics
+      
+    } else if (timeSinceLastCallback > stuckThreshold) {
+      // Warning for stuck requests after 5 minutes
+      log(2, 'Watchdog', "WARNING: ${activeRequests} requests stuck for ${timeSinceLastCallback / 60000} minutes")
+      
+      def diagnostics = atomicState.diagnostics ?: [:]
+      diagnostics.stuckWarnings = (diagnostics.stuckWarnings ?: 0) + 1
+      diagnostics.lastStuckWarning = getCurrentTime()
+      atomicState.diagnostics = diagnostics
+    }
+  }
+}
+
+// Settings validation and clamping helper
+def validateAndClampSettings() {
+  try {
+    // Polling intervals
+    def activeInterval = settings?.pollingIntervalActive as Integer
+    if (activeInterval != null) {
+      def clamped = Math.max(1, Math.min(60, activeInterval)) // 1-60 minutes
+      if (clamped != activeInterval) {
+        app.updateSetting('pollingIntervalActive', clamped)
+        log(2, 'Settings', "Clamped active polling interval from ${activeInterval} to ${clamped} minutes")
+      }
+    }
+    
+    def idleInterval = settings?.pollingIntervalIdle as Integer
+    if (idleInterval != null) {
+      def clamped = Math.max(1, Math.min(120, idleInterval)) // 1-120 minutes
+      if (clamped != idleInterval) {
+        app.updateSetting('pollingIntervalIdle', clamped)
+        log(2, 'Settings', "Clamped idle polling interval from ${idleInterval} to ${clamped} minutes")
+      }
+    }
+    
+    // Standard vent count
+    def standardVents = settings?.thermostat1AdditionalStandardVents as Integer
+    if (standardVents != null) {
+      def clamped = Math.max(0, Math.min(MAX_STANDARD_VENTS, standardVents))
+      if (clamped != standardVents) {
+        app.updateSetting('thermostat1AdditionalStandardVents', clamped)
+        log(2, 'Settings', "Clamped standard vents count from ${standardVents} to ${clamped}")
+      }
+    }
+    
+    // DAB history retention
+    def retentionDays = settings?.dabHistoryRetentionDays as Integer
+    if (retentionDays != null) {
+      def clamped = Math.max(1, Math.min(365, retentionDays)) // 1-365 days
+      if (clamped != retentionDays) {
+        app.updateSetting('dabHistoryRetentionDays', clamped)
+        log(2, 'Settings', "Clamped DAB history retention from ${retentionDays} to ${clamped} days")
+      }
+    }
+    
+    // Min vent floor percent
+    def minVentFloor = settings?.minVentFloorPercent as Integer
+    if (minVentFloor != null) {
+      def clamped = Math.max(0, Math.min(50, minVentFloor)) // 0-50%
+      if (clamped != minVentFloor) {
+        app.updateSetting('minVentFloorPercent', clamped)
+        log(2, 'Settings', "Clamped min vent floor from ${minVentFloor}% to ${clamped}%")
+      }
+    }
+    
+    // Night override percent
+    def nightPercent = settings?.nightOverridePercent as Integer
+    if (nightPercent != null) {
+      def clamped = Math.max(0, Math.min(100, nightPercent)) // 0-100%
+      if (clamped != nightPercent) {
+        app.updateSetting('nightOverridePercent', clamped)
+        log(2, 'Settings', "Clamped night override percent from ${nightPercent}% to ${clamped}%")
+      }
+    }
+    
+    // Raw data retention hours
+    def rawRetention = settings?.rawDataRetentionHours as Integer
+    if (rawRetention != null) {
+      def clamped = Math.max(1, Math.min(168, rawRetention)) // 1-168 hours (1 week)
+      if (clamped != rawRetention) {
+        app.updateSetting('rawDataRetentionHours', clamped)
+        log(2, 'Settings', "Clamped raw data retention from ${rawRetention} to ${clamped} hours")
+      }
+    }
+    
+    // EWMA half-life days
+    def ewmaHalfLife = settings?.ewmaHalfLifeDays as Integer
+    if (ewmaHalfLife != null) {
+      def clamped = Math.max(1, Math.min(30, ewmaHalfLife)) // 1-30 days
+      if (clamped != ewmaHalfLife) {
+        app.updateSetting('ewmaHalfLifeDays', clamped)
+        log(2, 'Settings', "Clamped EWMA half-life from ${ewmaHalfLife} to ${clamped} days")
+      }
+    }
+    
+    // Outlier threshold MAD
+    def outlierThreshold = settings?.outlierThresholdMad as Integer
+    if (outlierThreshold != null) {
+      def clamped = Math.max(1, Math.min(10, outlierThreshold)) // 1-10
+      if (clamped != outlierThreshold) {
+        app.updateSetting('outlierThresholdMad', clamped)
+        log(2, 'Settings', "Clamped outlier threshold from ${outlierThreshold} to ${clamped}")
+      }
+    }
+    
+    // Vent weight validation (clamp between 0.1 and 10.0)
+    getChildDevices()?.findAll { it.hasCapability('Switch Level') }?.each { vent ->
+      def weightKey = "vent${vent.getId()}Weight"
+      def weight = settings?."${weightKey}" as BigDecimal
+      if (weight != null) {
+        def clamped = Math.max(0.1, Math.min(10.0, weight)) as BigDecimal
+        if ((clamped - weight).abs() > 0.001) {
+          app.updateSetting(weightKey, clamped)
+          log(2, 'Settings', "Clamped ${vent.getLabel()} weight from ${weight} to ${clamped}")
+        }
+      }
+    }
+    
+  } catch (Exception e) {
+    log(4, 'Settings', "Settings validation error: ${e?.message}")
+  }
+}
+
+// Settings to atomicState mirroring helper
+def mirrorSettingsToAtomicState() {
+  try {
+    // Mirror key settings to atomicState for safe access from libraries
+    atomicState.pollingIntervalActive = (settings?.pollingIntervalActive ?: POLLING_INTERVAL_ACTIVE) as Integer
+    atomicState.pollingIntervalIdle = (settings?.pollingIntervalIdle ?: POLLING_INTERVAL_IDLE) as Integer
+    atomicState.dabHistoryRetentionDays = (settings?.dabHistoryRetentionDays ?: DEFAULT_HISTORY_RETENTION_DAYS) as Integer
+    atomicState.minVentFloorPercent = (settings?.minVentFloorPercent ?: 10) as Integer
+    atomicState.nightOverridePercent = (settings?.nightOverridePercent ?: 100) as Integer
+    atomicState.rawDataRetentionHours = (settings?.rawDataRetentionHours ?: RAW_CACHE_DEFAULT_HOURS) as Integer
+    atomicState.ewmaHalfLifeDays = (settings?.ewmaHalfLifeDays ?: 3) as Integer
+    atomicState.outlierThresholdMad = (settings?.outlierThresholdMad ?: 3) as Integer
+    atomicState.outlierMode = settings?.outlierMode ?: 'clip'
+    atomicState.enableOutlierRejection = settings?.enableOutlierRejection != false
+    atomicState.useCachedRawForDab = settings?.useCachedRawForDab == true
+    atomicState.carryForwardLastHour = settings?.carryForwardLastHour != false
+    atomicState.enableAdaptiveBoost = settings?.enableAdaptiveBoost != false
+    atomicState.adaptiveLookbackPeriods = (settings?.adaptiveLookbackPeriods ?: 3) as Integer
+    atomicState.adaptiveThresholdPercent = (settings?.adaptiveThresholdPercent ?: 25) as BigDecimal
+    atomicState.adaptiveBoostPercent = (settings?.adaptiveBoostPercent ?: 12.5) as BigDecimal
+    atomicState.adaptiveMaxBoostPercent = (settings?.adaptiveMaxBoostPercent ?: 25) as BigDecimal
+    atomicState.fanOnlyOpenAllVents = settings?.fanOnlyOpenAllVents == true
+    atomicState.enableDashboardTiles = settings?.enableDashboardTiles == true
+  } catch (Exception e) {
+    log(4, 'Settings', "Settings mirroring error: ${e?.message}")
+  }
 }
 
 // Initialize DAB tracking structures and state mirrors
@@ -2303,26 +2645,9 @@ def cleanupPendingRequests() {
 
 def activeRequestsWatchdog() {
   try {
-    def currentActiveRequests = atomicState.activeRequests ?: 0
-    def watchdogTimeout = 900000 // 15 minutes in milliseconds
-    def lastCallbackTime = atomicState.lastCallbackTime ?: getCurrentTime()
-    def timeSinceLastCallback = getCurrentTime() - lastCallbackTime
-    
-    // If we have active requests but no callbacks in the timeout period, reset
-    if (currentActiveRequests > 0 && timeSinceLastCallback > watchdogTimeout) {
-      log(1, 'Watchdog', "CRITICAL: No callbacks received for ${timeSinceLastCallback / 60000} minutes with ${currentActiveRequests} active requests - resetting to 0")
-      atomicState.activeRequests = 0
-      
-      // Record diagnostic event
-      def diagnostics = atomicState.diagnostics ?: [:]
-      diagnostics.watchdogResets = (diagnostics.watchdogResets ?: 0) + 1
-      diagnostics.lastWatchdogReset = getCurrentTime()
-      atomicState.diagnostics = diagnostics
-      
-      log(1, 'Watchdog', "Reset active request counter due to timeout")
-    }
+    enhanceCallbackTimeout()
   } catch (Exception e) {
-    log(4, 'Watchdog', "Watchdog check failed: ${e.message}")
+    log(4, 'Watchdog', "Watchdog error: ${e?.message}")
   }
 }
 
