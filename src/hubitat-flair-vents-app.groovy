@@ -40,15 +40,14 @@ import java.net.URLEncoder
 @Field static final Long ROOM_CACHE_DURATION_MS = 30000 // 30 second cache duration
 @Field static final Long DEVICE_CACHE_DURATION_MS = 30000 // 30 second cache duration for device readings
 @Field static final Integer MAX_CACHE_SIZE = 50 // Maximum cache entries per instance
-@Field static final Integer DEFAULT_HISTORY_RETENTION_DAYS = 10 // Default days to retain DAB history
+// DEFAULT_HISTORY_RETENTION_DAYS is provided by DabManager library
 @Field static final Integer DAILY_SUMMARY_PAGE_SIZE = 30 // Entries per page for daily summary
 
 // Content-Type header for API requests.
 @Field static final String CONTENT_TYPE = 'application/json'
 
 // HVAC mode constants.
-@Field static final String COOLING = 'cooling'
-@Field static final String HEATING = 'heating'
+// COOLING/HEATING are provided by DabManager library
 
 // Pending HVAC mode values returned by the thermostat.
 @Field static final String PENDING_COOL = 'pending cool'
@@ -62,38 +61,34 @@ import java.net.URLEncoder
 @Field static final BigDecimal MAX_PERCENTAGE_OPEN = 100.0
 
 // Threshold (in °C) used to trigger a pre-adjustment of vent settings before the setpoint is reached.
-@Field static final BigDecimal VENT_PRE_ADJUST_THRESHOLD = 0.2
+// VENT_PRE_ADJUST_THRESHOLD provided by DabManager library
 
 // HVAC timing constants.
-@Field static final BigDecimal MAX_MINUTES_TO_SETPOINT = 60       // Maximum minutes to reach setpoint.
-@Field static final BigDecimal MIN_MINUTES_TO_SETPOINT = 1        // Minimum minutes required to compute temperature change rate.
+// MAX/MIN_MINUTES_TO_SETPOINT provided by DabManager library
 
 // Temperature offset (in °C) applied to thermostat setpoints.
-@Field static final BigDecimal SETPOINT_OFFSET = 0.7
+// SETPOINT_OFFSET provided by DabManager library
 
 // Acceptable temperature change rate limits (in °C per minute).
-@Field static final BigDecimal MAX_TEMP_CHANGE_RATE = 1.5
-@Field static final BigDecimal MIN_TEMP_CHANGE_RATE = 0.001
+// MAX/MIN_TEMP_CHANGE_RATE provided by DabManager library
 
 // Temperature sensor accuracy and noise filtering
-@Field static final BigDecimal TEMP_SENSOR_ACCURACY = 0.5  // ±0.5°C typical sensor accuracy
-@Field static final BigDecimal MIN_DETECTABLE_TEMP_CHANGE = 0.1  // Minimum change to consider real
-@Field static final Integer MIN_RUNTIME_FOR_RATE_CALC = 5  // Minimum minutes before calculating rate
+// TEMP_SENSOR_ACCURACY / MIN_DETECTABLE_TEMP_CHANGE / MIN_RUNTIME_FOR_RATE_CALC provided by DabManager library
 
 // Minimum combined vent airflow percentage across all vents (to ensure proper HVAC operation).
-@Field static final BigDecimal MIN_COMBINED_VENT_FLOW = 30.0
+// MIN_COMBINED_VENT_FLOW provided by DabManager library
 
 // INCREMENT_PERCENTAGE is used as a base multiplier when incrementally increasing vent open percentages
 // during airflow adjustments. For example, if the computed proportion for a vent is 0.5,
 // then the vent's open percentage will be increased by 1.5 * 0.5 = 0.75% in that iteration.
 // This increment is applied repeatedly until the total combined airflow meets the minimum target.
-@Field static final BigDecimal INCREMENT_PERCENTAGE = 1.5
+// INCREMENT_PERCENTAGE provided by DabManager library
 
 // Maximum number of standard (non-Flair) vents allowed.
 @Field static final Integer MAX_STANDARD_VENTS = 15
 
 // Maximum iterations for the while-loop when adjusting vent openings.
-@Field static final Integer MAX_ITERATIONS = 500
+// MAX_ITERATIONS provided by DabManager library
 // Quick controls verification timing
 @Field static final Integer VENT_VERIFY_DELAY_MS = 5000
 @Field static final Integer MAX_VENT_VERIFY_ATTEMPTS = 3
@@ -105,17 +100,17 @@ import java.net.URLEncoder
 @Field static final Integer STANDARD_VENT_DEFAULT_OPEN = 50
 
 // Temperature tolerance for rebalancing vent operations (in °C).
-@Field static final BigDecimal REBALANCING_TOLERANCE = 0.5
+// REBALANCING_TOLERANCE provided by DabManager library
 
 // Temperature boundary adjustment for airflow calculations (in °C).
-@Field static final BigDecimal TEMP_BOUNDARY_ADJUSTMENT = 0.1
+// TEMP_BOUNDARY_ADJUSTMENT provided by DabManager library
 
 // Thermostat hysteresis to prevent cycling (in °C).
 @Field static final BigDecimal THERMOSTAT_HYSTERESIS = 0.6  // ~1°F
 
 // Minimum average difference between duct and room temperature (in °C)
 // required to determine that the HVAC system is actively heating or cooling.
-@Field static final BigDecimal DUCT_TEMP_DIFF_THRESHOLD = 0.5
+// DUCT_TEMP_DIFF_THRESHOLD provided by DabManager library
 
 // Polling intervals based on HVAC state (in minutes).
 @Field static final Integer POLLING_INTERVAL_ACTIVE = 3     // When HVAC is running
@@ -144,17 +139,10 @@ import java.net.URLEncoder
 // ------------------------------
 
 // Adaptive DAB seeding defaults (for abrupt condition changes)
-@Field static final Boolean ADAPTIVE_BOOST_ENABLED = true
-@Field static final Integer ADAPTIVE_LOOKBACK_PERIODS = 3
-@Field static final BigDecimal ADAPTIVE_THRESHOLD_PERCENT = 25.0
-@Field static final BigDecimal ADAPTIVE_BOOST_PERCENT = 12.5
-@Field static final BigDecimal ADAPTIVE_MAX_BOOST_PERCENT = 25.0
+// ADAPTIVE_* provided by DabManager library
 
 // Raw data cache defaults and fallbacks
-@Field static final Integer RAW_CACHE_DEFAULT_HOURS = 24
-@Field static final Integer RAW_CACHE_MAX_ENTRIES = 20000
-@Field static final BigDecimal DEFAULT_COOLING_SETPOINT_C = 24.0
-@Field static final BigDecimal DEFAULT_HEATING_SETPOINT_C = 20.0
+// RAW_CACHE_* and DEFAULT_*_SETPOINT_C provided by DabManager library
 
 definition(
     name: 'Flair Vents',
@@ -867,8 +855,6 @@ def uninstalled() {
 }
 
 def initialize() {
-  dabManager = new DabManager(this)
-  dabUIManager = new DabUIManager(this, dabManager)
   try { runEvery5Minutes('dabHealthMonitor') } catch (ignore) { }
   unsubscribe()
 
@@ -1562,7 +1548,7 @@ def calculateHvacMode(BigDecimal temp, BigDecimal coolingSetpoint, BigDecimal he
   return calculateHvacModeRobust()
 }// Robust HVAC mode detection using median duct-room temperature difference
 // with thermostat operating state as a fallback.
-def calculateHvacModeRobust() { return dabManager.calculateHvacModeRobust() }
+// calculateHvacModeRobust is provided by DabManager library
 
 def resetApiConnection() {
   logWarn 'Resetting API connection'
@@ -2838,58 +2824,10 @@ def thermostat1ChangeStateHandler(evt) {
   }
 }// Periodically evaluate duct temperatures to determine HVAC state
 // without relying on an external thermostat.
-def updateHvacStateFromDuctTemps() {
-  return dabManager.updateHvacStateFromDuctTemps()
-  // Detection runs even if DAB is disabled; only DAB actions are gated by dabEnabled
-  String previousMode = atomicState.thermostat1State?.mode ?: 'idle'
-  String hvacMode = (calculateHvacModeRobust() ?: 'idle')
-  if (hvacMode != previousMode) {
-    appendDabActivityLog("Start: ${previousMode} -> ${hvacMode}")
-    try { atomicState.hvacLastMode = previousMode } catch (ignore) { }
-    try { atomicState.hvacCurrentMode = hvacMode } catch (ignore) { }
-    try { atomicState.hvacLastChangeTs = now() } catch (ignore) { }
-  }
-      if (hvacMode in [COOLING, HEATING]) {
-    if (!atomicState.thermostat1State || atomicState.thermostat1State?.mode != hvacMode) {
-      atomicStateUpdate('thermostat1State', 'mode', hvacMode)
-      atomicStateUpdate('thermostat1State', 'startedRunning', now())
-      unschedule('initializeRoomStates')
-      runInMillis(POST_STATE_CHANGE_DELAY_MS, 'initializeRoomStates', [data: hvacMode])
-      recordStartingTemperatures()
-      runEvery5Minutes('evaluateRebalancingVents')
-      runEvery30Minutes('reBalanceVents')
-      updateDevicePollingInterval((settings?.pollingIntervalActive ?: POLLING_INTERVAL_ACTIVE) as Integer)
-    }
-  } else {
-    if (atomicState.thermostat1State) {
-      unschedule('initializeRoomStates')
-      unschedule('finalizeRoomStates')
-      unschedule('evaluateRebalancingVents')
-      unschedule('reBalanceVents')
-      atomicStateUpdate('thermostat1State', 'finishedRunning', now())
-      if (settings?.dabEnabled) {
-        def params = [
-          ventIdsByRoomId: atomicState.ventsByRoomId,
-          startedCycle: atomicState.thermostat1State?.startedCycle,
-          startedRunning: atomicState.thermostat1State?.startedRunning,
-          finishedRunning: atomicState.thermostat1State?.finishedRunning,
-          hvacMode: atomicState.thermostat1State?.mode
-        ]
-        runInMillis(TEMP_READINGS_DELAY_MS, 'finalizeRoomStates', [data: params])
-      }
-      atomicState.remove('thermostat1State')
-      updateDevicePollingInterval((settings?.pollingIntervalIdle ?: POLLING_INTERVAL_IDLE) as Integer)
-    }
-  }
-String currentMode = atomicState.thermostat1State?.mode ?: 'idle'
-  if (currentMode != previousMode) {
-    appendDabActivityLog("End: ${previousMode} -> ${currentMode}")
-  }
-}
+// updateHvacStateFromDuctTemps is provided by DabManager library
 
-def reBalanceVents() { dabManager.reBalanceVents() }
-
-def evaluateRebalancingVents() { dabManager.evaluateRebalancingVents() }// Retrieve all stored rates for a specific room, HVAC mode, and hour
+// reBalanceVents and evaluateRebalancingVents are provided by DabManager library
+// Retrieve all stored rates for a specific room, HVAC mode, and hour
 def getHourlyRates(String roomId, String hvacMode, Integer hour) {
   initializeDabHistory()
   def hist = atomicState?.dabHistory
@@ -2980,13 +2918,9 @@ def devSorted = deviations.sort()
   } catch (ignore) { }
   return decision
 }// Ensure DAB history structures are present and normalize legacy formats
-def initializeDabHistory() { return dabManager.initializeDabHistory() }
+// initializeDabHistory is provided by DabManager library
 // Async-friendly wrapper to generate and cache the rates table HTML
-def buildDabRatesTable(Map data) {
-  try {
-    state.dabRatesTableHtml = buildDabRatesTable()
-  } catch (ignore) { }
-}
+// buildDabRatesTable(Map data) is provided by DabUIManager library
 String buildDabProgressTable() {
   initializeDabHistory()
   def history = atomicState?.dabHistory ?: []
@@ -3469,9 +3403,9 @@ def ar = atomicState?.activeRequests ?: 0
   }
 }
 // DAB Live Diagnostics page to run a one-off calculation and display details
-def dabLiveDiagnosticsPage() { dabUIManager.dabLiveDiagnosticsPage() }
+// dabLiveDiagnosticsPage is provided by DabUIManager library
 // Execute a live diagnostic pass of DAB calculations without changing device state
-void runDabDiagnostic() {
+void runDabDiagnosticLocal() {
   def results = [:]
 
   // Inputs
@@ -3517,7 +3451,7 @@ def list = ventsByRoomId[rid] ?: []
 
   state.dabDiagnosticResult = results
 }// Render diagnostic results as an HTML snippet (paragraph-safe)
-String renderDabDiagnosticResults() {
+String renderDabDiagnosticResultsLocal() {
   def results = state?.dabDiagnosticResult
   if (!results) { return '<p>No diagnostic results to display.</p>' }
 
@@ -3574,40 +3508,35 @@ def asyncHttpCallback(response, Map data) {
   }
 }
 // Async-friendly wrapper to generate and cache the progress table HTML
-def buildDabProgressTable(Map data) {
+def buildDabProgressTableLocal(Map data) {
   try { atomicState.progressRoom = settings?.progressRoom } catch (ignore) { }
   try {
     state.dabProgressTableHtml = buildDabProgressTable()
   } catch (ignore2) { }
 }
 
-def handleExportEfficiencyData() { dabUIManager.handleExportEfficiencyData() }
-
-def handleImportEfficiencyData() { dabUIManager.handleImportEfficiencyData() }
-
-def handleClearExportData() { dabUIManager.handleClearExportData() }
+// handleImportEfficiencyData is provided by DabUIManager library
+// Optional export/clear handlers are omitted in app; rely on library pages
 // DAB lifecycle wrappers to delegate logic to DabManager (ensure consistent runtime usage)
-def initializeRoomStates(hvacMode) { return dabManager.initializeRoomStates(hvacMode) }
-
-def finalizeRoomStates(data) { return dabManager.finalizeRoomStates(data) }
+// initializeRoomStates/finalizeRoomStates are provided by DabManager library
 // --- DAB UI Page Wrappers (delegated to DabUIManager) ---
-def efficiencyDataPage() { return dabUIManager.efficiencyDataPage() }
+// efficiencyDataPage is provided by DabUIManager library
 
-def dabChartPage() { return dabUIManager.dabChartPage() }
+// dabChartPage is provided by DabUIManager library
 
-def dabRatesTablePage() { return dabUIManager.dabRatesTablePage() }
+// dabRatesTablePage is provided by DabUIManager library
 
-def dabActivityLogPage() { return dabUIManager.dabActivityLogPage() }
+// dabActivityLogPage is provided by DabUIManager library
 
-def dabHistoryPage() { return dabUIManager.dabHistoryPage() }
+// dabHistoryPage is provided by DabUIManager library
 
-def dabProgressPage() { return dabUIManager.dabProgressPage() }
+// dabProgressPage is provided by DabUIManager library
 
-def dabDailySummaryPage() { return dabUIManager.dabDailySummaryPage() }
+// dabDailySummaryPage is provided by DabUIManager library
 // Async builder wrappers used by UI pages
-def buildDabRatesTableWrapper(Map data) { dabUIManager.buildDabRatesTable(data) }
+def buildDabRatesTableWrapper(Map data) { try { buildDabRatesTable(data) } catch (ignore) { } }
 
-def buildDabProgressTableWrapper(Map data) { dabUIManager.buildDabProgressTable(data) }
+def buildDabProgressTableWrapper(Map data) { try { buildDabProgressTable(data) } catch (ignore) { } }
 
 
 
