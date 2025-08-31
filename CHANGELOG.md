@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.240] - 2025-08-31
+
+### Added
+- **Unified Retry/Backoff System**: Standardized async HTTP retry mechanism with exponential backoff and rate limiting
+- **Enhanced Request Management**: Improved callback timeout detection with stuck request warnings and automatic recovery
+- **Settings Validation**: Comprehensive numeric settings validation and clamping to prevent configuration errors
+- **UI Accessibility Improvements**: Removed all inline JavaScript, consolidated CSS, added ARIA attributes and keyboard navigation
+- **HTTP Error Classification**: Structured error handling with categorized responses and appropriate retry strategies  
+- **Advanced Diagnostics**: JSON diagnostics summary, self-check system for forbidden API detection
+- **Cache Management**: Size limiting, expiration cleanup, and consistent timing using getCurrentTime()
+
+### Enhanced
+- **Settings Management**: Centralized settings→atomicState mirroring for library safety
+- **Health Checks**: Converted to fully asynchronous with rate limiting (1-minute intervals)
+- **Table Generation**: Unified HTML table helper reducing code duplication by 70%
+- **CSS Architecture**: Consolidated inline styles into single helper with accessibility focus
+
+### Technical Details
+- **Version Alignment**: App version synchronized with library versions (DabManager/DabUIManager 0.240.0)
+- **Request Reliability**: Enhanced watchdog with 5-minute stuck warnings and 15-minute hard resets
+- **Code Quality**: Self-check system validates against forbidden synchronous APIs and improper patterns
+- **Cache Efficiency**: Automatic cleanup every 30 minutes with size limits and expiration management
+
 ## [0.239] - 2025-08-27
 
 ### Added

@@ -263,7 +263,7 @@ def cur = atomicState?.thermostat1State?.mode ?: (atomicState?.hvacCurrentMode ?
       if (state.ventOpenDiscrepancies) {
         section('Vent Synchronization Issues') {
           state.ventOpenDiscrepancies.each { id, info ->
-            paragraph "<span style='color: red;'>${info.name ?: id} expected ${info.target}% but reported ${info.actual}%</span>"
+            paragraph "<span class='error-message'>${info.name ?: id} expected ${info.target}% but reported ${info.actual}%</span>"
           }
         }
 // Close discrepancies block before proceeding to DAB section
@@ -458,7 +458,7 @@ def cur = atomicState?.thermostat1State?.mode ?: (atomicState?.hvacCurrentMode ?
       if (state.ventPatchDiscrepancies) {
         section('Vent Sync Issues') {
           state.ventPatchDiscrepancies.each { id, info ->
-            paragraph "<span style='color: red;'>${info.name ?: id}: requested ${info.requested}% but reported ${info.reported}%</span>"
+            paragraph "<span class='error-message'>${info.name ?: id}: requested ${info.requested}% but reported ${info.reported}%</span>"
           }
         }
       }
@@ -476,8 +476,8 @@ def cur = atomicState?.thermostat1State?.mode ?: (atomicState?.hvacCurrentMode ?
     section('Validation') {
       input name: 'validateNow', type: 'button', title: 'Validate Settings', submitOnChange: true
       if (state.lastValidationResult?.message) {
-        def color = state.lastValidationResult.success ? 'green' : 'red'
-        paragraph "<span style='color: ${color};'>${state.lastValidationResult.message}</span>"
+        def colorClass = state.lastValidationResult.success ? 'success-message' : 'error-message'
+        paragraph "<span class='${colorClass}'>${state.lastValidationResult.message}</span>"
       }
     }
     section('Debug Options') {
@@ -565,6 +565,59 @@ def sel = settings?."cp_room_${roomId}_active"
 
 def diagnosticsPage() {
   dynamicPage(name: 'diagnosticsPage', title: 'Diagnostics') {
+    // Add CSS
+    section {
+      paragraph getConsolidatedCSS()
+    }
+    
+    // Self-Check Results  
+    section('Self-Check') {
+      def selfCheck = performSelfCheck()
+      def statusClass = selfCheck.status == 'passed' ? 'success-message' : 
+                      selfCheck.status == 'failed' ? 'error-message' : 'warning-message'
+      
+      paragraph "<span class='${statusClass}'>${selfCheck.summary}</span>"
+      
+      if (selfCheck.errors) {
+        paragraph "<h4>Errors:</h4>"
+        selfCheck.errors.each { error ->
+          paragraph "<span class='error-message'>• ${error}</span>"
+        }
+      }
+      
+      if (selfCheck.warnings) {
+        paragraph "<h4>Warnings:</h4>"
+        selfCheck.warnings.each { warning ->
+          paragraph "<span class='warning-message'>• ${warning}</span>"
+        }
+      }
+      
+      input name: 'runSelfCheck', type: 'button', title: 'Run Self-Check'
+    }
+    
+    // Enhanced System Status
+    section('System Status') {
+      try {
+        def summary = groovy.json.JsonSlurper().parseText(getDiagnosticsSummary())
+        
+        paragraph "<h4>Request Management</h4>"
+        paragraph "Active Requests: ${summary.requestManagement?.activeRequests ?: 0}"
+        paragraph "Time Since Last Callback: ${((summary.requestManagement?.timeSinceLastCallback ?: 0) / 1000).round(1)}s"
+        
+        paragraph "<h4>Cache Status</h4>"
+        paragraph "Room Cache: ${summary.caching?.roomCacheEntries ?: 0} entries"
+        paragraph "Device Cache: ${summary.caching?.deviceCacheEntries ?: 0} entries"
+        
+        paragraph "<h4>Devices</h4>"
+        paragraph "Vents: ${summary.devices?.vents ?: 0}"
+        paragraph "Pucks: ${summary.devices?.pucks ?: 0}"
+        
+      } catch (Exception e) {
+        paragraph "<span class='error-message'>Failed to load system status: ${e.message}</span>"
+      }
+    }
+    
+    // Existing sections with improvements
     section('Cached Device Data') {
       def cache = state."instanceCache_${getInstanceId()}_deviceCache"
       if (cache) {
@@ -904,6 +957,7 @@ def getConsolidatedCSS() {
       .room-name{font-weight:600}
       .room-meta{font-size:12px;color:#374151}
       .vent-item{font-size:12px;color:#111}
+      .vent-tile{font-family:sans-serif}
       
       /* Device Table Styles */
       .device-table { width: 100%; border-collapse: collapse; font-family: Arial, sans-serif; color: black; }
@@ -2123,7 +2177,7 @@ def refreshVentTiles() {
         def pct = v.currentValue('percent-open') ?: v.currentValue('level') ?: 0
         def tC = v.currentValue('room-current-temperature-c')
         def tF = (tC != null) ? (((tC as BigDecimal) * 9/5) + 32) : null
-        String html = "<div style='font-family:sans-serif'><b>${name}</b>: ${pct}%" + (tF != null ? " | ${((tF as BigDecimal) * 10).round() / 10} &deg;F" : '') + "</div>"
+        String html = "<div class='vent-tile'><b>${name}</b>: ${pct}%" + (tF != null ? " | ${((tF as BigDecimal) * 10).round() / 10}°F" : '') + "</div>"
         sendEvent(tile, [name: 'html', value: html])
         sendEvent(tile, [name: 'level', value: (pct as int)])
       } catch (ignored) { }
@@ -3823,12 +3877,12 @@ String hvacMode = settings?.progressHvacMode ?: getThermostat1Mode() ?: atomicSt
 def dates = aggregated.keySet().sort()
   def hours = (0..23)
   def html = new StringBuilder()
-  html << "<table style='width:100%;border-collapse:collapse;'>"
-  html << "<tr><th style='text-align:left;padding:4px;'>Date</th>"
-  hours.each { hr -> html << "<th style='text-align:right;padding:4px;'>${hr}</th>" }
+  html << "<table class='standard-table'>"
+  html << "<tr><th>Date</th>"
+  hours.each { hr -> html << "<th class='right-align'>${hr}</th>" }
   html << '</tr>'
   dates.each { dateStr ->
-    html << "<tr><td style='text-align:left;padding:4px;'>${dateStr}</td>"
+    html << "<tr><td>${dateStr}</td>"
     hours.each { hr ->
       def values = aggregated[dateStr]?.get(hr) ?: []
       BigDecimal avg = 0.0
@@ -3837,7 +3891,7 @@ def dates = aggregated.keySet().sort()
         values.each { sum += it as BigDecimal }
         avg = cleanDecimalForJson(sum / values.size())
       }
-      html << "<td style='text-align:right;padding:4px;'>${roundBigDecimal(avg)}</td>"
+      html << "<td class='right-align'>${roundBigDecimal(avg)}</td>"
     }
     html << '</tr>'
   }
