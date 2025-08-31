@@ -185,6 +185,10 @@ def mainPage() {
   }
 
   dynamicPage(name: 'mainPage', title: 'Setup', install: validation.valid, uninstall: true) {
+    // Add CSS for status messages
+    section {
+      paragraph getConsolidatedCSS()
+    }
     section('Flair Control Panel') {
       href name: 'flairControlPanelLink', title: 'Open Flair Control Panel',
            description: 'Room-centric overview and quick adjustments',
@@ -197,10 +201,10 @@ def mainPage() {
                 "<a href='https://forms.gle/VohiQjWNv9CAP2ASA' target='_blank'>here</a></b></small>"
 
       if (validation.errors.clientId) {
-        paragraph "<span style='color: red;'>${validation.errors.clientId}</span>"
+        paragraph "<span class='error-message'>${validation.errors.clientId}</span>"
       }
       if (validation.errors.clientSecret) {
-        paragraph "<span style='color: red;'>${validation.errors.clientSecret}</span>"
+        paragraph "<span class='error-message'>${validation.errors.clientSecret}</span>"
       }
       if (settings?.clientId && settings?.clientSecret) {
         if (!state.flairAccessToken && !state.authInProgress) {
@@ -209,18 +213,18 @@ def mainPage() {
           runIn(2, 'autoAuthenticate')
         }
       if (state.flairAccessToken && !state.authError) {
-          paragraph "<span style='color: green;'>Authenticated successfully</span>"
+          paragraph "<span class='success-message'>Authenticated successfully</span>"
         } else if (state.authError && !state.authInProgress) {
           section {
-            paragraph "<span style='color: red;'>${state.authError}</span>"
+            paragraph "<span class='error-message'>${state.authError}</span>"
             input name: 'retryAuth', type: 'button', title: 'Retry Authentication', submitOnChange: true
             paragraph "<small>If authentication continues to fail, verify your credentials are correct and try again.</small>"
           }
         } else if (state.authInProgress) {
-          paragraph "<span style='color: orange;'>Authenticating... Please wait.</span>"
+          paragraph "<span class='info-message'>Authenticating... Please wait.</span>"
           paragraph "<small>This may take 10-15 seconds. The page will refresh automatically when complete.</small>"
         } else {
-          paragraph "<span style='color: orange;'>Ready to authenticate...</span>"
+          paragraph "<span class='info-message'>Ready to authenticate...</span>"
         }
       }
     }
@@ -632,18 +636,7 @@ def diagnosticsPage() {
 def flairControlPanel2() {
   dynamicPage(name: 'flairControlPanel2', title: 'Flair Control Panel', install: false, uninstall: false) {
     section {
-      paragraph """
-        <style>
-          .flair-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px}
-          .room-card{background:#f9f9f9;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.12);padding:12px;border-left:5px solid #9ca3af}
-          .room-card.cooling{border-left-color:#3b82f6}
-          .room-card.heating{border-left-color:#f59e0b}
-          .room-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
-          .room-name{font-weight:600}
-          .room-meta{font-size:12px;color:#374151}
-          .vent-item{font-size:12px;color:#111}
-        </style>
-      """
+      paragraph getConsolidatedCSS()
     }
 
 def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
@@ -898,6 +891,390 @@ def getDiagnosticsSummary() {
   }
 }
 
+// Consolidated CSS helper
+def getConsolidatedCSS() {
+  return """
+    <style>
+      /* Flair Control Panel Styles */
+      .flair-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px}
+      .room-card{background:#f9f9f9;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.12);padding:12px;border-left:5px solid #9ca3af}
+      .room-card.cooling{border-left-color:#3b82f6}
+      .room-card.heating{border-left-color:#f59e0b}
+      .room-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+      .room-name{font-weight:600}
+      .room-meta{font-size:12px;color:#374151}
+      .vent-item{font-size:12px;color:#111}
+      
+      /* Device Table Styles */
+      .device-table { width: 100%; border-collapse: collapse; font-family: Arial, sans-serif; color: black; }
+      .device-table th, .device-table td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }
+      .device-table th { background-color: #f2f2f2; color: #333; }
+      .device-table tr:hover { background-color: #f5f5f5; }
+      .device-table a { color: #333; text-decoration: none; }
+      .device-table a:hover { color: #666; }
+      .device-table th:not(:first-child), .device-table td:not(:first-child) { text-align: center; }
+      
+      /* Standard Table Styles */
+      .standard-table { width: 100%; border-collapse: collapse; font-family: Arial, sans-serif; }
+      .standard-table th { text-align: left; padding: 4px; background-color: #f2f2f2; font-weight: bold; }
+      .standard-table td { text-align: left; padding: 4px; border-bottom: 1px solid #eee; }
+      .standard-table .right-align { text-align: right; }
+      
+      /* Status Messages */
+      .warning-message { color: darkorange; cursor: pointer; }
+      .danger-message { color: red; cursor: pointer; }
+      .success-message { color: green; }
+      .info-message { color: orange; }
+      .error-message { color: red; }
+      
+      /* Accessibility improvements */
+      [role="button"] { cursor: pointer; }
+      [role="button"]:hover { opacity: 0.8; }
+      [role="button"]:focus { outline: 2px solid #007cba; outline-offset: 2px; }
+    </style>
+  """
+}
+
+// HTML table generation helper
+def generateHtmlTable(Map options) {
+  def html = new StringBuilder()
+  
+  // Table options with defaults
+  def tableClass = options.tableClass ?: 'standard-table'
+  def headers = options.headers ?: []
+  def rows = options.rows ?: []
+  def title = options.title
+  def pagination = options.pagination
+  
+  // Add title if provided
+  if (title) {
+    html << "<h3>${title}</h3>"
+  }
+  
+  // Add pagination info if provided
+  if (pagination) {
+    html << "<p>Page ${pagination.current} of ${pagination.total}</p>"
+  }
+  
+  // Start table
+  html << "<table class='${tableClass}'"
+  if (options.id) html << " id='${options.id}'"
+  html << ">"
+  
+  // Add headers
+  if (headers) {
+    html << "<thead><tr>"
+    headers.each { header ->
+      def headerClass = header.class ?: ''
+      def headerAlign = header.align ? "class='${header.align}'" : ''
+      html << "<th ${headerAlign}>${header.text ?: header}</th>"
+    }
+    html << "</tr></thead>"
+  }
+  
+  // Add rows
+  html << "<tbody>"
+  rows.each { row ->
+    html << "<tr>"
+    if (row instanceof List) {
+      // Simple list of cell values
+      row.each { cell ->
+        html << "<td>${cell}</td>"
+      }
+    } else if (row instanceof Map) {
+      // Map with cell data and optional classes
+      row.cells?.each { cell ->
+        def cellClass = cell.class ? "class='${cell.class}'" : ''
+        def cellAlign = cell.align ? "class='${cell.align}'" : ''
+        html << "<td ${cellClass} ${cellAlign}>${cell.value ?: cell}</td>"
+      }
+    }
+    html << "</tr>"
+  }
+  html << "</tbody></table>"
+  
+  return html.toString()
+}
+
+// Remove inline JavaScript helper - replaces onclick with data attributes
+def sanitizeHtmlForAccessibility(String htmlContent) {
+  // Replace onclick with data-href for CSS-only styling
+  def sanitized = htmlContent
+    .replaceAll(/onclick="window\.open\('([^']+)'\);"/, 'data-href="$1" role="button" tabindex="0"')
+    .replaceAll(/onclick="([^"]+)"/, 'data-action="$1" role="button" tabindex="0"')
+  
+  return sanitized
+}
+
+// Degree symbol standardization helper
+def standardizeDegreeSymbols(String text) {
+  return text.replaceAll(/°C/, '°C').replaceAll(/°F/, '°F').replaceAll(/&deg;/, '°')
+}
+
+// Structured HTTP error classification
+def classifyHttpError(def response) {
+  if (!response) {
+    return [
+      category: 'no_response',
+      severity: 'high',
+      message: 'No response received',
+      retryable: true,
+      backoffMultiplier: 2.0
+    ]
+  }
+  
+  def status = response.getStatus() as Integer
+  switch (status) {
+    case 200..299:
+      return [
+        category: 'success',
+        severity: 'none',
+        message: "Success: HTTP ${status}",
+        retryable: false,
+        backoffMultiplier: 1.0
+      ]
+    
+    case 400:
+      return [
+        category: 'client_error',
+        severity: 'high',
+        message: 'Bad request - check parameters',
+        retryable: false,
+        backoffMultiplier: 1.0
+      ]
+    
+    case 401:
+      return [
+        category: 'auth_error',
+        severity: 'high',
+        message: 'Unauthorized - check credentials',
+        retryable: true,
+        backoffMultiplier: 1.5,
+        shouldReauth: true
+      ]
+    
+    case 403:
+      return [
+        category: 'permission_error',
+        severity: 'high',
+        message: 'Forbidden - insufficient permissions',
+        retryable: false,
+        backoffMultiplier: 1.0
+      ]
+    
+    case 404:
+      return [
+        category: 'not_found',
+        severity: 'medium',
+        message: 'Resource not found',
+        retryable: false,
+        backoffMultiplier: 1.0
+      ]
+    
+    case 429:
+      return [
+        category: 'rate_limit',
+        severity: 'medium',
+        message: 'Rate limited - slow down requests',
+        retryable: true,
+        backoffMultiplier: 3.0
+      ]
+    
+    case 500..599:
+      return [
+        category: 'server_error',
+        severity: 'medium',
+        message: "Server error: HTTP ${status}",
+        retryable: true,
+        backoffMultiplier: 2.0
+      ]
+    
+    default:
+      return [
+        category: 'unknown_error',
+        severity: 'medium',
+        message: "Unknown error: HTTP ${status}",
+        retryable: true,
+        backoffMultiplier: 1.5
+      ]
+  }
+}
+
+// Cache size limiting helper
+def limitCacheSize(String cacheKey, Integer maxSize = MAX_CACHE_SIZE) {
+  try {
+    def cache = state."${cacheKey}" ?: [:]
+    if (cache.size() > maxSize) {
+      // Remove oldest entries (assuming keys are ordered chronologically or use LRU strategy)
+      def keysToRemove = cache.keySet().take(cache.size() - maxSize)
+      keysToRemove.each { key ->
+        cache.remove(key)
+        // Also remove corresponding timestamp cache if it exists
+        def timestampKey = "${cacheKey}Timestamps"
+        if (state."${timestampKey}") {
+          state."${timestampKey}".remove(key)
+        }
+      }
+      state."${cacheKey}" = cache
+      log(3, 'Cache', "Limited ${cacheKey} size to ${maxSize} entries (removed ${keysToRemove.size()})")
+    }
+  } catch (Exception e) {
+    log(4, 'Cache', "Failed to limit cache size for ${cacheKey}: ${e?.message}")
+  }
+}
+
+// Ensure cache expiration uses getCurrentTime()/now() consistently
+def isExpired(Long timestamp, Long durationMs) {
+  if (!timestamp || !durationMs) return true
+  return (getCurrentTime() - timestamp) > durationMs
+}
+
+// Self-check method for forbidden tokens and patterns
+def performSelfCheck() {
+  def results = [:]
+  def warnings = []
+  def errors = []
+  
+  try {
+    // Check for forbidden synchronous HTTP patterns
+    def sourceCode = this.class.getDeclaredMethods().collect { it.toString() }.join(' ')
+    
+    // Forbidden patterns to check for
+    def forbiddenPatterns = [
+      'httpGet': 'Use asynchttpGet instead of synchronous httpGet',
+      'httpPost': 'Use asynchttpPost instead of synchronous httpPost',
+      'httpPut': 'Use asynchttpPut instead of synchronous httpPut',
+      'httpDelete': 'Use asynchttpDelete instead of synchronous httpDelete',
+      'Thread.sleep': 'Use runIn/runInMillis instead of Thread.sleep',
+      'wait()': 'Use scheduled methods instead of wait()',
+      'notify()': 'Avoid notify() in Hubitat apps',
+      'synchronized': 'Avoid synchronized blocks in Hubitat apps'
+    ]
+    
+    forbiddenPatterns.each { pattern, message ->
+      // This is a simplified check - in reality we'd need more sophisticated parsing
+      if (sourceCode.contains(pattern)) {
+        warnings << "${message} (pattern: ${pattern})"
+      }
+    }
+    
+    // Check atomicState usage patterns
+    def atomicStateKeys = atomicState.keySet()
+    atomicStateKeys.each { key ->
+      def value = atomicState."${key}"
+      if (value instanceof BigDecimal) {
+        warnings << "atomicState.${key} contains BigDecimal - consider converting to Double"
+      }
+    }
+    
+    // Check for proper request counter management
+    def activeRequests = atomicState.activeRequests ?: 0
+    if (activeRequests < 0) {
+      errors << "Active request counter is negative: ${activeRequests}"
+    }
+    if (activeRequests > MAX_CONCURRENT_REQUESTS * 2) {
+      warnings << "Active request counter unusually high: ${activeRequests}"
+    }
+    
+    // Check cache sizes
+    def instanceId = getInstanceId()
+    def base = "instanceCache_${instanceId}"
+    def roomCache = state."${base}_roomCache" ?: [:]
+    def deviceCache = state."${base}_deviceCache" ?: [:]
+    
+    if (roomCache.size() > MAX_CACHE_SIZE) {
+      warnings << "Room cache oversized: ${roomCache.size()} entries"
+    }
+    if (deviceCache.size() > MAX_CACHE_SIZE) {
+      warnings << "Device cache oversized: ${deviceCache.size()} entries"
+    }
+    
+    // Check for stale caches
+    def now = getCurrentTime()
+    def roomTimestamps = state."${base}_roomCacheTimestamps" ?: [:]
+    def deviceTimestamps = state."${base}_deviceCacheTimestamps" ?: [:]
+    
+    def oldRoomEntries = roomTimestamps.findAll { key, timestamp ->
+      (now - timestamp) > (ROOM_CACHE_DURATION_MS * 10) // 10x normal duration
+    }.size()
+    
+    def oldDeviceEntries = deviceTimestamps.findAll { key, timestamp ->
+      (now - timestamp) > (DEVICE_CACHE_DURATION_MS * 10) // 10x normal duration
+    }.size()
+    
+    if (oldRoomEntries > 0) {
+      warnings << "${oldRoomEntries} very old room cache entries detected"
+    }
+    if (oldDeviceEntries > 0) {
+      warnings << "${oldDeviceEntries} very old device cache entries detected"
+    }
+    
+    results.status = errors.isEmpty() ? 'passed' : 'failed'
+    results.errors = errors
+    results.warnings = warnings
+    results.timestamp = now
+    results.summary = "Self-check ${results.status} with ${errors.size()} errors and ${warnings.size()} warnings"
+    
+  } catch (Exception e) {
+    results.status = 'error'
+    results.errors = ["Self-check failed: ${e?.message}"]
+    results.warnings = warnings
+    results.timestamp = getCurrentTime()
+  }
+  
+  return results
+}
+def cleanupExpiredCaches() {
+  try {
+    def instanceId = getInstanceId()
+    def base = "instanceCache_${instanceId}"
+    def now = getCurrentTime()
+    
+    // Clean room cache
+    def roomCache = state."${base}_roomCache" ?: [:]
+    def roomTimestamps = state."${base}_roomCacheTimestamps" ?: [:]
+    def expiredRoomKeys = roomTimestamps.findAll { key, timestamp ->
+      isExpired(timestamp, ROOM_CACHE_DURATION_MS)
+    }.keySet()
+    
+    expiredRoomKeys.each { key ->
+      roomCache.remove(key)
+      roomTimestamps.remove(key)
+    }
+    
+    if (expiredRoomKeys) {
+      state."${base}_roomCache" = roomCache
+      state."${base}_roomCacheTimestamps" = roomTimestamps
+      log(3, 'Cache', "Cleaned ${expiredRoomKeys.size()} expired room cache entries")
+    }
+    
+    // Clean device cache
+    def deviceCache = state."${base}_deviceCache" ?: [:]
+    def deviceTimestamps = state."${base}_deviceCacheTimestamps" ?: [:]
+    def expiredDeviceKeys = deviceTimestamps.findAll { key, timestamp ->
+      isExpired(timestamp, DEVICE_CACHE_DURATION_MS)
+    }.keySet()
+    
+    expiredDeviceKeys.each { key ->
+      deviceCache.remove(key)
+      deviceTimestamps.remove(key)
+    }
+    
+    if (expiredDeviceKeys) {
+      state."${base}_deviceCache" = deviceCache
+      state."${base}_deviceCacheTimestamps" = deviceTimestamps
+      log(3, 'Cache', "Cleaned ${expiredDeviceKeys.size()} expired device cache entries")
+    }
+    
+    // Limit HTML cache sizes
+    limitCacheSize('dabRatesTableHtml', 10)
+    limitCacheSize('dabProgressTableHtml', 10)
+    
+  } catch (Exception e) {
+    log(4, 'Cache', "Cache cleanup error: ${e?.message}")
+  }
+}
+
 // ------------------------------
 // List and Device Discovery Functions
 // ------------------------------
@@ -916,50 +1293,48 @@ BigDecimal maxCoolEfficiency = 0
     maxHeatEfficiency = maxHeatEfficiency.max(heatRate)
   }
 
-def builder = new StringBuilder()
-  builder << '''
-  <style>
-    .device-table { width: 100%; border-collapse: collapse; font-family: Arial, sans-serif; color: black; }
-    .device-table th, .device-table td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }
-    .device-table th { background-color: #f2f2f2; color: #333; }
-    .device-table tr:hover { background-color: #f5f5f5; }
-    .device-table a { color: #333; text-decoration: none; }
-    .device-table a:hover { color: #666; }
-    .device-table th:not(:first-child), .device-table td:not(:first-child) { text-align: center; }
-    .warning-message { color: darkorange; cursor: pointer; }
-    .danger-message { color: red; cursor: pointer; }
-  </style>
-  <table class="device-table">
-    <thead>
-      <tr>
-        <th>Device</th>
-        <th>Cooling Efficiency</th>
-        <th>Heating Efficiency</th>
-      </tr>
-    </thead>
-    <tbody>
-  '''
-
+  // Prepare table data
+  def headers = [
+    [text: 'Device', align: 'left'],
+    [text: 'Cooling Efficiency', align: 'center'],
+    [text: 'Heating Efficiency', align: 'center']
+  ]
+  
+  def rows = []
   vents.each { vent ->
     def coolRate = vent.currentValue('room-cooling-rate') ?: 0
     def heatRate = vent.currentValue('room-heating-rate') ?: 0
     def coolEfficiency = maxCoolEfficiency > 0 ? roundBigDecimal((coolRate / maxCoolEfficiency) * 100, 0) : 0
     def heatEfficiency = maxHeatEfficiency > 0 ? roundBigDecimal((heatRate / maxHeatEfficiency) * 100, 0) : 0
-    def warnMsg = 'This vent is very inefficient, consider installing an HVAC booster. Click for a recommendation.'
-
+    def warnMsg = 'This vent is very inefficient, consider installing an HVAC booster.'
+    
     def coolClass = coolEfficiency <= 25 ? 'danger-message' : (coolEfficiency <= 45 ? 'warning-message' : '')
     def heatClass = heatEfficiency <= 25 ? 'danger-message' : (heatEfficiency <= 45 ? 'warning-message' : '')
-
-    def coolHtml = coolEfficiency <= 45 ? "<span class='${coolClass}' onclick=\"window.open('${acBoosterLink}');\" title='${warnMsg}'>${coolEfficiency}%</span>" : "${coolEfficiency}%"
-    def heatHtml = heatEfficiency <= 45 ? "<span class='${heatClass}' onclick=\"window.open('${acBoosterLink}');\" title='${warnMsg}'>${heatEfficiency}%</span>" : "${heatEfficiency}%"
-
-    builder << "<tr><td><a href='/device/edit/${vent.getId()}'>${vent.getLabel()}</a></td><td>${coolHtml}</td><td>${heatHtml}</td></tr>"
+    
+    def coolHtml = coolEfficiency <= 45 ? 
+      "<span class='${coolClass}' data-href='${acBoosterLink}' title='${warnMsg}' role='button' tabindex='0'>${coolEfficiency}%</span>" : 
+      "${coolEfficiency}%"
+    def heatHtml = heatEfficiency <= 45 ? 
+      "<span class='${heatClass}' data-href='${acBoosterLink}' title='${warnMsg}' role='button' tabindex='0'>${heatEfficiency}%</span>" : 
+      "${heatEfficiency}%"
+    
+    rows << [
+      "<a href='/device/edit/${vent.getId()}'>${vent.getLabel()}</a>",
+      coolHtml,
+      heatHtml
+    ]
   }
-  builder << '</tbody></table>'
+
+  def tableHtml = generateHtmlTable([
+    tableClass: 'device-table',
+    headers: headers,
+    rows: rows,
+    title: 'Discovered Devices'
+  ])
 
   section {
-    paragraph 'Discovered devices:'
-    paragraph builder.toString()
+    paragraph getConsolidatedCSS()
+    paragraph tableHtml
   }
 }
 
@@ -1010,6 +1385,9 @@ def initialize() {
 
   // Ensure required DAB tracking structures exist
   initializeDabTracking()
+  
+  // Schedule cache cleanup
+  runEvery30Minutes('cleanupExpiredCaches')
 
   // Check if we need to auto-authenticate on startup
   if (settings?.clientId && settings?.clientSecret) {
