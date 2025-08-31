@@ -23,8 +23,9 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.net.URLEncoder
 
-#include yourns.dab.DabManager
-#include yourns.dab.DabUIManager
+// Include Hubitat Libraries (installed in "Libraries" section)
+library "bot.flair.DabManager", "0.240.0"
+library "bot.flair.DabUIManager", "0.240.0"
 
 // ------------------------------
 // Constants and Configuration
@@ -37,17 +38,15 @@ import java.net.URLEncoder
 @Field static final Long ROOM_CACHE_DURATION_MS = 30000 // 30 second cache duration
 @Field static final Long DEVICE_CACHE_DURATION_MS = 30000 // 30 second cache duration for device readings
 @Field static final Integer MAX_CACHE_SIZE = 50 // Maximum cache entries per instance
-\n=======
+
 // DEFAULT_HISTORY_RETENTION_DAYS is provided by DabManager library
-\n@Field static final Integer DAILY_SUMMARY_PAGE_SIZE = 30 // Entries per page for daily summary
+@Field static final Integer DAILY_SUMMARY_PAGE_SIZE = 30 // Entries per page for daily summary
 
 // Content-Type header for API requests.
 @Field static final String CONTENT_TYPE = 'application/json'
 
 // HVAC mode constants.
-\n=======
 // COOLING/HEATING are provided by DabManager library
-\n
 // Pending HVAC mode values returned by the thermostat.
 @Field static final String PENDING_COOL = 'pending cool'
 @Field static final String PENDING_HEAT = 'pending heat'
@@ -59,18 +58,18 @@ import java.net.URLEncoder
 @Field static final BigDecimal MIN_PERCENTAGE_OPEN = 0.0
 @Field static final BigDecimal MAX_PERCENTAGE_OPEN = 100.0
 
-\n// Maximum number of standard (non-Flair) vents allowed.
+// Maximum number of standard (non-Flair) vents allowed.
 
-\n// Threshold (in 캜) used to trigger a pre-adjustment of vent settings before the setpoint is reached.
+// Threshold (in 째C) used to trigger a pre-adjustment of vent settings before the setpoint is reached.
 // VENT_PRE_ADJUST_THRESHOLD provided by DabManager library
 
 // HVAC timing constants.
 // MAX/MIN_MINUTES_TO_SETPOINT provided by DabManager library
 
-// Temperature offset (in 캜) applied to thermostat setpoints.
+// Temperature offset (in 째C) applied to thermostat setpoints.
 // SETPOINT_OFFSET provided by DabManager library
 
-// Acceptable temperature change rate limits (in 캜 per minute).
+// Acceptable temperature change rate limits (in 째C per minute).
 // MAX/MIN_TEMP_CHANGE_RATE provided by DabManager library
 
 // Temperature sensor accuracy and noise filtering
@@ -92,7 +91,7 @@ import java.net.URLEncoder
 
 // Maximum iterations for the while-loop when adjusting vent openings.
 // MAX_ITERATIONS provided by DabManager library
-\n// Quick controls verification timing
+// Quick controls verification timing
 @Field static final Integer VENT_VERIFY_DELAY_MS = 5000
 @Field static final Integer MAX_VENT_VERIFY_ATTEMPTS = 3
 
@@ -102,25 +101,23 @@ import java.net.URLEncoder
 // Default opening percentage for standard (non-Flair) vents (in %).
 @Field static final Integer STANDARD_VENT_DEFAULT_OPEN = 50
 
-\n// Thermostat hysteresis to prevent cycling (in 캜).
+// Thermostat hysteresis to prevent cycling (in 째C).
 
-\n// Temperature tolerance for rebalancing vent operations (in 캜).
+// Temperature tolerance for rebalancing vent operations (in 째C).
 // REBALANCING_TOLERANCE provided by DabManager library
 
-// Temperature boundary adjustment for airflow calculations (in 캜).
+// Temperature boundary adjustment for airflow calculations (in 째C).
 // TEMP_BOUNDARY_ADJUSTMENT provided by DabManager library
-
-
 // Thermostat hysteresis to prevent cycling (in C).
 @Field static final BigDecimal THERMOSTAT_HYSTERESIS = 0.6  // ~1F
 
-// Thermostat hysteresis to prevent cycling (in 캜).
+// Thermostat hysteresis to prevent cycling (in 째C).
 
-// Minimum average difference between duct and room temperature (in 캜)
+// Minimum average difference between duct and room temperature (in 째C)
 // required to determine that the HVAC system is actively heating or cooling.
 // DUCT_TEMP_DIFF_THRESHOLD provided by DabManager library
 
-\n// Polling intervals based on HVAC state (in minutes).
+// Polling intervals based on HVAC state (in minutes).
 @Field static final Integer POLLING_INTERVAL_ACTIVE = 3     // When HVAC is running
 @Field static final Integer POLLING_INTERVAL_IDLE = 10      // When HVAC is idle
 
@@ -146,14 +143,13 @@ import java.net.URLEncoder
 // End Constants
 // ------------------------------
 
-\n=======
 // Adaptive DAB seeding defaults (for abrupt condition changes)
 // ADAPTIVE_* provided by DabManager library
 
 // Raw data cache defaults and fallbacks
 // RAW_CACHE_* and DEFAULT_*_SETPOINT_C provided by DabManager library
 
-\ndefinition(
+definition(
     name: 'Flair Vents',
     namespace: 'bot.flair',
     author: 'Jaime Botero',
@@ -277,7 +273,7 @@ def cur = atomicState?.thermostat1State?.mode ?: (atomicState?.hvacCurrentMode ?
         section('Thermostat & Globals') {
           input name: 'thermostat1', type: 'capability.thermostat', title: 'Optional: Thermostat for global setpoint', multiple: false, required: false
         input name: 'thermostat1TempUnit', type: 'enum', title: 'Units used by Thermostat', defaultValue: 2,
-                options: [1: 'Celsius (캜)', 2: 'Fahrenheit (캟)']
+                options: [1: 'Celsius (째C)', 2: 'Fahrenheit (째F)']
           input name: 'thermostat1AdditionalStandardVents', type: 'number', title: 'Count of conventional Vents', defaultValue: 0, submitOnChange: true
           paragraph '<small>Enter the total number of standard (non-Flair) adjustable vents in the home associated ' +
                     'with the chosen thermostat, excluding Flair vents. This ensures the combined airflow does not drop ' +
@@ -1346,7 +1342,7 @@ def refreshVentTiles() {
         def pct = v.currentValue('percent-open') ?: v.currentValue('level') ?: 0
         def tC = v.currentValue('room-current-temperature-c')
         def tF = (tC != null) ? (((tC as BigDecimal) * 9/5) + 32) : null
-        String html = "<div style='font-family:sans-serif'><b>${name}</b>: ${pct}%" + (tF != null ? " | ${((tF as BigDecimal) * 10).round() / 10} 캟" : '') + "</div>"
+        String html = "<div style='font-family:sans-serif'><b>${name}</b>: ${pct}%" + (tF != null ? " | ${((tF as BigDecimal) * 10).round() / 10} &deg;F" : '') + "</div>"
         sendEvent(tile, [name: 'html', value: html])
         sendEvent(tile, [name: 'level', value: (pct as int)])
       } catch (ignored) { }
@@ -1434,13 +1430,13 @@ private BigDecimal getRoomTemp(def vent) {
       log(2, 'App', "WARNING: Temperature device ${tempDevice?.getLabel() ?: 'Unknown'} for room '${roomName}' is not reporting temperature!")
       // Fall back to room temperature
       def roomTemp = vent.currentValue('room-current-temperature-c') ?: 0
-      log(2, 'App', "Falling back to room temperature for '${roomName}': ${roomTemp}캜")
+      log(2, 'App', "Falling back to room temperature for '${roomName}': ${roomTemp}째C")
       return roomTemp
     }
       if (settings.thermostat1TempUnit == '2') {
       temp = convertFahrenheitToCentigrade(temp)
     }
-    log(2, 'App', "Got temp from ${tempDevice?.getLabel() ?: 'Unknown'} for '${roomName}': ${temp}캜")
+    log(2, 'App', "Got temp from ${tempDevice?.getLabel() ?: 'Unknown'} for '${roomName}': ${temp}째C")
     return temp
   }
 
@@ -1449,7 +1445,7 @@ def roomTemp = vent.currentValue('room-current-temperature-c')
     log(2, 'App', "ERROR: No temperature available for room '${roomName}' - neither from Puck nor from room API!")
     return 0
   }
-  log(2, 'App', "Using room temperature for '${roomName}': ${roomTemp}캜")
+  log(2, 'App', "Using room temperature for '${roomName}': ${roomTemp}째C")
   return roomTemp
 }
 def atomicStateUpdate(String stateKey, String key, value) {
@@ -1584,11 +1580,11 @@ def calculateHvacMode(BigDecimal temp, BigDecimal coolingSetpoint, BigDecimal he
     }
   } catch (ignore) { }
   return calculateHvacModeRobust()
-}// Robust HVAC mode detection using median duct-room temperature difference
+}
+// Robust HVAC mode detection using median duct-room temperature difference
 // with thermostat operating state as a fallback.
-\n=======
 // calculateHvacModeRobust is provided by DabManager library
-\n
+
 def resetApiConnection() {
   logWarn 'Resetting API connection'
   atomicState.failureCounts = [:]
@@ -2294,8 +2290,8 @@ def respJson = resp.getJson()
     if (puckData?.attributes?.'current-temperature-c' != null) {
       def tempC = puckData.attributes['current-temperature-c']
       def tempF = (tempC * 9/5) + 32
-      sendEvent(data.device, [name: 'temperature', value: tempF, unit: '캟'])
-      log(2, 'App', "Puck temperature: ${tempF}캟")
+      sendEvent(data.device, [name: 'temperature', value: tempF, unit: '째F'])
+      log(2, 'App', "Puck temperature: ${tempF}째F")
     }
       if (puckData?.attributes?.'current-humidity' != null) {
       sendEvent(data.device, [name: 'humidity', value: puckData.attributes['current-humidity'], unit: '%'])
@@ -2352,8 +2348,8 @@ def respJson = resp.getJson()
     if (reading.attributes?.'room-temperature-c' != null) {
       def tempC = reading.attributes['room-temperature-c']
       def tempF = (tempC * 9/5) + 32
-      sendEvent(data.device, [name: 'temperature', value: tempF, unit: '캟'])
-      log(2, 'App', "Puck temperature from reading: ${tempF}캟")
+      sendEvent(data.device, [name: 'temperature', value: tempF, unit: '째F'])
+      log(2, 'App', "Puck temperature from reading: ${tempF}째F")
     }
       if (reading.attributes?.humidity != null) {
       sendEvent(data.device, [name: 'humidity', value: reading.attributes.humidity, unit: '%'])
@@ -2762,7 +2758,7 @@ BigDecimal tempC = temp
   if (getTemperatureScale() == 'F') {
     tempC = convertFahrenheitToCentigrade(tempC)
   }
-  log(3, 'App', "Setting set-point to ${tempC}캜 for '${device.currentValue('room-name')}'")
+  log(3, 'App', "Setting set-point to ${tempC}째C for '${device.currentValue('room-name')}'")
   def uri = "${BASE_URL}/api/rooms/${roomId}"
   def body = [ data: [ type: 'rooms', attributes: [ 'set-point-c': tempC ] ] ]
   patchDataAsync(uri, 'handleRoomSetPointPatch', body, [device: device])
@@ -2788,13 +2784,13 @@ def thermostat1ChangeTemp(evt) {
   
   if (tempDiff >= THERMOSTAT_HYSTERESIS) {
     atomicState.lastSignificantTemp = temp
-    log(2, 'App', "Significant temperature change detected: ${tempDiff}캜 (threshold: ${THERMOSTAT_HYSTERESIS}캜)")
+    log(2, 'App', "Significant temperature change detected: ${tempDiff}째C (threshold: ${THERMOSTAT_HYSTERESIS}째C)")
     
     if (isThermostatAboutToChangeState(hvacMode, thermostatSetpoint, temp)) {
       runInMillis(INITIALIZATION_DELAY_MS, 'initializeRoomStates', [data: hvacMode])
     }
   } else {
-    log(3, 'App', "Temperature change ${tempDiff}캜 is below hysteresis threshold ${THERMOSTAT_HYSTERESIS}캜 - ignoring")
+    log(3, 'App', "Temperature change ${tempDiff}째C is below hysteresis threshold ${THERMOSTAT_HYSTERESIS}째C - ignoring")
   }
 }
 
@@ -2861,13 +2857,13 @@ def thermostat1ChangeStateHandler(evt) {
       updateDevicePollingInterval((settings?.pollingIntervalIdle ?: POLLING_INTERVAL_IDLE) as Integer)
       break
   }
-}// Periodically evaluate duct temperatures to determine HVAC state
+}
+// Periodically evaluate duct temperatures to determine HVAC state
 // without relying on an external thermostat.
-\n=======
 // updateHvacStateFromDuctTemps is provided by DabManager library
 
 // reBalanceVents and evaluateRebalancingVents are provided by DabManager library
-\n// Retrieve all stored rates for a specific room, HVAC mode, and hour
+// Retrieve all stored rates for a specific room, HVAC mode, and hour
 def getHourlyRates(String roomId, String hvacMode, Integer hour) {
   initializeDabHistory()
   def hist = atomicState?.dabHistory
@@ -2957,8 +2953,9 @@ def devSorted = deviations.sort()
     }
   } catch (ignore) { }
   return decision
-}// Ensure DAB history structures are present and normalize legacy formats
-\ndef initializeDabHistory() {
+}
+// Ensure DAB history structures are present and normalize legacy formats
+def initializeDabHistory() {
   try {
     def hist = atomicState?.dabHistory
     if (!(hist instanceof Map)) {
@@ -2999,10 +2996,10 @@ def exportEfficiencyData() {
   } catch (ignored) { return [:] }
 }
 // Build and cache the DAB progress table
-\n// initializeDabHistory is provided by DabManager library
+// initializeDabHistory is provided by DabManager library
 // Async-friendly wrapper to generate and cache the rates table HTML
 // buildDabRatesTable(Map data) is provided by DabUIManager library
-\nString buildDabProgressTable() {
+String buildDabProgressTable() {
   initializeDabHistory()
   def history = atomicState?.dabHistory ?: []
   def entries = (history instanceof List) ? history : (history?.entries ?: [])
@@ -3246,8 +3243,6 @@ int start = (page - 1) * DAILY_SUMMARY_PAGE_SIZE
 }// ------------------------------
 // End of Core Functions
 // ------------------------------
-
-
 // ------------------------------
 // HTTP Async Callback Shims
 // ------------------------------
@@ -3285,9 +3280,9 @@ def tempF = fmt1(toF(tempC))
         def roomKey = roomId.replaceAll('[^A-Za-z0-9_]', '_')
         state.qcDeviceMap[vidKey] = vid
         state.qcRoomMap[roomKey] = roomId
-        paragraph "<b>${roomName}</b> - Vent: ${cur}% | Temp: ${tempF} 캟 | Setpoint: ${setpF} 캟 | Active: ${active ?: 'false'}" + (batt ? " | Battery: ${batt}%" : "") + (upd ? " | Updated: ${upd}" : "")
+        paragraph "<b>${roomName}</b> - Vent: ${cur}% | Temp: ${tempF} 째F | Setpoint: ${setpF} 째F | Active: ${active ?: 'false'}" + (batt ? " | Battery: ${batt}%" : "") + (upd ? " | Updated: ${upd}" : "")
         input name: "qc_${vidKey}_percent", type: 'number', title: 'Set vent percent', required: false, submitOnChange: false
-        input name: "qc_room_${roomKey}_setpoint", type: 'number', title: 'Set room setpoint (캟)', required: false, submitOnChange: false
+        input name: "qc_room_${roomKey}_setpoint", type: 'number', title: 'Set room setpoint (째F)', required: false, submitOnChange: false
         input name: "qc_room_${roomKey}_active", type: 'enum', title: 'Set room active', options: ['true','false'], required: false, submitOnChange: false
       }
       input name: 'applyQuickControlsNow', type: 'button', title: 'Apply All Changes', submitOnChange: true
@@ -3483,10 +3478,10 @@ def ar = atomicState?.activeRequests ?: 0
     try { logWarn("Health monitor error: ${e?.message}", 'DAB') } catch (ignore) { }
   }
 }
-\n=======
+
 // DAB Live Diagnostics page to run a one-off calculation and display details
 // dabLiveDiagnosticsPage is provided by DabUIManager library
-\n// Execute a live diagnostic pass of DAB calculations without changing device state
+// Execute a live diagnostic pass of DAB calculations without changing device state
 void runDabDiagnosticLocal() {
   def results = [:]
 
@@ -3589,7 +3584,8 @@ def asyncHttpCallback(response, Map data) {
     decrementActiveRequests()
   }
 }
-\n// DAB efficiency helpers
+
+// DAB efficiency helpers
 def handleExportEfficiencyData() {
   try {
     def data = exportEfficiencyData()
@@ -3601,7 +3597,7 @@ def handleExportEfficiencyData() {
   }
 }
 
-\ndef handleClearExportData() {
+def handleClearExportData() {
   try {
     state.remove('exportJsonData')
     state.exportStatus = 'Cleared'
@@ -3610,7 +3606,7 @@ def handleExportEfficiencyData() {
 
 // Async builder wrappers used by UI pages
 
-\n// handleImportEfficiencyData is provided by DabUIManager library
+// handleImportEfficiencyData is provided by DabUIManager library
 // Optional export/clear handlers are omitted in app; rely on library pages
 // DAB lifecycle wrappers to delegate logic to DabManager (ensure consistent runtime usage)
 // initializeRoomStates/finalizeRoomStates are provided by DabManager library
@@ -3632,15 +3628,4 @@ def handleExportEfficiencyData() {
 def buildDabRatesTableWrapper(Map data) { try { buildDabRatesTable(data) } catch (ignore) { } }
 
 def buildDabProgressTableWrapper(Map data) { try { buildDabProgressTable(data) } catch (ignore) { } }
-\n
-
-
-
-
-
-
-
-
-
-
 
