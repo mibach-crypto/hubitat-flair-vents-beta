@@ -134,7 +134,31 @@ import java.net.URLEncoder
 @Field static final Integer API_FAILURE_THRESHOLD = 3
 
 // ------------------------------
-// End Constants
+// Enhanced DAB Constants
+// ------------------------------
+
+// Anomaly Detection & Influence Dampening
+@Field static final BigDecimal ANOMALY_PERCENT_THRESHOLD = 0.40        // 40% threshold for anomaly detection
+@Field static final BigDecimal ANOMALY_MAD_MULTIPLIER = 2.5           // MAD multiplier for outlier detection
+@Field static final Integer MIN_SAMPLES_FOR_ANOMALY_CHECK = 4         // Minimum samples needed for anomaly check
+@Field static final Integer ANOMALY_DECAY_STEPS = 2                   // Steps for anomaly influence decay (1.0 -> 0.6 -> 0.3 -> expire)
+
+// Adaptive Vent Granularity
+@Field static final BigDecimal CV_LOW_THRESHOLD = 0.10                // Coefficient of variation threshold for fine control
+@Field static final BigDecimal CV_VERY_LOW_THRESHOLD = 0.05           // Very low CV threshold for ultra-fine control
+@Field static final BigDecimal INTERNAL_FINE_STEP = 0.02              // 2% internal fine step size
+
+// Rate Interpretation (Inverse Weight)
+@Field static final BigDecimal EPS_RATE = 0.0001                      // Epsilon to prevent division by zero
+
+// Change Dampening
+@Field static final BigDecimal MAX_PERCENT_CHANGE_PER_CYCLE = 25.0     // Maximum percent change per cycle (soft limiting)
+
+// HVAC State Tracking
+@Field static final BigDecimal DUCT_ROOM_DELTA_HYSTERESIS = 0.3       // Hysteresis for duct-room temperature delta
+
+// ------------------------------
+// End Enhanced DAB Constants  
 // ------------------------------
 
 // Adaptive DAB seeding defaults (for abrupt condition changes)
@@ -3129,50 +3153,158 @@ def thermostat1ChangeStateHandler(evt) {
 // Periodically evaluate duct temperatures to determine HVAC state
 // without relying on an external thermostat.
 def updateHvacStateFromDuctTemps() {
-  // Detection runs even if DAB is disabled; only DAB actions are gated by dabEnabled
+  // Enhanced puck-only HVAC cycle reliability with duct-room delta synthesis and hysteresis
   String previousMode = atomicState.thermostat1State?.mode ?: 'idle'
   String hvacMode = (calculateHvacModeRobust() ?: 'idle')
+  Long currentTime = now()
+  
+  // Track atomicState markers for enhanced reliability
+  try { atomicState.hvacCurrentMode = hvacMode } catch (ignore) { }
+  try { atomicState.hvacLastChangeTs = currentTime } catch (ignore) { }
+  
   if (hvacMode != previousMode) {
-    appendDabActivityLog("Start: ${previousMode} -> ${hvacMode}")
+    // Record HVAC state transition
+    recordDabEvent('HvacStateChange', [from: previousMode, to: hvacMode, timestamp: currentTime])
+    appendDabActivityLog("HVAC State: ${previousMode} -> ${hvacMode}")
+    
     try { atomicState.hvacLastMode = previousMode } catch (ignore) { }
-    try { atomicState.hvacCurrentMode = hvacMode } catch (ignore) { }
-    try { atomicState.hvacLastChangeTs = now() } catch (ignore) { }
+    
+    // Enhanced cycle start detection
+    if (hvacMode in [COOLING, HEATING] && previousMode == 'idle') {
+      try { 
+        atomicState.startedRunning = currentTime
+        atomicState.startedCycle = currentTime
+      } catch (ignore) { }
+      recordDabEvent('CycleStart', [mode: hvacMode, timestamp: currentTime])
+    }
+    
+    // Enhanced cycle end detection
+    if (hvacMode == 'idle' && previousMode in [COOLING, HEATING]) {
+      recordDabEvent('CycleEnd', [mode: previousMode, timestamp: currentTime])
+      // Finalize logic will be triggered below
+    }
   }
+  
   if (hvacMode in [COOLING, HEATING]) {
     if (!atomicState.thermostat1State || atomicState.thermostat1State?.mode != hvacMode) {
       atomicStateUpdate('thermostat1State', 'mode', hvacMode)
-      atomicStateUpdate('thermostat1State', 'startedRunning', now())
-      unschedule('initializeRoomStates')
-      runInMillis(POST_STATE_CHANGE_DELAY_MS, 'initializeRoomStates', [data: hvacMode])
-      recordStartingTemperatures()
-      runEvery5Minutes('evaluateRebalancingVents')
-      runEvery30Minutes('reBalanceVents')
+      atomicStateUpdate('thermostat1State', 'startedRunning', atomicState.startedRunning ?: currentTime)
+      atomicStateUpdate('thermostat1State', 'startedCycle', atomicState.startedCycle ?: currentTime)
+      
+      if (settings?.dabEnabled) {
+        unschedule('initializeRoomStates')
+        runInMillis(POST_STATE_CHANGE_DELAY_MS, 'initializeRoomStates', [data: hvacMode])
+        recordStartingTemperatures()
+        runEvery5Minutes('evaluateRebalancingVents')
+        runEvery30Minutes('reBalanceVents')
+      }
       updateDevicePollingInterval((settings?.pollingIntervalActive ?: POLLING_INTERVAL_ACTIVE) as Integer)
     }
   } else {
+    // Enhanced idle state handling with explicit reason logging
+    if (hvacMode == 'idle') {
+      logIdleReason()
+    }
+    
     if (atomicState.thermostat1State) {
       unschedule('initializeRoomStates')
       unschedule('finalizeRoomStates')
       unschedule('evaluateRebalancingVents')
       unschedule('reBalanceVents')
-      atomicStateUpdate('thermostat1State', 'finishedRunning', now())
+      
+      atomicStateUpdate('thermostat1State', 'finishedRunning', currentTime)
+      
+      // Ensure finalize logic triggers on mode transition events without thermostat
       if (settings?.dabEnabled) {
         def params = [
           ventIdsByRoomId: atomicState.ventsByRoomId,
           startedCycle: atomicState.thermostat1State?.startedCycle,
           startedRunning: atomicState.thermostat1State?.startedRunning,
-          finishedRunning: atomicState.thermostat1State?.finishedRunning,
+          finishedRunning: currentTime,
           hvacMode: atomicState.thermostat1State?.mode
         ]
         runInMillis(TEMP_READINGS_DELAY_MS, 'finalizeRoomStates', [data: params])
       }
       atomicState.remove('thermostat1State')
+      
+      // Clear cycle markers when going idle
+      try { 
+        atomicState.remove('startedRunning')
+        atomicState.remove('startedCycle')
+      } catch (ignore) { }
+      
       updateDevicePollingInterval((settings?.pollingIntervalIdle ?: POLLING_INTERVAL_IDLE) as Integer)
     }
   }
-  String currentMode = atomicState.thermostat1State?.mode ?: 'idle'
-  if (currentMode != previousMode) {
-    appendDabActivityLog("End: ${previousMode} -> ${currentMode}")
+}
+
+// Helper method to log explicit reason codes when remaining idle
+def logIdleReason() {
+  try {
+    def vents = getChildDevices()?.findAll {
+      it.currentValue('duct-temperature-c') != null &&
+      (it.currentValue('room-current-temperature-c') != null ||
+       it.currentValue('current-temperature-c') != null ||
+       it.currentValue('temperature') != null)
+    }
+    
+    if (!vents || vents.isEmpty()) {
+      log(3, 'DAB', 'Remaining idle: No vents with valid duct/room temperature readings')
+      return
+    }
+    
+    def diffs = []
+    vents.each { v ->
+      try {
+        BigDecimal duct = v.currentValue('duct-temperature-c') as BigDecimal
+        BigDecimal room = (v.currentValue('room-current-temperature-c') ?:
+                           v.currentValue('current-temperature-c') ?:
+                           v.currentValue('temperature')) as BigDecimal
+        diffs << (duct - room)
+      } catch (ignore) { }
+    }
+    
+    if (!diffs) {
+      log(3, 'DAB', 'Remaining idle: Unable to calculate temperature differences')
+      return
+    }
+    
+    def sorted = diffs.sort()
+    BigDecimal median = sorted[sorted.size().intdiv(2)] as BigDecimal
+    BigDecimal absMedian = median.abs()
+    
+    if (absMedian <= DUCT_TEMP_DIFF_THRESHOLD) {
+      log(3, 'DAB', "Remaining idle: Median duct-room delta (${median.round(2)}°C) within threshold (±${DUCT_TEMP_DIFF_THRESHOLD}°C)")
+    } else if (absMedian <= DUCT_ROOM_DELTA_HYSTERESIS) {
+      log(3, 'DAB', "Remaining idle: Median duct-room delta (${median.round(2)}°C) within hysteresis band")
+    } else {
+      log(3, 'DAB', "Remaining idle: Insufficient confidence in HVAC state despite delta (${median.round(2)}°C)")
+    }
+  } catch (Exception e) {
+    log(3, 'DAB', "Remaining idle: Error calculating reason - ${e.message}")
+  }
+}
+
+// Helper method to record DAB events for diagnostics
+def recordDabEvent(String eventType, Map data) {
+  try {
+    def events = atomicState.dabEvents ?: []
+    def event = [
+      type: eventType,
+      timestamp: data.timestamp ?: now(),
+      data: data
+    ]
+    events << event
+    
+    // Keep only last 50 events to prevent memory growth
+    if (events.size() > 50) {
+      events = events.takeRight(50)
+    }
+    
+    atomicState.dabEvents = events
+    log(4, 'DAB', "Recorded event: ${eventType} - ${data}")
+  } catch (Exception e) {
+    log(2, 'DAB', "Failed to record event ${eventType}: ${e.message}")
   }
 }
 
@@ -3505,42 +3637,319 @@ private void appendAdaptiveMark(String roomId, String hvacMode, Integer hour, Bi
 def appendHourlyRate(String roomId, String hvacMode, Integer hour, BigDecimal rate) {
   if (!roomId || !hvacMode || hour == null || rate == null) {
     recordHistoryError('Null value detected while appending hourly rate')
-    return
+    return null
   }
+  
   initializeDabHistory()
-  def hist = atomicState?.dabHistory
-  if (hist == null) { hist = [entries: [], hourlyRates: [:]] }
-  def hourly = (hist instanceof Map) ? (hist?.hourlyRates ?: [:]) : [:]
-  def room = hourly[roomId] ?: [:]
-  def mode = room[hvacMode] ?: [:]
-  Integer h = hour as Integer
-  def list = (mode[h] ?: []) as List
-  list << (rate as BigDecimal)
-  Integer retention = getRetentionDays()
-  if (list.size() > retention) {
-    list = list[-retention..-1]
+  def currentDate = new Date().format('yyyy-MM-dd', location?.timeZone ?: TimeZone.getTimeZone('UTC'))
+  def currentHour = hour as Integer
+  
+  // Handle hour-slot integrity & duplicate prevention
+  def result = handleHourSlotIntegrity(roomId, hvacMode, currentHour, currentDate, rate)
+  if (result.isDuplicate) {
+    log(3, 'DAB', "Updated existing sample for ${roomId}:${hvacMode}:${currentHour} on ${currentDate}")
+    return result.effectiveRate
   }
-  mode[h] = list
-  room[hvacMode] = mode
-  hourly[roomId] = room
-  try { hist.hourlyRates = hourly } catch (ignore) { }
-  // Also mirror into flat entries for union-based queries (CI/tests and progress page)
+  
+  // Get existing samples for this room/mode/hour
+  def samples = getHourlyRateSamples(roomId, hvacMode, currentHour)
+  
+  // Add new sample
+  samples << rate
+  
+  // Purge old samples beyond retention
+  samples = purgeOldSamples(samples, roomId, hvacMode, currentHour)
+  
+  // Calculate arithmetic mean and metadata
+  def metadata = calculateArithmeticMeanWithMetadata(samples, roomId, hvacMode, currentHour, rate)
+  
+  // Apply carry-forward logic if needed
+  if (metadata.samplesCount == 0) {
+    metadata = applyCarryForwardLogic(roomId, hvacMode, currentHour, metadata)
+  }
+  
+  // Store samples and metadata
+  storeHourlyRateSamples(roomId, hvacMode, currentHour, samples)
+  storeHourlyRateMetadata(roomId, hvacMode, currentHour, metadata)
+  
+  // Also maintain flat entries for compatibility
+  maintainFlatEntries(roomId, hvacMode, currentHour, rate)
+  
+  // Log HourCommit event
+  recordDabEvent('HourCommit', [
+    room: roomId,
+    mode: hvacMode, 
+    hour: currentHour,
+    rate: rate,
+    effectiveRate: metadata.effectiveRate,
+    samplesCount: metadata.samplesCount,
+    anomalyFlag: metadata.anomalyFlag,
+    carryForwardUsed: metadata.carryForwardUsed
+  ])
+  
+  log(3, 'DAB', "HourCommit ${roomId}:${hvacMode}:${currentHour} samples=${metadata.samplesCount} effective=${metadata.effectiveRate.round(4)} anomaly=${metadata.anomalyFlag} carryForward=${metadata.carryForwardUsed}")
+  
+  return metadata.effectiveRate
+}
+
+// Helper method to handle hour-slot integrity and prevent duplicates within same cycle
+def handleHourSlotIntegrity(String roomId, String hvacMode, Integer hour, String currentDate, BigDecimal rate) {
   try {
+    def samples = atomicState.dabSamples ?: [:]
+    def roomKey = "${roomId}:${hvacMode}:${hour}"
+    def hourSamples = samples[roomKey] ?: []
+    
+    // Check for duplicate entry for same date/hour/mode within same cycle
+    def existingIndex = hourSamples.findIndexOf { sample ->
+      sample.date == currentDate && sample.hour == hour && sample.mode == hvacMode
+    }
+    
+    if (existingIndex >= 0) {
+      // Update existing entry instead of adding duplicate
+      hourSamples[existingIndex].rate = rate
+      hourSamples[existingIndex].timestamp = now()
+      samples[roomKey] = hourSamples
+      atomicState.dabSamples = samples
+      
+      // Recalculate effective rate
+      def rates = hourSamples.collect { it.rate as BigDecimal }
+      def effectiveRate = rates ? rates.sum() / rates.size() : 0.0
+      return [isDuplicate: true, effectiveRate: effectiveRate]
+    }
+    
+    return [isDuplicate: false, effectiveRate: null]
+  } catch (Exception e) {
+    log(2, 'DAB', "Error in handleHourSlotIntegrity: ${e.message}")
+    return [isDuplicate: false, effectiveRate: null]
+  }
+}
+
+// Get hourly rate samples for a specific room/mode/hour
+def getHourlyRateSamples(String roomId, String hvacMode, Integer hour) {
+  try {
+    def samples = atomicState.dabSamples ?: [:]
+    def roomKey = "${roomId}:${hvacMode}:${hour}"
+    return (samples[roomKey] ?: []).collect { it.rate as BigDecimal }
+  } catch (Exception e) {
+    log(2, 'DAB', "Error getting hourly rate samples: ${e.message}")
+    return []
+  }
+}
+
+// Purge old samples beyond retention
+def purgeOldSamples(List samples, String roomId, String hvacMode, Integer hour) {
+  try {
+    Integer retention = getRetentionDays()
+    if (samples.size() > retention) {
+      def purged = samples.size() - retention
+      samples = samples.takeRight(retention)
+      log(3, 'DAB', "Purged ${purged} old samples for ${roomId}:${hvacMode}:${hour}")
+    }
+    return samples
+  } catch (Exception e) {
+    log(2, 'DAB', "Error purging old samples: ${e.message}")
+    return samples
+  }
+}
+
+// Calculate arithmetic mean with metadata including anomaly detection
+def calculateArithmeticMeanWithMetadata(List samples, String roomId, String hvacMode, Integer hour, BigDecimal newRate) {
+  def metadata = [
+    rawAvg: 0.0,
+    effectiveRate: 0.0,
+    samplesCount: samples.size(),
+    carryForwardUsed: false,
+    anomalyFlag: false
+  ]
+  
+  if (samples.isEmpty()) {
+    return metadata
+  }
+  
+  // Calculate raw arithmetic mean
+  BigDecimal sum = samples.sum() as BigDecimal
+  BigDecimal rawAvg = sum / samples.size()
+  metadata.rawAvg = rawAvg
+  
+  // Detect anomaly for the new rate
+  def anomalyResult = detectAnomaly(samples, newRate)
+  metadata.anomalyFlag = anomalyResult.isAnomaly
+  
+  // Apply anomaly influence dampening if anomaly detected
+  BigDecimal effectiveRate = rawAvg
+  if (anomalyResult.isAnomaly) {
+    BigDecimal anomalyFactor = getAnomalyFactor(roomId, hour)
+    // Weight the new rate contribution based on anomaly factor
+    BigDecimal adjustedNewRate = newRate * anomalyFactor + rawAvg * (1.0 - anomalyFactor)
+    // Recalculate effective rate with adjusted contribution
+    BigDecimal adjustedSum = sum - newRate + adjustedNewRate
+    effectiveRate = adjustedSum / samples.size()
+    
+    log(3, 'DAB', "Anomaly detected for ${roomId}:${hvacMode}:${hour} rate=${newRate} factor=${anomalyFactor} adjusted=${effectiveRate}")
+    recordDabEvent('Anomaly', [room: roomId, mode: hvacMode, hour: hour, rate: newRate, factor: anomalyFactor])
+  }
+  
+  metadata.effectiveRate = effectiveRate
+  return metadata
+}
+
+// Anomaly detection using MAD (Median Absolute Deviation)
+def detectAnomaly(List samples, BigDecimal candidate) {
+  if (samples.size() < MIN_SAMPLES_FOR_ANOMALY_CHECK) {
+    return [isAnomaly: false, mad: 0.0, median: 0.0]
+  }
+  
+  def sorted = samples.collect { it as BigDecimal }.sort()
+  BigDecimal median = sorted[sorted.size().intdiv(2)]
+  
+  // Calculate MAD
+  def deviations = sorted.collect { (it - median).abs() }
+  def devSorted = deviations.sort()
+  BigDecimal mad = devSorted[devSorted.size().intdiv(2)]
+  
+  // Check if candidate is anomaly
+  BigDecimal candidateDeviation = (candidate - median).abs()
+  BigDecimal threshold = mad * ANOMALY_MAD_MULTIPLIER
+  
+  boolean isAnomaly = false
+  if (mad > 0.0 && candidateDeviation > threshold) {
+    BigDecimal percentDeviation = candidateDeviation / median
+    if (percentDeviation > ANOMALY_PERCENT_THRESHOLD) {
+      isAnomaly = true
+    }
+  }
+  
+  return [isAnomaly: isAnomaly, mad: mad, median: median]
+}
+
+// Get anomaly influence factor with decay
+def getAnomalyFactor(String roomId, Integer hour) {
+  try {
+    def anomalyInfluence = atomicState.anomalyInfluence ?: [:]
+    def key = "${roomId}:${hour}"
+    def influence = anomalyInfluence[key] ?: [factor: 1.0, steps: 0]
+    
+    // Decay the influence over time
+    if (influence.steps >= ANOMALY_DECAY_STEPS) {
+      anomalyInfluence.remove(key)
+      atomicState.anomalyInfluence = anomalyInfluence
+      return 1.0
+    } else {
+      // Calculate current factor: 1.0 -> 0.6 -> 0.3
+      BigDecimal currentFactor = 1.0 - (influence.steps * 0.4)
+      if (currentFactor < 0.3) currentFactor = 0.3
+      
+      // Update for next time
+      influence.steps += 1
+      influence.factor = currentFactor
+      anomalyInfluence[key] = influence
+      atomicState.anomalyInfluence = anomalyInfluence
+      
+      return currentFactor
+    }
+  } catch (Exception e) {
+    log(2, 'DAB', "Error getting anomaly factor: ${e.message}")
+    return 1.0
+  }
+}
+
+// Apply carry-forward logic when zero samples
+def applyCarryForwardLogic(String roomId, String hvacMode, Integer hour, Map metadata) {
+  try {
+    // Try to get previous hour's effective rate
+    Integer previousHour = (hour - 1 + 24) % 24
+    BigDecimal carryForwardRate = getPreviousHourEffectiveRate(roomId, hvacMode, previousHour)
+    
+    if (carryForwardRate == null || carryForwardRate == 0.0) {
+      carryForwardRate = MIN_TEMP_CHANGE_RATE
+    }
+    
+    metadata.effectiveRate = carryForwardRate
+    metadata.carryForwardUsed = true
+    
+    recordDabEvent('CarryForward', [room: roomId, mode: hvacMode, hour: hour, rate: carryForwardRate])
+    log(3, 'DAB', "CarryForward ${roomId}:${hvacMode}:${hour} rate=${carryForwardRate}")
+    
+    return metadata
+  } catch (Exception e) {
+    log(2, 'DAB', "Error in carry-forward logic: ${e.message}")
+    metadata.effectiveRate = MIN_TEMP_CHANGE_RATE
+    return metadata
+  }
+}
+
+// Get previous hour's effective rate
+def getPreviousHourEffectiveRate(String roomId, String hvacMode, Integer hour) {
+  try {
+    def metadata = atomicState.dabMetadata ?: [:]
+    def key = "${roomId}:${hvacMode}:${hour}"
+    return metadata[key]?.effectiveRate ?: null
+  } catch (Exception e) {
+    return null
+  }
+}
+
+// Store hourly rate samples
+def storeHourlyRateSamples(String roomId, String hvacMode, Integer hour, List samples) {
+  try {
+    def allSamples = atomicState.dabSamples ?: [:]
+    def roomKey = "${roomId}:${hvacMode}:${hour}"
+    
+    def sampleData = samples.collect { rate ->
+      [
+        rate: rate,
+        date: new Date().format('yyyy-MM-dd', location?.timeZone ?: TimeZone.getTimeZone('UTC')),
+        hour: hour,
+        mode: hvacMode,
+        timestamp: now()
+      ]
+    }
+    
+    allSamples[roomKey] = sampleData
+    atomicState.dabSamples = allSamples
+  } catch (Exception e) {
+    log(2, 'DAB', "Error storing hourly rate samples: ${e.message}")
+  }
+}
+
+// Store hourly rate metadata
+def storeHourlyRateMetadata(String roomId, String hvacMode, Integer hour, Map metadata) {
+  try {
+    def allMetadata = atomicState.dabMetadata ?: [:]
+    def key = "${roomId}:${hvacMode}:${hour}"
+    allMetadata[key] = metadata
+    atomicState.dabMetadata = allMetadata
+  } catch (Exception e) {
+    log(2, 'DAB', "Error storing hourly rate metadata: ${e.message}")
+  }
+}
+
+// Maintain flat entries for compatibility
+def maintainFlatEntries(String roomId, String hvacMode, Integer hour, BigDecimal rate) {
+  try {
+    def hist = atomicState?.dabHistory
+    if (hist == null) { hist = [entries: [], hourlyRates: [:]] }
+    
     def entries = (hist instanceof List) ? (hist as List) : (hist.entries ?: [])
     Long ts = now()
-    entries << [ts, roomId, hvacMode, h, (rate as BigDecimal)]
+    entries << [ts, roomId, hvacMode, hour as Integer, rate]
+    
+    // Purge old entries
+    Integer retention = getRetentionDays()
     Long cutoff = ts - retention * 24L * 60L * 60L * 1000L
     entries = entries.findAll { e ->
       try { return (e[0] as Long) >= cutoff } catch (ignore) { return false }
     }
+    
     if (hist instanceof List) {
       atomicState.dabHistory = entries
     } else {
       try { hist.entries = entries } catch (ignore) { }
+      atomicState.dabHistory = hist
     }
-  } catch (ignore) { }
-  atomicState.dabHistory = hist
-  atomicState.lastHvacMode = hvacMode
+  } catch (Exception e) {
+    log(2, 'DAB', "Error maintaining flat entries: ${e.message}")
+  }
 }
 
 def appendDabHistory(String roomId, String hvacMode, Integer hour, BigDecimal rate) {
