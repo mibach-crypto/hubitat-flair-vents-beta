@@ -36,6 +36,7 @@ import java.net.URLEncoder
 @Field static final Integer MAX_CACHE_SIZE = 50 // Maximum cache entries per instance
 @Field static final Integer DEFAULT_HISTORY_RETENTION_DAYS = 10 // Default days to retain DAB history
 @Field static final Integer DAILY_SUMMARY_PAGE_SIZE = 30 // Entries per page for daily summary
+@Field static final Long LOG_RATE_LIMIT_MS = 5000 // Min ms between identical log entries
 
 // Content-Type header for API requests.
 @Field static final String CONTENT_TYPE = 'application/json'
@@ -260,6 +261,14 @@ def mainPage() {
         def tz = location?.timeZone ?: TimeZone.getTimeZone('UTC')
         def tsStr = ts ? new Date(ts as Long).format('yyyy-MM-dd HH:mm:ss', tz) : '-'
         paragraph "Current: <b>${cur}</b> | Last: <b>${last}</b> | Changed: <b>${tsStr}</b>"
+        def cycles = atomicState?.coolingCycleCount ?: 0
+        paragraph "Cooling cycles: <b>${cycles}</b>"
+        input name: 'resetCoolingCycles', type: 'button', title: 'Reset Cooling Cycle Counter', submitOnChange: true
+        if (settings?.resetCoolingCycles) {
+          atomicState.coolingCycleCount = 0
+          app.updateSetting('resetCoolingCycles', null)
+          paragraph "<span style='color: green;'>&#10003; Counter reset</span>"
+        }
       }
       // Fast access to Quick Controls at the top
       section('\u26A1 Quick Controls') {
@@ -549,6 +558,26 @@ def diagnosticsPage() {
         paragraph 'No recent errors.'
       }
     }
+    section('Data Health Checks') {
+      def issues = getDataIssues()
+      if (issues) {
+        issues.each { paragraph "<span style='color:red;'>${it}</span>" }
+      } else {
+        paragraph "<span style='color:green;'>No data issues detected.</span>"
+      }
+    }
+    section('Last Command Error') {
+      def err = state.lastCommandError
+      if (err) {
+        paragraph "<b>${err.action}</b>: ${err.message}"
+        if (err.suggestion) { paragraph "<small>${err.suggestion}</small>" }
+      } else {
+        paragraph 'No command errors recorded.'
+      }
+    }
+    section('Exports') {
+      href name: 'exportLogsPage', title: 'Export Diagnostics', description: 'View logs and errors', page: 'exportLogsPage'
+    }
     section('Decision Trace (last 60)') {
       def decisions = state.recentVentDecisions ?: []
       if (decisions) {
@@ -628,6 +657,23 @@ def diagnosticsPage() {
     section('Actions') {
       input name: 'reauthenticate', type: 'button', title: 'Re-Authenticate'
       input name: 'resyncVents', type: 'button', title: 'Re-Sync Vents'
+    }
+  }
+}
+
+def exportLogsPage() {
+  dynamicPage(name: 'exportLogsPage', title: 'Export Diagnostics', install: false, uninstall: false) {
+    section('Recent Logs') {
+      def logs = state.recentLogs ?: []
+      paragraph "<pre>${JsonOutput.toJson(logs)}</pre>"
+    }
+    section('Recent Errors') {
+      def errs = state.recentErrors ?: []
+      paragraph "<pre>${JsonOutput.toJson(errs)}</pre>"
+    }
+    section('Last Command Error') {
+      def err = state.lastCommandError ?: [:]
+      paragraph "<pre>${JsonOutput.toJson(err)}</pre>"
     }
   }
 }
@@ -1188,6 +1234,21 @@ void removeChildren() {
   children.each { if (it) deleteChildDevice(it.getDeviceNetworkId()) }
 }
 
+// Append log entry to recent log buffer with simple rate limiting
+private void appendRecentLog(int level, String module, String correlationId, String msg) {
+  def logs = state.recentLogs ?: []
+  def nowMs = now()
+  def last = logs ? logs[-1] : null
+  if (last && last.msg == msg && last.ms && (nowMs - (last.ms as Long)) < LOG_RATE_LIMIT_MS) {
+    return
+  }
+  def tz = location?.timeZone ?: TimeZone.getTimeZone('UTC')
+  def entry = [ts: new Date(nowMs).format("yyyy-MM-dd'T'HH:mm:ssZ", tz),
+               ms: nowMs, level: level, module: module, cid: correlationId, msg: msg]
+  logs << entry
+  state.recentLogs = logs.size() > 50 ? logs[-50..-1] : logs
+}
+
 // Only log messages if their level is greater than or equal to the debug level setting.
 private void log(int level, String module, String msg, String correlationId = null) {
   int settingsLevel = (settings?.debugLevel as Integer) ?: 0
@@ -1198,12 +1259,7 @@ private void log(int level, String module, String msg, String correlationId = nu
   boolean __verbose = false
   try { __verbose = (atomicState?.verboseLogging == true) } catch (ignore) { }
   if (__verbose) {
-    def tz = location?.timeZone ?: TimeZone.getTimeZone('UTC')
-    def entry = [ts: new Date().format("yyyy-MM-dd'T'HH:mm:ssZ", tz),
-                 level: level, module: module, cid: correlationId, msg: msg]
-    def logs = state.recentLogs ?: []
-    logs << entry
-    state.recentLogs = logs.size() > 50 ? logs[-50..-1] : logs
+    appendRecentLog(level, module, correlationId, msg)
   }
 }
 
@@ -1729,15 +1785,10 @@ private void logError(String msg, String module = 'App', String correlationId = 
   if (settingsLevel > 0) {
     String prefix = correlationId ? "[${module}|${correlationId}]" : "[${module}]"
     log.error "${prefix} ${msg}"
-  boolean __verbose = false
-  try { __verbose = (atomicState?.verboseLogging == true) } catch (ignore) { }
-  if (__verbose) {
-      def tz = location?.timeZone ?: TimeZone.getTimeZone('UTC')
-      def entry = [ts: new Date().format("yyyy-MM-dd'T'HH:mm:ssZ", tz),
-                   level: 0, module: module, cid: correlationId, msg: msg]
-      def logs = state.recentLogs ?: []
-      logs << entry
-      state.recentLogs = logs.size() > 50 ? logs[-50..-1] : logs
+    boolean __verbose = false
+    try { __verbose = (atomicState?.verboseLogging == true) } catch (ignore) { }
+    if (__verbose) {
+      appendRecentLog(0, module, correlationId, msg)
     }
   }
   def ts = new Date().format('yyyy-MM-dd HH:mm:ss', location.timeZone ?: TimeZone.getTimeZone('UTC'))
@@ -1757,14 +1808,36 @@ private void logWarn(String msg, String module = 'App', String correlationId = n
     boolean __verbose = false
     try { __verbose = (atomicState?.verboseLogging == true) } catch (ignore) { }
     if (__verbose) {
-      def tz = location?.timeZone ?: TimeZone.getTimeZone('UTC')
-      def entry = [ts: new Date().format("yyyy-MM-dd'T'HH:mm:ssZ", tz),
-                   level: 1, module: module, cid: correlationId, msg: msg]
-      def logs = state.recentLogs ?: []
-      logs << entry
-      state.recentLogs = logs.size() > 50 ? logs[-50..-1] : logs
+      appendRecentLog(1, module, correlationId, msg)
     }
   }
+}
+
+// Store the last command error with optional suggested action
+private void recordCommandError(String action, String message, String suggestion = null) {
+  def tz = location?.timeZone ?: TimeZone.getTimeZone('UTC')
+  state.lastCommandError = [
+    ts: new Date().format('yyyy-MM-dd HH:mm:ss', tz),
+    action: action,
+    message: message,
+    suggestion: suggestion
+  ]
+}
+
+// Check for missing data like sensors or network and return issues
+private List<String> getDataIssues() {
+  List<String> issues = []
+  if (!state.flairAccessToken) {
+    issues << 'Flair authentication token missing. Re-authenticate to restore connectivity.'
+  }
+  def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') }
+  if (!vents) {
+    issues << 'No vents detected. Ensure devices are paired and online.'
+  }
+  if (!(atomicState?.roomCache)) {
+    issues << 'Room data unavailable. Check network connectivity and sensors.'
+  }
+  return issues
 }
 
 private logDetails(String msg, details = null, int level = 3) {
@@ -1920,6 +1993,7 @@ def patchDataAsync(String uri, String callback, body, data = null, int retryCoun
       asynchttpPatch(callback, httpParams, data)
     } catch (Exception e) {
       log(2, 'App', "HTTP PATCH exception: ${e.message}")
+      recordCommandError("PATCH ${uri}", e.message, 'Check network connection')
       // Decrement on exception since the request didn't actually happen
       decrementActiveRequests()
       return
@@ -1931,6 +2005,7 @@ def patchDataAsync(String uri, String callback, body, data = null, int retryCoun
       runInMillis(delay, 'retryPatchDataAsyncWrapper', [data: retryData])
     } else {
       logError "patchDataAsync failed after ${MAX_API_RETRY_ATTEMPTS} retries for URI: ${uri}"
+      recordCommandError("PATCH ${uri}", 'Request failed after retries', 'Verify network or Flair service')
       incrementFailureCount(uri)
     }
   }
@@ -3089,13 +3164,15 @@ def patchVent(device, percentOpen) {
 
 def handleVentPatch(resp, data) {
   decrementActiveRequests()  // Always decrement when response comes back
-  if (!isValidResponse(resp) || !data) { 
+  if (!isValidResponse(resp) || !data) {
     if (resp instanceof Exception || resp.toString().contains('LimitExceededException')) {
       log(2, 'App', "Vent patch failed due to hub load: ${resp.toString()}")
+      recordCommandError('Vent patch', resp.toString(), 'Reduce hub load or retry')
     } else {
       log(2, 'App', "Vent patch failed - invalid response or data")
+      recordCommandError('Vent patch', 'Invalid response from Flair', 'Check network connectivity')
     }
-    return 
+    return
   }
   
   // Get the actual device for processing (handle serialized device objects)
@@ -3108,6 +3185,7 @@ def handleVentPatch(resp, data) {
   
   if (!device) {
     log(2, 'App', "Could not get device object for vent patch processing")
+    recordCommandError('Vent patch', 'Device object not found', 'Verify vent is paired')
     return
   }
   
@@ -3311,9 +3389,12 @@ def updateHvacStateFromDuctTemps() {
     
     // Enhanced cycle start detection
     if (hvacMode in [COOLING, HEATING] && previousMode == 'idle') {
-      try { 
+      try {
         atomicState.startedRunning = currentTime
         atomicState.startedCycle = currentTime
+        if (hvacMode == COOLING) {
+          atomicState.coolingCycleCount = (atomicState.coolingCycleCount ?: 0) + 1
+        }
       } catch (ignore) { }
       recordDabEvent('CycleStart', [mode: hvacMode, timestamp: currentTime])
     }
@@ -6370,6 +6451,9 @@ def asyncHttpGetWrapper(response, Map data) {
     def code = null
     try { code = response?.status } catch (ignore) { }
     log(3, 'HTTP', "Async GET callback for ${data?.uri ?: ''}${data?.path ?: ''} status=${code}")
+    if (code && code >= 400) {
+      recordCommandError("GET ${data?.uri ?: ''}${data?.path ?: ''}", "HTTP ${code}", 'Check network or credentials')
+    }
   } catch (Exception e) {
     try { log(1, 'HTTP', "Async GET callback error: ${e?.message}") } catch (ignore) { }
   }
