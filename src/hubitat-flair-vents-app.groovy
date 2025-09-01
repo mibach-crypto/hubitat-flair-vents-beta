@@ -260,6 +260,14 @@ def mainPage() {
         def tz = location?.timeZone ?: TimeZone.getTimeZone('UTC')
         def tsStr = ts ? new Date(ts as Long).format('yyyy-MM-dd HH:mm:ss', tz) : '-'
         paragraph "Current: <b>${cur}</b> | Last: <b>${last}</b> | Changed: <b>${tsStr}</b>"
+        def cycles = atomicState?.coolingCycleCount ?: 0
+        paragraph "Cooling cycles: <b>${cycles}</b>"
+        input name: 'resetCoolingCycles', type: 'button', title: 'Reset Cooling Cycle Counter', submitOnChange: true
+        if (settings?.resetCoolingCycles) {
+          atomicState.coolingCycleCount = 0
+          app.updateSetting('resetCoolingCycles', null)
+          paragraph "<span style='color: green;'>&#10003; Counter reset</span>"
+        }
       }
       // Fast access to Quick Controls at the top
       section('\u26A1 Quick Controls') {
@@ -3311,9 +3319,12 @@ def updateHvacStateFromDuctTemps() {
     
     // Enhanced cycle start detection
     if (hvacMode in [COOLING, HEATING] && previousMode == 'idle') {
-      try { 
+      try {
         atomicState.startedRunning = currentTime
         atomicState.startedCycle = currentTime
+        if (hvacMode == COOLING) {
+          atomicState.coolingCycleCount = (atomicState.coolingCycleCount ?: 0) + 1
+        }
       } catch (ignore) { }
       recordDabEvent('CycleStart', [mode: hvacMode, timestamp: currentTime])
     }
