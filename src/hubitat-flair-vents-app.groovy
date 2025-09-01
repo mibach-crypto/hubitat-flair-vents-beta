@@ -3718,6 +3718,7 @@ def appendHourlyRate(String roomId, String hvacMode, Integer hour, BigDecimal ra
   
   // Record anomaly event if detected
   if (isAnomaly) {
+    recordAnomalyInfluence(roomId, hvacMode, hour)
     recordDabEvent('Anomaly', [room: roomId, mode: hvacMode, hour: hour, rate: rate, factor: anomalyFactor])
   }
   
@@ -4626,7 +4627,7 @@ def getAttribsPerVentIdWeighted(ventsByRoomId, String hvacMode) {
           def tempSource = settings."vent${ventId}Thermostat" ? "Puck ${settings."vent${ventId}Thermostat".getLabel()}" : "Room API"
           log(2, 'App', "Room '${roomName}' has zero ${hvacMode} efficiency rate, temp=${roomTemp}C from ${tempSource}")
         }
-        rateAndTemp[ventId] = [ rate: effectiveRate, temp: roomTemp, active: isActive, name: roomName ]
+        rateAndTemp[ventId] = [ rate: effectiveRate, temp: roomTemp, active: isActive, name: roomName, roomId: roomId ]
       } catch (err) {
         logError err
       }
