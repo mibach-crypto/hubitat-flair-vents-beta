@@ -1,6 +1,18 @@
 /**
  *  Hubitat Flair Pucks Driver
- *  Version 0.234
+ *  Version 0.240
+ *
+ *  This driver provides monitoring and control for Flair sensor pucks.
+ *  Pucks are wireless sensors that measure room conditions and can
+ *  control room-specific heating/cooling setpoints.
+ *
+ *  Key Features:
+ *  - Temperature and humidity monitoring
+ *  - Room setpoint management
+ *  - Room active/away status control
+ *  - Battery voltage monitoring
+ *  - RSSI signal strength reporting
+ *  - Integration with DAB system for room condition awareness
  *
  *  Copyright 2024 Jaime Botero. All Rights Reserved
  *
@@ -65,7 +77,7 @@ metadata {
         attribute 'structure-id', 'string'
         
         // Commands
-        command 'setRoomActive', [[name: 'active*', type: 'ENUM', description: 'Set room active/away', constraints: ['true', 'false']]]
+        command 'setRoomActive', [[name: 'active*', type: 'enum', description: 'Set room active/away', constraints: ['true', 'false']]]
     }
 
     preferences {

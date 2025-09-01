@@ -17,7 +17,7 @@ metadata {
         command 'setAutoMode'
         command 'nudgeUp'
         command 'nudgeDown'
-        command 'setVentPercent', [[name: 'percent*', type: 'NUMBER']]
+        command 'setVentPercent', [[name: 'percent*', type: 'number']]
     }
 
     preferences {

@@ -1,13 +1,13 @@
 /*
  *  Library: DabManager (core logic)
- *  Namespace: yourns.dab
+ *  Namespace: bot.flair
  */
 library(
-  author: "Your Name",
+  author: "Jaime Botero",
   category: "utilities",
   description: "Dynamic Airflow Balancing core logic",
   name: "DabManager",
-  namespace: "yourns.dab",
+  namespace: "bot.flair",
   documentationLink: ""
 )
 
@@ -47,22 +47,25 @@ import groovy.transform.Field
 
 /** Initializes a DAB cycle when the HVAC turns on. */
 def initializeRoomStates(String hvacMode) {
-    if (!app.isDabEnabled()) { return }
-    app.log(3, 'DAB', "Initializing room states - hvac mode: ${hvacMode}")
-    if (!app.atomicState.ventsByRoomId) { return }
-    if (app.settings.fanOnlyOpenAllVents && app.isFanActive()) {
-        app.log(2, 'DAB', 'Fan-only mode active - skipping DAB initialization')
-        return
-    }
+    try {
+        if (!app?.isDabEnabled()) { return }
+        app.log(3, 'DAB', "Initializing room states - hvac mode: ${hvacMode ?: 'unknown'}")
+        if (!app?.atomicState?.ventsByRoomId) { return }
+        if (app?.settings?.fanOnlyOpenAllVents && app?.isFanActive()) {
+            app.log(2, 'DAB', 'Fan-only mode active - skipping DAB initialization')
+            return
+        }
 
-    Integer currentHour = new Date().format('H', app.location?.timeZone ?: TimeZone.getTimeZone('UTC')) as Integer
-    app.atomicState.ventsByRoomId.each { roomId, ventIds ->
-        def avgRate = getAverageHourlyRate(roomId, hvacMode, currentHour)
-        ventIds.each { ventId ->
-            def vent = app.getChildDevice(ventId)
-            if (vent) {
-                def attr = hvacMode == COOLING ? 'room-cooling-rate' : 'room-heating-rate'
-                app.sendEvent(vent, [name: attr, value: avgRate])
+        Integer currentHour = new Date().format('H', app?.location?.timeZone ?: TimeZone.getTimeZone('UTC')) as Integer
+        app.atomicState.ventsByRoomId.each { roomId, ventIds ->
+            if (!roomId || !ventIds) return
+            def avgRate = getAverageHourlyRate(roomId, hvacMode, currentHour)
+            ventIds.each { ventId ->
+                if (!ventId) return
+                def vent = app?.getChildDevice(ventId)
+                if (vent) {
+                    def attr = hvacMode == COOLING ? 'room-cooling-rate' : 'room-heating-rate'
+                    app.sendEvent(vent, [name: attr, value: avgRate])
             }
         }
     }
@@ -114,6 +117,9 @@ def initializeRoomStates(String hvacMode) {
     }
     if (__changeCount > 0) {
         app.appendDabActivityLog("Applied ${__changeCount} vent change(s): ${__changeSummary.take(3).join(', ')}")
+    }
+    } catch (Exception e) {
+        app?.log(4, 'DAB', "Error in initializeRoomStates: ${e?.message}")
     }
 }
 

@@ -1,7 +1,19 @@
 
 /**
  *  Hubitat Flair Vents Driver
- *  Version 0.234
+ *  Version 0.240
+ *
+ *  This driver provides control and monitoring for Flair smart vents.
+ *  It supports automatic vent positioning, temperature monitoring, and
+ *  integration with the Dynamic Airflow Balancing (DAB) system.
+ *
+ *  Key Features:
+ *  - Automatic vent position control (0-100%)
+ *  - Room temperature and setpoint monitoring  
+ *  - Room active/away status management
+ *  - Battery voltage monitoring
+ *  - RSSI signal strength reporting
+ *  - Efficiency rate learning for DAB optimization
  *
  *  Copyright 2024 Jaime Botero. All Rights Reserved
  *
@@ -75,8 +87,8 @@ metadata {
         attribute 'room-cooling-rate', 'number'
         attribute 'room-heating-rate', 'number'
 
-        command 'setRoomActive', [[name: 'active*', type: 'ENUM', description: 'Set room active/away', constraints: ['true', 'false']]]
-        command 'setRoomSetPoint', [[name: 'temperature*', type: 'NUMBER', description: 'Set room temperature setpoint']]
+        command 'setRoomActive', [[name: 'active*', type: 'enum', description: 'Set room active/away', constraints: ['true', 'false']]]
+        command 'setRoomSetPoint', [[name: 'temperature*', type: 'number', description: 'Set room temperature setpoint']]
     }
 
     preferences {

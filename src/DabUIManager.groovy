@@ -1,13 +1,13 @@
 /*
  *  Library: DabUIManager (UI layer)
- *  Namespace: yourns.dab
+ *  Namespace: bot.flair
  */
 library(
-  author: "Your Name",
+  author: "Jaime Botero",
   category: "utilities",
   description: "Dynamic Airflow Balancing UI helpers",
   name: "DabUIManager",
-  namespace: "yourns.dab",
+  namespace: "bot.flair",
   documentationLink: ""
 )
 
@@ -266,20 +266,27 @@ def renderDabDiagnosticResults() {
 def handleImportEfficiencyData() {
     try {
         app.log(2, 'App', 'Starting efficiency data import')
-        app.state.remove('importStatus')
-        def jsonData = app.settings.importJsonData
+        app.state?.remove('importStatus')
+        def jsonData = app.settings?.importJsonData
         if (!jsonData?.trim()) { 
             app.state.importStatus = 'No JSON data provided.'
             return 
         }
         
-        def result = importEfficiencyData(jsonData.trim())
-        if (result.success) {
-            app.state.importStatus = "Import successful! Updated ${result.roomsUpdated} rooms."
+        // Sanitize input data before processing
+        def sanitizedData = jsonData.trim()
+        if (sanitizedData.length() > 100000) {  // Limit size to prevent DoS
+            app.state.importStatus = 'Import data too large (max 100KB)'
+            return
+        }
+        
+        def result = importEfficiencyData(sanitizedData)
+        if (result?.success) {
+            app.state.importStatus = "Import successful! Updated ${result.roomsUpdated ?: 0} rooms."
             app.updateSetting('importJsonData', '')
         } else {
-            app.state.importStatus = "Import failed: ${result.error}"
-            app.logError "Import failed: ${result.error}"
+            app.state.importStatus = "Import failed: ${result?.error ?: 'Unknown error'}"
+            app.logError "Import failed: ${result?.error ?: 'Unknown error'}"
         }
     } catch (e) {
         app.state.importStatus = "Import failed: ${e.message}"

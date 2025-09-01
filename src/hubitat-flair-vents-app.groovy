@@ -207,20 +207,20 @@ def mainPage() {
         paragraph "<span class='error-message'>${validation.errors.clientSecret}</span>"
       }
       if (settings?.clientId && settings?.clientSecret) {
-        if (!state.flairAccessToken && !state.authInProgress) {
+        if (!state?.flairAccessToken && !state?.authInProgress) {
           state.authInProgress = true
           state.remove('authError')  // Clear any previous error when starting new auth
           runIn(2, 'autoAuthenticate')
         }
-      if (state.flairAccessToken && !state.authError) {
+      if (state?.flairAccessToken && !state?.authError) {
           paragraph "<span class='success-message'>Authenticated successfully</span>"
-        } else if (state.authError && !state.authInProgress) {
+        } else if (state?.authError && !state?.authInProgress) {
           section {
-            paragraph "<span class='error-message'>${state.authError}</span>"
+            paragraph "<span class='error-message'>${state?.authError ?: 'Authentication error occurred'}</span>"
             input name: 'retryAuth', type: 'button', title: 'Retry Authentication', submitOnChange: true
             paragraph "<small>If authentication continues to fail, verify your credentials are correct and try again.</small>"
           }
-        } else if (state.authInProgress) {
+        } else if (state?.authInProgress) {
           paragraph "<span class='info-message'>Authenticating... Please wait.</span>"
           paragraph "<small>This may take 10-15 seconds. The page will refresh automatically when complete.</small>"
         } else {
@@ -228,7 +228,7 @@ def mainPage() {
         }
       }
     }
-      if (state.flairAccessToken) {
+      if (state?.flairAccessToken) {
       section('HVAC Status') {
         input name: 'refreshHvacNow', type: 'button', title: 'Refresh HVAC Status', submitOnChange: true
         if (settings?.refreshHvacNow) {
@@ -260,7 +260,7 @@ def cur = atomicState?.thermostat1State?.mode ?: (atomicState?.hvacCurrentMode ?
         input name: 'pollingIntervalActive', type: 'number', title: 'Active HVAC polling interval (minutes)', defaultValue: 1, submitOnChange: true
         input name: 'pollingIntervalIdle', type: 'number', title: 'Idle HVAC polling interval (minutes)', defaultValue: 10, submitOnChange: true
       }
-      if (state.ventOpenDiscrepancies) {
+      if (state?.ventOpenDiscrepancies) {
         section('Vent Synchronization Issues') {
           state.ventOpenDiscrepancies.each { id, info ->
             paragraph "<span class='error-message'>${info.name ?: id} expected ${info.target}% but reported ${info.actual}%</span>"
@@ -270,11 +270,13 @@ def cur = atomicState?.thermostat1State?.mode ?: (atomicState?.hvacCurrentMode ?
       }
 // Removed stray brace to fix if/else structure
 
-      section('<h2>Dynamic Airflow Balancing</h2>') {
+      section('<h2>🔧 Dynamic Airflow Balancing (DAB)</h2>') {
+        paragraph '<small>Automatically optimize vent positions based on room temperature differences and efficiency learning</small>'
         input name: 'dabEnabled', type: 'bool', title: 'Use Dynamic Airflow Balancing', defaultValue: false, submitOnChange: true
       }
       if (dabEnabled) {
-        section('Thermostat & Globals') {
+        section('🌡️ Thermostat & Global Settings') {
+          paragraph '<small>Configure primary thermostat and overall DAB behavior</small>'
           input name: 'thermostat1', type: 'capability.thermostat', title: 'Optional: Thermostat for global setpoint', multiple: false, required: false
         input name: 'thermostat1TempUnit', type: 'enum', title: 'Units used by Thermostat', defaultValue: 2,
                 options: [1: 'Celsius (°C)', 2: 'Fahrenheit (°F)']
@@ -286,28 +288,35 @@ def cur = atomicState?.thermostat1State?.mode ?: (atomicState?.hvacCurrentMode ?
           input name: 'fanOnlyOpenAllVents', type: 'bool', title: 'Fan-only: open all vents to 100%', defaultValue: true, submitOnChange: true
           input name: 'dabHistoryRetentionDays', type: 'number', title: 'DAB history retention (days)', defaultValue: DEFAULT_HISTORY_RETENTION_DAYS, submitOnChange: true
 
-          if (settings.dabHistoryRetentionDays && settings.dabHistoryRetentionDays < 1) {
+          if (settings?.dabHistoryRetentionDays && settings.dabHistoryRetentionDays < 1) {
             app.updateSetting('dabHistoryRetentionDays', 1)
           }
-// Mirror to atomicState for CI-safe access in methods
-          try { atomicState.dabHistoryRetentionDays = (settings?.dabHistoryRetentionDays ?: DEFAULT_HISTORY_RETENTION_DAYS) as Integer } catch (ignore) { }
-      if (settings.thermostat1AdditionalStandardVents < 0) {
-            app.updateSetting('thermostat1AdditionalStandardVents', 0)
-          } else if (settings.thermostat1AdditionalStandardVents > MAX_STANDARD_VENTS) {
-            app.updateSetting('thermostat1AdditionalStandardVents', MAX_STANDARD_VENTS)
+          // Mirror to atomicState for CI-safe access in methods
+          try { 
+            atomicState.dabHistoryRetentionDays = (settings?.dabHistoryRetentionDays ?: DEFAULT_HISTORY_RETENTION_DAYS) as Integer 
+          } catch (Exception e) { 
+            log(4, 'Settings', "Failed to set dabHistoryRetentionDays: ${e?.message}")
+            atomicState.dabHistoryRetentionDays = DEFAULT_HISTORY_RETENTION_DAYS
+          }
+          if (settings?.thermostat1AdditionalStandardVents != null) {
+            if (settings.thermostat1AdditionalStandardVents < 0) {
+              app.updateSetting('thermostat1AdditionalStandardVents', 0)
+            } else if (settings.thermostat1AdditionalStandardVents > MAX_STANDARD_VENTS) {
+              app.updateSetting('thermostat1AdditionalStandardVents', MAX_STANDARD_VENTS)
+            }
           }
       if (!getThermostat1Mode() || getThermostat1Mode() == 'auto') {
             patchStructureData([mode: 'manual'])
             atomicState?.putAt('thermostat1Mode', 'manual')
         }
           }
-// Quick Safety Limits
-          section('Quick Safety Limits') {
+          section('🔒 Quick Safety Limits') {
+            paragraph '<small>Safety controls to prevent HVAC damage and ensure minimum airflow</small>'
             input name: 'allowFullClose', type: 'bool', title: 'Allow vents to fully close (0%)', defaultValue: false, submitOnChange: true
             input name: 'minVentFloorPercent', type: 'number', title: 'Minimum vent opening floor (%)', defaultValue: 10, submitOnChange: true
           }
-// Night override (simple schedule)
-          section('Night Override (per-room)') {
+          section('🌙 Night Override (per-room)') {
+            paragraph '<small>Set specific rooms to open to a certain percentage during night hours</small>'
             input name: 'nightOverrideEnable', type: 'bool', title: 'Enable night override', defaultValue: false, submitOnChange: true
             input name: 'nightOverrideRooms', type: 'capability.switchLevel', title: 'Rooms (vents) to override', multiple: true, required: false, submitOnChange: true
             input name: 'nightOverridePercent', type: 'number', title: 'Override vent percent (%)', defaultValue: 100, submitOnChange: true
@@ -361,11 +370,11 @@ def cur = atomicState?.thermostat1State?.mode ?: (atomicState?.hvacCurrentMode ?
                  page: 'efficiencyDataPage'
 
             // Show current status summary
-            def vents = getChildDevices().findAll { it.hasAttribute('percent-open') }
-      if (vents.size() > 0) {
+            def vents = getChildDevices()?.findAll { it?.hasAttribute('percent-open') } ?: []
+            if (vents.size() > 0) {
               def roomsWithData = vents.findAll {
-                (it.currentValue('room-cooling-rate') ?: 0) > 0 ||
-                (it.currentValue('room-heating-rate') ?: 0) > 0
+                (safeGetDeviceAttribute(it, 'room-cooling-rate', 0) as Double) > 0 ||
+                (safeGetDeviceAttribute(it, 'room-heating-rate', 0) as Double) > 0
               }
               paragraph "<small><b>Current Status:</b> ${roomsWithData.size()} of ${vents.size()} rooms have learned efficiency data</small>"
             }
@@ -410,9 +419,9 @@ def cur = atomicState?.thermostat1State?.mode ?: (atomicState?.hvacCurrentMode ?
             if (state.dabHistoryExportStatus) {
               paragraph state.dabHistoryExportStatus
             }
-      if (state.dabHistoryExportData) {
+      if (state?.dabHistoryExportData) {
               paragraph "<textarea rows='8' cols='80' readonly>" +
-                        "${state.dabHistoryExportData}" + "</textarea>"
+                        "${sanitizeForTextarea(state.dabHistoryExportData)}" + "</textarea>"
             }
           }
         }
@@ -432,8 +441,8 @@ def cur = atomicState?.thermostat1State?.mode ?: (atomicState?.hvacCurrentMode ?
                description: 'Rapid per-room manual control and bulk actions',
                page: 'quickControlsPage'
         }
-// Only show vents in DAB section, not pucks
-      def vents = getChildDevices().findAll { it.hasAttribute('percent-open') }
+      // Only show vents in DAB section, not pucks  
+      def vents = getChildDevices()?.findAll { it?.hasAttribute('percent-open') } ?: []
     section('Thermostat Mapping') {
         for (child in vents) {
           input name: "vent${child.getId()}Thermostat", type: 'capability.temperatureMeasurement', title: "Optional: Temperature sensor for ${child.getLabel()}", multiple: false, required: false
@@ -494,27 +503,27 @@ def cur = atomicState?.thermostat1State?.mode ?: (atomicState?.hvacCurrentMode ?
 }// Simple, Hubitat-compatible control panel (no JS required)
 def flairControlPanel() {
   dynamicPage(name: 'flairControlPanel', title: 'Flair Control Panel', install: false, uninstall: false) {
-    def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+    def vents = getChildDevices()?.findAll { it?.hasAttribute('percent-open') } ?: []
     if (!vents) {
       section {
         paragraph 'No vents available. Run discovery from the main page.'
       }
       return
     }
-// Build 1 representative device per room
+    // Build 1 representative device per room
     def byRoom = [:]
     vents.each { v ->
-      def rid = v.currentValue('room-id') ?: v.getDeviceNetworkId()
+      def rid = safeGetDeviceAttribute(v, 'room-id') ?: v?.getDeviceNetworkId()
       if (!byRoom.containsKey(rid)) { byRoom[rid] = [] }
       byRoom[rid] << v
     }
-// Actions (apply immediately when buttons are pressed)
+    // Actions (apply immediately when buttons are pressed)
     byRoom.each { roomId, list ->
       def v = list[0]
-      def roomName = v.currentValue('room-name') ?: v.getLabel()
-      def tempC = v.currentValue('room-current-temperature-c')
-      def setpC = v.currentValue('room-set-point-c')
-      def active = (v.currentValue('room-active') ?: 'false')
+      def roomName = safeGetDeviceAttribute(v, 'room-name') ?: v?.getLabel()
+      def tempC = safeGetDeviceAttribute(v, 'room-current-temperature-c')
+      def setpC = safeGetDeviceAttribute(v, 'room-set-point-c')
+      def active = safeGetDeviceAttribute(v, 'room-active', 'false')
       def toF = { c -> c != null ? (((c as BigDecimal) * 9/5) + 32) : null }
 
 def fmt1 = { x -> x != null ? (((x as BigDecimal) * 10).round() / 10) : '-' }
@@ -1329,6 +1338,51 @@ def cleanupExpiredCaches() {
   }
 }
 
+// Scheduled history data trimming based on retention settings
+def trimHistoryData() {
+  try {
+    def retentionDays = safeGetSetting('dabHistoryRetentionDays', DEFAULT_HISTORY_RETENTION_DAYS, Integer)
+    def cutoffTime = now() - (retentionDays * 24 * 60 * 60 * 1000L)
+    
+    // Trim DAB history entries
+    def dabHistory = atomicState?.dabHistory ?: [:]
+    def trimmedHistory = [:]
+    dabHistory.each { roomId, entries ->
+      if (entries instanceof List) {
+        def filteredEntries = entries.findAll { entry ->
+          try {
+            return entry?.timestamp && (entry.timestamp as Long) >= cutoffTime
+          } catch (Exception ignored) {
+            return false
+          }
+        }
+        if (filteredEntries) {
+          trimmedHistory[roomId] = filteredEntries
+        }
+      }
+    }
+    atomicState.dabHistory = trimmedHistory
+    
+    // Trim activity log
+    def activityLog = atomicState?.dabActivityLog ?: []
+    def maxActivityEntries = 1000  // Keep last 1000 entries
+    if (activityLog.size() > maxActivityEntries) {
+      atomicState.dabActivityLog = activityLog.takeRight(maxActivityEntries)
+    }
+    
+    // Trim recent errors
+    def recentErrors = state?.recentErrors ?: []
+    def maxErrorEntries = 100  // Keep last 100 errors
+    if (recentErrors.size() > maxErrorEntries) {
+      state.recentErrors = recentErrors.takeRight(maxErrorEntries)
+    }
+    
+    log(2, 'Maintenance', "History data trimmed successfully. Retention: ${retentionDays} days")
+  } catch (Exception e) {
+    log(4, 'Maintenance', "History trimming error: ${e?.message}")
+  }
+}
+
 // ------------------------------
 // List and Device Discovery Functions
 // ------------------------------
@@ -1442,6 +1496,9 @@ def initialize() {
   
   // Schedule cache cleanup
   runEvery30Minutes('cleanupExpiredCaches')
+  
+  // Schedule history data trimming (daily at 2 AM)
+  runDaily('trimHistoryData', '02:00')
 
   // Check if we need to auto-authenticate on startup
   if (settings?.clientId && settings?.clientSecret) {
@@ -1867,23 +1924,23 @@ def validateAndClampSettings() {
 def mirrorSettingsToAtomicState() {
   try {
     // Mirror key settings to atomicState for safe access from libraries
-    atomicState.pollingIntervalActive = (settings?.pollingIntervalActive ?: POLLING_INTERVAL_ACTIVE) as Integer
-    atomicState.pollingIntervalIdle = (settings?.pollingIntervalIdle ?: POLLING_INTERVAL_IDLE) as Integer
-    atomicState.dabHistoryRetentionDays = (settings?.dabHistoryRetentionDays ?: DEFAULT_HISTORY_RETENTION_DAYS) as Integer
-    atomicState.minVentFloorPercent = (settings?.minVentFloorPercent ?: 10) as Integer
-    atomicState.nightOverridePercent = (settings?.nightOverridePercent ?: 100) as Integer
-    atomicState.rawDataRetentionHours = (settings?.rawDataRetentionHours ?: RAW_CACHE_DEFAULT_HOURS) as Integer
-    atomicState.ewmaHalfLifeDays = (settings?.ewmaHalfLifeDays ?: 3) as Integer
-    atomicState.outlierThresholdMad = (settings?.outlierThresholdMad ?: 3) as Integer
+    atomicState.pollingIntervalActive = safeGetSetting('pollingIntervalActive', POLLING_INTERVAL_ACTIVE, Integer)
+    atomicState.pollingIntervalIdle = safeGetSetting('pollingIntervalIdle', POLLING_INTERVAL_IDLE, Integer)
+    atomicState.dabHistoryRetentionDays = safeGetSetting('dabHistoryRetentionDays', DEFAULT_HISTORY_RETENTION_DAYS, Integer)
+    atomicState.minVentFloorPercent = safeGetSetting('minVentFloorPercent', 10, Integer)
+    atomicState.nightOverridePercent = safeGetSetting('nightOverridePercent', 100, Integer)
+    atomicState.rawDataRetentionHours = safeGetSetting('rawDataRetentionHours', RAW_CACHE_DEFAULT_HOURS, Integer)
+    atomicState.ewmaHalfLifeDays = safeGetSetting('ewmaHalfLifeDays', 3, Integer)
+    atomicState.outlierThresholdMad = safeGetSetting('outlierThresholdMad', 3, Integer)
     atomicState.outlierMode = settings?.outlierMode ?: 'clip'
     atomicState.enableOutlierRejection = settings?.enableOutlierRejection != false
     atomicState.useCachedRawForDab = settings?.useCachedRawForDab == true
     atomicState.carryForwardLastHour = settings?.carryForwardLastHour != false
     atomicState.enableAdaptiveBoost = settings?.enableAdaptiveBoost != false
-    atomicState.adaptiveLookbackPeriods = (settings?.adaptiveLookbackPeriods ?: 3) as Integer
-    atomicState.adaptiveThresholdPercent = (settings?.adaptiveThresholdPercent ?: 25) as BigDecimal
-    atomicState.adaptiveBoostPercent = (settings?.adaptiveBoostPercent ?: 12.5) as BigDecimal
-    atomicState.adaptiveMaxBoostPercent = (settings?.adaptiveMaxBoostPercent ?: 25) as BigDecimal
+    atomicState.adaptiveLookbackPeriods = safeGetSetting('adaptiveLookbackPeriods', 3, Integer)
+    atomicState.adaptiveThresholdPercent = safeGetSetting('adaptiveThresholdPercent', 25, BigDecimal)
+    atomicState.adaptiveBoostPercent = safeGetSetting('adaptiveBoostPercent', 12.5, BigDecimal)
+    atomicState.adaptiveMaxBoostPercent = safeGetSetting('adaptiveMaxBoostPercent', 25, BigDecimal)
     atomicState.fanOnlyOpenAllVents = settings?.fanOnlyOpenAllVents == true
     atomicState.enableDashboardTiles = settings?.enableDashboardTiles == true
   } catch (Exception e) {
@@ -1900,6 +1957,56 @@ def initializeDabTracking() {
     atomicState.recentVentDecisions = atomicState.recentVentDecisions ?: []
     state.recentErrors = state.recentErrors ?: []
   } catch (ignored) { }
+}
+
+// Safe settings getter with type conversion and validation
+def safeGetSetting(String settingName, def defaultValue, Class targetType = null) {
+  try {
+    def value = settings?."${settingName}"
+    if (value == null) return defaultValue
+    
+    if (targetType == Integer) {
+      return value as Integer
+    } else if (targetType == BigDecimal) {
+      return value as BigDecimal  
+    } else if (targetType == Boolean) {
+      return value as Boolean
+    } else {
+      return value
+    }
+  } catch (Exception e) {
+    log(4, 'Settings', "Failed to get setting ${settingName}: ${e?.message}, using default: ${defaultValue}")
+    return defaultValue
+  }
+}
+
+// HTML/Unicode safety helpers
+def sanitizeForHtml(String text) {
+  if (!text) return ''
+  return text.replaceAll(/&/, '&amp;')
+             .replaceAll(/</, '&lt;')
+             .replaceAll(/>/, '&gt;')
+             .replaceAll(/"/, '&quot;')
+             .replaceAll(/'/, '&#39;')
+}
+
+def sanitizeForTextarea(String text) {
+  if (!text) return ''
+  // Additional sanitization for textarea content
+  return sanitizeForHtml(text).replaceAll(/\r?\n/, '&#10;')
+}
+
+// Safe device attribute access helper
+def safeGetDeviceAttribute(device, String attributeName, def defaultValue = null) {
+  try {
+    if (!device) return defaultValue
+    if (!device.hasAttribute(attributeName)) return defaultValue
+    def value = device.currentValue(attributeName)
+    return value != null ? value : defaultValue
+  } catch (Exception e) {
+    log(4, 'Device', "Failed to get attribute ${attributeName} from ${device?.getLabel() ?: 'unknown device'}: ${e?.message}")
+    return defaultValue
+  }
 }
 
 // Clean up any previously stored BigDecimals to hub-safe doubles where necessary
