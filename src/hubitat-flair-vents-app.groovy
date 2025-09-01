@@ -3465,8 +3465,9 @@ def uri = "${BASE_URL}/api/structures"
       logError "getStructureData failed after ${MAX_API_RETRY_ATTEMPTS} attempts: ${e.message}"
     }
   }
-  }
-}// Wrapper method for synchronous getStructureData retry
+}
+
+// Wrapper method for synchronous getStructureData retry
 def retryGetStructureDataWrapper(data) {
   getStructureData(data?.retryCount ?: 0)
 }
