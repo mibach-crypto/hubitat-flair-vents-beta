@@ -118,6 +118,13 @@ import java.net.URLEncoder
 // Delay before initializing room states after certain events (in milliseconds).
 @Field static final Integer INITIALIZATION_DELAY_MS = 3000
 
+// Cycle detection and debouncing constants
+@Field static final Integer MIN_CYCLE_RESTART_SECONDS = 120
+@Field static final Integer START_CONFIRMATION_POLLS = 2
+@Field static final Integer END_CONFIRMATION_POLLS = 2
+@Field static final Integer MIN_VALID_CYCLE_SECONDS = 180
+@Field static final BigDecimal MIN_EFFECTIVE_TEMP_DELTA = 0.1
+
 // Delay after a thermostat state change before reinitializing (in milliseconds).
 @Field static final Integer POST_STATE_CHANGE_DELAY_MS = 1000
 
@@ -770,6 +777,9 @@ def initialize() {
 
   // Ensure required DAB tracking structures exist
   initializeDabTracking()
+  
+  // Run migration to ensure DAB v2 compatibility  
+  ensureMigration()
 
   // Check if we need to auto-authenticate on startup
   if (settings?.clientId && settings?.clientSecret) {
@@ -3293,88 +3303,92 @@ def thermostat1ChangeStateHandler(evt) {
 // Periodically evaluate duct temperatures to determine HVAC state
 // without relying on an external thermostat.
 def updateHvacStateFromDuctTemps() {
+  // Ensure migration has been applied before cycle detection
+  ensureMigration()
+  
   // Enhanced puck-only HVAC cycle reliability with duct-room delta synthesis and hysteresis
   String previousMode = atomicState.thermostat1State?.mode ?: 'idle'
-  String hvacMode = (calculateHvacModeRobust() ?: 'idle')
+  String derivedMode = (calculateHvacModeRobust() ?: 'idle')
   Long currentTime = now()
   
   // Track atomicState markers for enhanced reliability
-  try { atomicState.hvacCurrentMode = hvacMode } catch (ignore) { }
+  try { atomicState.hvacCurrentMode = derivedMode } catch (ignore) { }
   try { atomicState.hvacLastChangeTs = currentTime } catch (ignore) { }
   
-  if (hvacMode != previousMode) {
-    // Record HVAC state transition
-    recordDabEvent('HvacStateChange', [from: previousMode, to: hvacMode, timestamp: currentTime])
-    appendDabActivityLog("HVAC State: ${previousMode} -> ${hvacMode}")
-    
-    try { atomicState.hvacLastMode = previousMode } catch (ignore) { }
-    
-    // Enhanced cycle start detection
-    if (hvacMode in [COOLING, HEATING] && previousMode == 'idle') {
-      try { 
-        atomicState.startedRunning = currentTime
-        atomicState.startedCycle = currentTime
-      } catch (ignore) { }
-      recordDabEvent('CycleStart', [mode: hvacMode, timestamp: currentTime])
+  // Suppress repeated idle->idle logs entirely
+  if (previousMode == 'idle' && derivedMode == 'idle') {
+    // Log at trace level once every few minutes instead of every poll
+    Long lastIdleLog = atomicState.lastIdleLogTime ?: 0
+    if (currentTime - lastIdleLog > (5 * 60 * 1000)) { // 5 minutes
+      log(4, 'DAB', 'HVAC remains idle (suppressed repeated logs)')
+      atomicState.lastIdleLogTime = currentTime
     }
-    
-    // Enhanced cycle end detection
-    if (hvacMode == 'idle' && previousMode in [COOLING, HEATING]) {
-      recordDabEvent('CycleEnd', [mode: previousMode, timestamp: currentTime])
-      // Finalize logic will be triggered below
-    }
+    return // Skip further processing for idle->idle
   }
   
-  if (hvacMode in [COOLING, HEATING]) {
-    if (!atomicState.thermostat1State || atomicState.thermostat1State?.mode != hvacMode) {
-      atomicStateUpdate('thermostat1State', 'mode', hvacMode)
-      atomicStateUpdate('thermostat1State', 'startedRunning', atomicState.startedRunning ?: currentTime)
-      atomicStateUpdate('thermostat1State', 'startedCycle', atomicState.startedCycle ?: currentTime)
-      
-      if (settings?.dabEnabled) {
-        unschedule('initializeRoomStates')
-        runInMillis(POST_STATE_CHANGE_DELAY_MS, 'initializeRoomStates', [data: hvacMode])
-        recordStartingTemperatures()
-        runEvery5Minutes('evaluateRebalancingVents')
-        runEvery30Minutes('reBalanceVents')
-      }
-      updateDevicePollingInterval((settings?.pollingIntervalActive ?: POLLING_INTERVAL_ACTIVE) as Integer)
+  // Check for confirmed cycle start
+  if (maybeStartCycle(derivedMode, previousMode)) {
+    recordCycleTransition(previousMode, derivedMode, 'Start')
+    
+    try { 
+      atomicState.startedRunning = currentTime
+      atomicState.startedCycle = currentTime
+      atomicState.startedCycleHour = new Date().format('H', location?.timeZone ?: TimeZone.getTimeZone('UTC')) as Integer
+      atomicState.startedCycleTs = currentTime
+    } catch (ignore) { }
+    
+    recordDabEvent('CycleStart', [mode: derivedMode, timestamp: currentTime])
+    appendDabActivityLog("HVAC State: ${previousMode} -> ${derivedMode}")
+    
+    // Update thermostat state and initialize DAB
+    atomicStateUpdate('thermostat1State', 'mode', derivedMode)
+    atomicStateUpdate('thermostat1State', 'startedRunning', currentTime)
+    atomicStateUpdate('thermostat1State', 'startedCycle', currentTime)
+    
+    if (settings?.dabEnabled) {
+      unschedule('initializeRoomStates')
+      runInMillis(POST_STATE_CHANGE_DELAY_MS, 'initializeRoomStates', [data: derivedMode])
+      recordStartingTemperatures()
+      runEvery5Minutes('evaluateRebalancingVents')
+      runEvery30Minutes('reBalanceVents')
     }
-  } else {
-    // Enhanced idle state handling with explicit reason logging
-    if (hvacMode == 'idle') {
-      logIdleReason()
+    updateDevicePollingInterval((settings?.pollingIntervalActive ?: POLLING_INTERVAL_ACTIVE) as Integer)
+    return
+  }
+  
+  // Check for confirmed cycle end
+  if (maybeEndCycle(derivedMode, previousMode)) {
+    recordCycleTransition(previousMode, derivedMode, 'End')
+    recordDabEvent('CycleEnd', [mode: previousMode, timestamp: currentTime])
+    appendDabActivityLog("HVAC State: ${previousMode} -> ${derivedMode}")
+    
+    // Trigger finalization
+    if (atomicState.thermostat1State && settings?.dabEnabled) {
+      def params = [
+        ventIdsByRoomId: atomicState.ventsByRoomId,
+        startedCycle: atomicState.thermostat1State?.startedCycle,
+        startedRunning: atomicState.thermostat1State?.startedRunning,
+        finishedRunning: currentTime,
+        hvacMode: atomicState.thermostat1State?.mode
+      ]
+      runInMillis(TEMP_READINGS_DELAY_MS, 'finalizeCycleSafely', [data: params])
     }
     
-    if (atomicState.thermostat1State) {
-      unschedule('initializeRoomStates')
-      unschedule('finalizeRoomStates')
-      unschedule('evaluateRebalancingVents')
-      unschedule('reBalanceVents')
-      
-      atomicStateUpdate('thermostat1State', 'finishedRunning', currentTime)
-      
-      // Ensure finalize logic triggers on mode transition events without thermostat
-      if (settings?.dabEnabled) {
-        def params = [
-          ventIdsByRoomId: atomicState.ventsByRoomId,
-          startedCycle: atomicState.thermostat1State?.startedCycle,
-          startedRunning: atomicState.thermostat1State?.startedRunning,
-          finishedRunning: currentTime,
-          hvacMode: atomicState.thermostat1State?.mode
-        ]
-        runInMillis(TEMP_READINGS_DELAY_MS, 'finalizeRoomStates', [data: params])
-      }
-      atomicState.remove('thermostat1State')
-      
-      // Clear cycle markers when going idle
-      try { 
-        atomicState.remove('startedRunning')
-        atomicState.remove('startedCycle')
-      } catch (ignore) { }
-      
-      updateDevicePollingInterval((settings?.pollingIntervalIdle ?: POLLING_INTERVAL_IDLE) as Integer)
-    }
+    // Clean up scheduling and state
+    unschedule('initializeRoomStates')
+    unschedule('finalizeRoomStates') 
+    unschedule('evaluateRebalancingVents')
+    unschedule('reBalanceVents')
+    
+    atomicState.remove('thermostat1State')
+    updateDevicePollingInterval((settings?.pollingIntervalIdle ?: POLLING_INTERVAL_IDLE) as Integer)
+    return
+  }
+  
+  // Handle mode changes that don't meet confirmation criteria  
+  if (derivedMode != previousMode) {
+    // Log the attempted change but don't act on it yet
+    log(4, 'DAB', "HVAC mode evaluating: ${previousMode} -> ${derivedMode} (awaiting confirmation)")
   }
 }
 
@@ -3448,6 +3462,289 @@ def recordDabEvent(String eventType, Map data) {
   }
 }
 
+// Helper function to ensure migration of DAB state structures
+def ensureMigration() {
+  try {
+    if (atomicState.dabMigration_v2 == true) {
+      return // Already migrated
+    }
+    
+    log(3, 'DAB', 'Running migration v2 for DAB enhancements')
+    
+    // Ensure thermostat1State has required keys
+    if (!atomicState.thermostat1State) {
+      atomicState.thermostat1State = [:]
+    }
+    
+    def state = atomicState.thermostat1State
+    Long currentTime = now()
+    
+    // Initialize missing state keys
+    if (!state.containsKey('startedRunning')) { state.startedRunning = null }
+    if (!state.containsKey('startedCycleHour')) { state.startedCycleHour = null }
+    if (!state.containsKey('startedCycleTs')) { state.startedCycleTs = null }
+    if (!state.containsKey('hvacCurrentMode')) { state.hvacCurrentMode = 'idle' }
+    if (!state.containsKey('hvacLastMode')) { state.hvacLastMode = 'idle' }
+    if (!state.containsKey('hvacLastChangeTs')) { state.hvacLastChangeTs = currentTime }
+    
+    atomicState.thermostat1State = state
+    
+    // Backfill dabHistory structure placeholders if needed  
+    def roomCount = 0
+    if (atomicState.ventsByRoomId) {
+      atomicState.ventsByRoomId.each { roomId, ventIds ->
+        roomCount++
+        // Create placeholder effective rate entries if missing
+        // This ensures consistent state without writing samples yet
+        def currentHour = new Date().format('H', location?.timeZone ?: TimeZone.getTimeZone('UTC')) as Integer
+        ['cooling', 'heating'].each { mode ->
+          ensureDabHistoryPlaceholder(roomId, mode, currentHour)
+        }
+      }
+    }
+    
+    atomicState.dabMigration_v2 = true
+    log(3, 'DAB', "Migration v2 applied rooms=${roomCount}")
+    recordDabEvent('Migration', [version: 'v2', roomCount: roomCount, timestamp: currentTime])
+    
+  } catch (Exception e) {
+    log(2, 'DAB', "Migration v2 failed: ${e.message}")
+  }
+}
+
+// Helper to ensure DAB history placeholder exists
+def ensureDabHistoryPlaceholder(String roomId, String mode, Integer hour) {
+  try {
+    if (!atomicState.dabHistory) { atomicState.dabHistory = [:] }
+    if (!atomicState.dabHistory[roomId]) { atomicState.dabHistory[roomId] = [:] }
+    if (!atomicState.dabHistory[roomId][mode]) { atomicState.dabHistory[roomId][mode] = [:] }
+    if (!atomicState.dabHistory[roomId][mode][hour.toString()]) {
+      // Create placeholder entry with carryForwardUsed flag
+      atomicState.dabHistory[roomId][mode][hour.toString()] = [
+        effectiveRate: 0.0,
+        carryForwardUsed: 1,
+        samples: []
+      ]
+    }
+  } catch (ignore) { }
+}
+
+// Helper to derive current HVAC mode from temperature analysis
+def deriveCurrentHvacModeFromTemps() {
+  try {
+    return calculateHvacModeRobust() ?: 'idle'
+  } catch (Exception e) {
+    log(2, 'DAB', "Error deriving HVAC mode from temps: ${e.message}")
+    return 'idle'
+  }
+}
+
+// Helper to record cycle transitions with ASCII arrows and proper formatting
+def recordCycleTransition(String oldMode, String newMode, String phase) {
+  try {
+    String transition = "${oldMode} -> ${newMode}"  // Use ASCII arrow
+    log(3, 'DAB', "${phase}: ${transition}")
+    recordDabEvent('CycleTransition', [
+      phase: phase,
+      from: oldMode,
+      to: newMode,
+      timestamp: now()
+    ])
+  } catch (Exception e) {
+    log(2, 'DAB', "Error recording cycle transition: ${e.message}")
+  }
+}
+
+// Helper to check if cycle start should be confirmed
+def maybeStartCycle(String hvacMode, String previousMode) {
+  try {
+    if (hvacMode == previousMode) {
+      return false // No mode change
+    }
+    
+    if (!(hvacMode in [COOLING, HEATING]) || previousMode != 'idle') {
+      return false // Not a valid start transition
+    }
+    
+    Long currentTime = now()
+    Long lastRestart = atomicState.lastCycleRestart ?: 0
+    
+    // Check minimum restart interval
+    if (currentTime - lastRestart < (MIN_CYCLE_RESTART_SECONDS * 1000)) {
+      log(4, 'DAB', "Cycle start suppressed: too soon after last restart")
+      return false
+    }
+    
+    // Initialize or increment confirmation counter
+    def confirmKey = "startConfirm_${hvacMode}"
+    Integer confirmCount = (atomicState[confirmKey] ?: 0) + 1
+    atomicState[confirmKey] = confirmCount
+    
+    log(4, 'DAB', "Cycle start confirmation: ${confirmCount}/${START_CONFIRMATION_POLLS} for ${hvacMode}")
+    
+    if (confirmCount >= START_CONFIRMATION_POLLS) {
+      // Reset confirmation counter and allow start
+      atomicState.remove(confirmKey)
+      atomicState.lastCycleRestart = currentTime
+      return true
+    }
+    
+    return false // Need more confirmations
+    
+  } catch (Exception e) {
+    log(2, 'DAB', "Error in maybeStartCycle: ${e.message}")
+    return false
+  }
+}
+
+// Helper to check if cycle end should be confirmed  
+def maybeEndCycle(String hvacMode, String previousMode) {
+  try {
+    if (hvacMode == previousMode) {
+      return false // No mode change
+    }
+    
+    if (hvacMode != 'idle' || !(previousMode in [COOLING, HEATING])) {
+      return false // Not a valid end transition
+    }
+    
+    // Initialize or increment confirmation counter
+    def confirmKey = "endConfirm_${previousMode}"
+    Integer confirmCount = (atomicState[confirmKey] ?: 0) + 1
+    atomicState[confirmKey] = confirmCount
+    
+    log(4, 'DAB', "Cycle end confirmation: ${confirmCount}/${END_CONFIRMATION_POLLS} for ${previousMode}")
+    
+    if (confirmCount >= END_CONFIRMATION_POLLS) {
+      // Reset confirmation counter and allow end
+      atomicState.remove(confirmKey)
+      return true
+    }
+    
+    return false // Need more confirmations
+    
+  } catch (Exception e) {
+    log(2, 'DAB', "Error in maybeEndCycle: ${e.message}")
+    return false
+  }
+}
+
+// Enhanced finalizeCycle with parameter reconstruction and validation
+def finalizeCycleSafely(Map data) {
+  try {
+    log(3, 'DAB', 'Starting safe finalize cycle with parameter validation')
+    
+    // Reconstruct missing parameters instead of aborting
+    def safeData = [:]
+    
+    // Reconstruct ventIdsByRoomId if missing
+    safeData.ventIdsByRoomId = data.ventIdsByRoomId ?: atomicState.ventsByRoomId
+    if (!safeData.ventIdsByRoomId) {
+      log(2, 'DAB', 'Finalize aborted: No room-to-vent mapping available')
+      return
+    }
+    
+    // Reconstruct timing parameters
+    safeData.startedRunning = data.startedRunning ?: atomicState.thermostat1State?.startedRunning ?: atomicState.startedRunning
+    safeData.startedCycle = data.startedCycle ?: atomicState.thermostat1State?.startedCycle ?: atomicState.startedCycle  
+    safeData.finishedRunning = data.finishedRunning ?: now()
+    
+    // Reconstruct HVAC mode
+    safeData.hvacMode = data.hvacMode ?: atomicState.thermostat1State?.mode ?: atomicState.hvacCurrentMode ?: deriveCurrentHvacModeFromTemps()
+    
+    if (!safeData.startedRunning || !safeData.hvacMode || safeData.hvacMode == 'idle') {
+      log(2, 'DAB', 'Finalize skipped: Incomplete cycle data or idle mode')
+      recordDabEvent('CycleAbort', [reason: 'incompleteCycleData', data: safeData])
+      return
+    }
+    
+    // Check cycle duration
+    def cycleDurationSeconds = (safeData.finishedRunning - safeData.startedRunning) / 1000
+    
+    if (cycleDurationSeconds < MIN_VALID_CYCLE_SECONDS) {
+      log(3, 'DAB', "Cycle abort: Duration ${cycleDurationSeconds}s < minimum ${MIN_VALID_CYCLE_SECONDS}s")
+      recordDabEvent('CycleAbort', [
+        reason: 'shortDuration', 
+        duration: cycleDurationSeconds,
+        minimum: MIN_VALID_CYCLE_SECONDS
+      ])
+      // Still reset running flags even for short cycles
+      resetCycleFlags()
+      return
+    }
+    
+    log(3, 'DAB', "Finalizing cycle: mode=${safeData.hvacMode}, duration=${cycleDurationSeconds}s")
+    
+    // Call the actual finalization with safe parameters
+    finalizeRoomStates(safeData)
+    
+    // Emit HourCommit event if samples were processed
+    def samplesCount = countRecentSamples()
+    if (samplesCount > 0) {
+      recordDabEvent('HourCommit', [
+        samplesCount: samplesCount,
+        cycleMode: safeData.hvacMode,
+        cycleDuration: cycleDurationSeconds,
+        timestamp: now()
+      ])
+      log(3, 'DAB', "HourCommit: ${samplesCount} samples committed")
+    } else {
+      recordDabEvent('HourCommit', [
+        reason: 'NoDelta',
+        cycleMode: safeData.hvacMode,
+        cycleDuration: cycleDurationSeconds
+      ])
+      log(3, 'DAB', 'HourCommit: No qualifying room deltas to commit')
+    }
+    
+  } catch (Exception e) {
+    log(2, 'DAB', "Error in finalizeCycleSafely: ${e.message}")
+    recordDabEvent('CycleAbort', [reason: 'exception', error: e.message])
+  } finally {
+    resetCycleFlags()
+  }
+}
+
+// Helper to reset cycle tracking flags
+def resetCycleFlags() {
+  try {
+    atomicState.remove('startedRunning')  
+    atomicState.remove('startedCycle')
+    // Clear any pending confirmations
+    atomicState.findAll { it.key.startsWith('startConfirm_') || it.key.startsWith('endConfirm_') }
+                 .each { atomicState.remove(it.key) }
+  } catch (ignore) { }
+}
+
+// Helper to count recently committed samples
+def countRecentSamples() {
+  try {
+    def count = 0
+    Long oneHourAgo = now() - (60 * 60 * 1000)
+    
+    if (atomicState.dabHistory) {
+      atomicState.dabHistory.each { roomId, roomData ->
+        roomData.each { mode, modeData ->
+          modeData.each { hour, hourData ->
+            if (hourData.samples) {
+              hourData.samples.each { sample ->
+                if (sample.timestamp && sample.timestamp > oneHourAgo) {
+                  count++
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    return count
+  } catch (Exception e) {
+    log(3, 'DAB', "Error counting recent samples: ${e.message}")
+    return 0
+  }
+}
+
 def reBalanceVents() {
   log(3, 'App', 'Rebalancing Vents!!!')
   appendDabActivityLog("Rebalancing vents")
@@ -3458,7 +3755,7 @@ def reBalanceVents() {
     finishedRunning: now(),
     hvacMode: atomicState.thermostat1State?.mode
   ]
-  finalizeRoomStates(params)
+  finalizeCycleSafely(params)
   initializeRoomStates(atomicState.thermostat1State?.mode)
   try {
     def decisions = (state.recentVentDecisions ?: []).findAll { it.stage == 'final' }
