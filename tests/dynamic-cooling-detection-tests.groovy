@@ -149,4 +149,86 @@ class DynamicCoolingDetectionTests extends Specification {
     collapsePercent == 0.8  // 80% collapse
     meetsCollapseCriteria == true  // Exceeds 55% threshold and under 0.8°F
   }
+
+  def "cycle transition logging format"() {
+    setup:
+    def fromMode = 'cooling'
+    def toMode = 'idle'
+    def details = 'Dynamic end detected'
+
+    when:
+    def arrow = fromMode == toMode ? '=' : '->'
+    def logMessage = "HVAC Transition: ${fromMode} ${arrow} ${toMode}"
+    if (details) {
+      logMessage += " (${details})"
+    }
+
+    then:
+    arrow == '->'
+    logMessage == 'HVAC Transition: cooling -> idle (Dynamic end detected)'
+  }
+
+  def "fan-only mode transition handling"() {
+    setup:
+    def previousMode = 'cooling'
+    def isFanActive = true
+    def fanOnlyOpenAllVents = true
+
+    when:
+    def shouldTransitionToFanOnly = fanOnlyOpenAllVents && isFanActive
+    def shouldCleanupCycle = shouldTransitionToFanOnly && previousMode != 'idle'
+
+    then:
+    shouldTransitionToFanOnly == true
+    shouldCleanupCycle == true
+  }
+
+  def "parameter reconstruction logic"() {
+    setup:
+    def data = [:]
+    def mockThermostatState = [
+      startedCycle: 1000L,
+      startedRunning: 2000L,
+      mode: 'cooling'
+    ]
+
+    when:
+    // Simulate parameter reconstruction
+    if (!data.startedCycle && mockThermostatState.startedCycle) {
+      data.startedCycle = mockThermostatState.startedCycle
+    }
+    if (!data.hvacMode && mockThermostatState.mode) {
+      data.hvacMode = mockThermostatState.mode
+    }
+    if (!data.finishedRunning) {
+      data.finishedRunning = System.currentTimeMillis()
+    }
+
+    then:
+    data.startedCycle == 1000L
+    data.hvacMode == 'cooling'
+    data.finishedRunning != null
+  }
+
+  def "diagnostic structure validation"() {
+    setup:
+    def diagnostics = [
+      hourlyCommits: 0,
+      cycleAborts: 0,
+      cycleTransitions: 0,
+      hardResets: 0,
+      stuckWarnings: 0
+    ]
+
+    when:
+    // Simulate events
+    diagnostics.hourlyCommits++
+    diagnostics.cycleTransitions++
+    diagnostics.lastHourlyCommit = System.currentTimeMillis()
+
+    then:
+    diagnostics.hourlyCommits == 1
+    diagnostics.cycleTransitions == 1
+    diagnostics.lastHourlyCommit != null
+  }
 }

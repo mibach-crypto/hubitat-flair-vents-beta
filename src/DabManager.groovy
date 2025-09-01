@@ -301,6 +301,36 @@ def checkCoolingStart() {
     return false
 }
 
+/** Handle cycle abort situations with proper cleanup and event recording. */
+def handleCycleAbort(String reason = 'Unknown') {
+    def thermostatState = app.atomicState.thermostat1State
+    if (!thermostatState) return
+    
+    app.log(2, 'DAB', "Cycle abort detected: ${reason}")
+    
+    // Record as CycleAbort event for diagnostics
+    try {
+        def diagnostics = app.atomicState.diagnostics ?: [:]
+        diagnostics.cycleAborts = (diagnostics.cycleAborts ?: 0) + 1
+        diagnostics.lastCycleAbort = app.now()
+        diagnostics.lastCycleAbortReason = reason
+        app.atomicState.diagnostics = diagnostics
+    } catch (ignore) { }
+    
+    // Clean up all scheduling
+    app.unschedule('initializeRoomStates')
+    app.unschedule('finalizeRoomStates') 
+    app.unschedule('evaluateRebalancingVents')
+    app.unschedule('reBalanceVents')
+    app.unschedule('performHourlyCommit')
+    
+    // Clean up state
+    resetCoolingCycleState()
+    app.atomicState.remove('thermostat1State')
+    
+    app.appendDabActivityLog("Cycle aborted: ${reason}")
+}
+
 /** Handle mid-cycle hourly commits for continuous runs. */
 def performHourlyCommit() {
     def thermostatState = app.atomicState.thermostat1State
@@ -415,10 +445,54 @@ def initializeRoomStates(String hvacMode) {
     }
 }
 
+/** Reconstruct missing parameters for finalize operations to prevent abort. */
+def reconstructMissingParameters(data) {
+    if (!data) {
+        data = [:]
+    }
+    
+    // Reconstruct ventIdsByRoomId if missing
+    if (!data.ventIdsByRoomId && app.atomicState.ventsByRoomId) {
+        data.ventIdsByRoomId = app.atomicState.ventsByRoomId
+        app.log(3, 'DAB', 'Reconstructed missing ventIdsByRoomId parameter')
+    }
+    
+    // Reconstruct cycle times if missing but thermostat state exists
+    def thermostatState = app.atomicState.thermostat1State
+    if (thermostatState) {
+        if (!data.startedCycle && thermostatState.startedCycle) {
+            data.startedCycle = thermostatState.startedCycle
+            app.log(3, 'DAB', 'Reconstructed missing startedCycle parameter')
+        }
+        
+        if (!data.startedRunning && thermostatState.startedRunning) {
+            data.startedRunning = thermostatState.startedRunning
+            app.log(3, 'DAB', 'Reconstructed missing startedRunning parameter')
+        }
+        
+        if (!data.hvacMode && thermostatState.mode) {
+            data.hvacMode = thermostatState.mode
+            app.log(3, 'DAB', 'Reconstructed missing hvacMode parameter')
+        }
+    }
+    
+    // Set finishedRunning if missing
+    if (!data.finishedRunning) {
+        data.finishedRunning = app.now()
+        app.log(3, 'DAB', 'Set missing finishedRunning parameter to current time')
+    }
+    
+    return data
+}
+
 /** Finalizes a DAB cycle when the HVAC turns off. */
 def finalizeRoomStates(data) {
+    // Reconstruct missing parameters to prevent abort
+    data = reconstructMissingParameters(data)
+    
     if (!data.ventIdsByRoomId || !data.startedCycle || !data.finishedRunning) {
-        app.logWarn "Finalizing room states: missing required parameters (${data})", 'DAB'
+        app.logWarn "Finalizing room states: missing required parameters after reconstruction (${data})", 'DAB'
+        handleCycleAbort('Missing required parameters')
         return
     }
     if (!data.startedRunning || !data.hvacMode) {
@@ -557,13 +631,57 @@ def evaluateRebalancingVents() {
     }
 }
 
+/** Record cycle transition with consistent logging and ASCII arrows. */
+def recordCycleTransition(String fromMode, String toMode, String details = '') {
+    def arrow = fromMode == toMode ? '=' : '->'
+    def logMessage = "HVAC Transition: ${fromMode} ${arrow} ${toMode}"
+    if (details) {
+        logMessage += " (${details})"
+    }
+    
+    app.log(2, 'CycleTransition', logMessage)
+    app.appendDabActivityLog(logMessage)
+    
+    // Record transition event for diagnostics
+    try {
+        def diagnostics = app.atomicState.diagnostics ?: [:]
+        diagnostics.cycleTransitions = (diagnostics.cycleTransitions ?: 0) + 1
+        diagnostics.lastCycleTransition = app.now()
+        diagnostics.lastTransitionDetails = "${fromMode} ${arrow} ${toMode}"
+        app.atomicState.diagnostics = diagnostics
+    } catch (ignore) { }
+}
+
 /** Primary trigger for DAB. Uses duct temps to determine HVAC state. */
 def updateHvacStateFromDuctTemps() {
     String previousMode = app.atomicState.thermostat1State?.mode ?: 'idle'
     String hvacMode = (calculateHvacModeRobust() ?: 'idle')
     
+    // Check for fan-only mode before processing normal HVAC modes
+    if (app.settings.fanOnlyOpenAllVents && app.isFanActive()) {
+        if (previousMode != 'idle') {
+            recordCycleTransition(previousMode, 'fan-only', 'Fan-only mode detected')
+            // Clean up any active DAB cycle
+            if (app.atomicState.thermostat1State) {
+                app.unschedule('initializeRoomStates')
+                app.unschedule('finalizeRoomStates')
+                app.unschedule('evaluateRebalancingVents')
+                app.unschedule('reBalanceVents')
+                app.unschedule('performHourlyCommit')
+                app.atomicState.remove('thermostat1State')
+                resetCoolingCycleState()
+            }
+        }
+        
+        if (app.atomicState.ventsByRoomId) {
+            app.log(2, 'DAB', 'Fan-only mode active - opening all vents to 100%')
+            app.openAllVents(app.atomicState.ventsByRoomId, app.MAX_PERCENTAGE_OPEN as int)
+        }
+        return  // Skip normal DAB processing
+    }
+    
     if (hvacMode != previousMode) {
-        app.appendDabActivityLog("HVAC State Change: ${previousMode} -> ${hvacMode}")
+        recordCycleTransition(previousMode, hvacMode)
         try { app.atomicState.hvacLastMode = previousMode } catch (ignore) { }
         try { app.atomicState.hvacCurrentMode = hvacMode } catch (ignore) { }
         try { app.atomicState.hvacLastChangeTs = app.now() } catch (ignore) { }
