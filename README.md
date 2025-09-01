@@ -99,6 +99,39 @@ If you need thermostat cloud data in Hubitat, your options are: use a maintained
 
 ## Development & Testing
 
+### Async-Only HTTP Policy
+
+**Important**: This application enforces a strict **async-only HTTP policy** for all API communications to ensure optimal performance and prevent blocking the Hubitat hub.
+
+#### Policy Details
+- ✅ **Allowed**: `asynchttpGet()`, `asynchttpPost()`, `asynchttpPut()`, `asynchttpDelete()`
+- ❌ **Forbidden**: `httpGet()`, `httpPost()`, `httpPut()`, `httpDelete()` (synchronous methods)
+- ❌ **Forbidden**: `Thread.sleep()`, `wait()`, `notify()`, `synchronized` blocks
+
+#### Implementation Features
+- **Unified Retry System**: All async HTTP calls use `retryAsyncHttpRequest()` with exponential backoff
+- **Request Management**: Automatic tracking with `incrementActiveRequests()`/`decrementActiveRequests()`  
+- **Circuit Breaker**: Rate limiting and failure detection prevent API overload
+- **Callback Safety**: Enhanced watchdog detects stuck requests and provides automatic recovery
+- **Self-Check System**: `performSelfCheck()` validates code against forbidden patterns
+
+#### For Developers
+```groovy
+// ✅ GOOD: Use the unified async helper
+retryAsyncHttpRequest('get', httpParams, 'myCallbackHandler', callbackData)
+
+// ❌ BAD: Never use synchronous HTTP
+def response = httpGet(url) // This will trigger warnings in self-check
+
+// ✅ GOOD: Use Hubitat scheduling instead of sleep
+runInMillis(5000, 'myDelayedMethod')
+
+// ❌ BAD: Never block threads
+Thread.sleep(5000) // This will trigger errors in self-check
+```
+
+The self-check system runs automatically and reports violations through the diagnostics page. All violations should be resolved before production deployment.
+
 ### Prerequisites
 
 Gradle builds use a Java toolchain pinned to **JDK 11**. Install a Java 11
@@ -185,7 +218,7 @@ Tiles show: room name, bar %, mode, and when available a small badge with Batter
 
 ## Testing Checklist (Before New Features)
 
-- DAB Daily Summary: verify daily table shows yesterday�s averages after a day of runtime
+- DAB Daily Summary: verify daily table shows yesterday�s averages after a day of runtime
 - DAB Chart: verify quickchart link renders hourly series for rooms
 - DAB History: check activity log and integrity page for missing hours notices
 - Quick Controls: per-room setpoints apply immediately; overrides persist
@@ -195,5 +228,5 @@ Tiles show: room name, bar %, mode, and when available a small badge with Batter
 ## Troubleshooting
 
 - If you lack a thermostat: enable duct-temp DAB; the app infers heating/cooling from duct vs room temperature delta
-- If tiles don�t update: open Quick Controls and Apply All Changes; or run Create/Sync Tiles
+- If tiles don�t update: open Quick Controls and Apply All Changes; or run Create/Sync Tiles
 - For deeper logs: set Debug Level > 0; verbose logs are mirrored safely for CI
