@@ -157,4 +157,72 @@ class DabFixesValidationTests extends Specification {
     then: 'dramatic swing is detected and logged'
     log.logs.any { it.contains('dramatic temperature swing') || it.contains('Dramatic temperature swing') }
   }
+
+  def "DAB system health check identifies configuration issues"() {
+    setup:
+    final log = new CapturingLog()
+    AppExecutor executorApi = Mock {
+      _ * getState() >> [:]
+      _ * getLog() >> log
+    }
+    def sandbox = new HubitatAppSandbox(APP_FILE)
+    def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
+    script.location = [timeZone: TimeZone.getTimeZone('UTC')]
+    script.settings = [dabEnabled: true, dabHistoryRetentionDays: 10]
+
+    and: 'setup a problematic DAB configuration'
+    script.atomicState = [
+      dabEnabled: true,
+      dabHistory: [entries: [], hourlyRates: [:]],
+      dabHistoryErrors: ['Error 1', 'Error 2'],
+      ventsByRoomId: [
+        validRoom: ['vent1', 'vent2'],
+        invalidRoom: [] // Empty vent list
+      ]
+    ]
+
+    when: 'running health check'
+    def report = script.validateDabSystemHealth()
+
+    then: 'issues are identified'
+    report != null
+    report.status == 'ISSUES_DETECTED'
+    report.issues.any { it.contains('invalid data') }
+    report.stats.errorCount == 2
+    report.stats.totalRooms == 2
+  }
+
+  def "getLastObservedHourlyRate respects retention window"() {
+    setup:
+    final log = new CapturingLog()
+    AppExecutor executorApi = Mock {
+      _ * getState() >> [:]
+      _ * getLog() >> log
+    }
+    def sandbox = new HubitatAppSandbox(APP_FILE)
+    def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
+    script.location = [timeZone: TimeZone.getTimeZone('UTC')]
+    script.settings = [dabHistoryRetentionDays: 1] // 1 day retention
+
+    and: 'setup history with old and new entries'
+    Long now = System.currentTimeMillis()
+    Long oldEntry = now - 2 * 24 * 60 * 60 * 1000L // 2 days old (outside retention)
+    Long newEntry = now - 1 * 60 * 60 * 1000L // 1 hour old (inside retention)
+    
+    script.atomicState = [
+      dabHistory: [
+        entries: [
+          [oldEntry, 'room1', 'cooling', 0, 3.0], // Old entry (should be ignored)
+          [newEntry, 'room1', 'cooling', 0, 2.0]  // New entry (should be used)
+        ],
+        hourlyRates: [:]
+      ]
+    ]
+
+    when: 'getting last observed rate'
+    def result = script.getLastObservedHourlyRate('room1', 'cooling', 0)
+
+    then: 'only entry within retention window is returned'
+    result == 2.0 // Should get the newer entry, not the older one
+  }
 }

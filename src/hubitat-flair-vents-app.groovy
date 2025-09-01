@@ -3514,19 +3514,44 @@ def getAverageHourlyRate(String roomId, String hvacMode, Integer hour) {
 // Find the most recent recorded rate for a room/mode/hour within retention
 private BigDecimal getLastObservedHourlyRate(String roomId, String hvacMode, Integer hour) {
   try {
+    // Input validation
+    if (!roomId || !hvacMode || hour == null) {
+      return null
+    }
+    
     def hist = atomicState?.dabHistory
     def entries = (hist instanceof List) ? (hist as List) : (hist?.entries ?: [])
-    if (!entries) { return null }
-    // Iterate from newest to oldest
+    if (!entries || entries.size() == 0) { return null }
+    
+    // Calculate retention cutoff time
+    Integer retention = getRetentionDays()
+    Long cutoff = now() - retention * 24L * 60L * 60L * 1000L
+    
+    // Iterate from newest to oldest within retention window
     for (int idx = entries.size()-1; idx >= 0; idx--) {
       def e = entries[idx]
       try {
-        if (e[1] == roomId && e[2] == hvacMode && (e[3] as Integer) == (hour as Integer)) {
-          return (e[4] as BigDecimal)
+        // Check if entry is within retention window
+        Long entryTime = e[0] as Long
+        if (entryTime < cutoff) {
+          break // No need to check older entries
         }
-      } catch (ignore) { }
+        
+        // Check if entry matches criteria
+        if (e[1] == roomId && e[2] == hvacMode && (e[3] as Integer) == (hour as Integer)) {
+          BigDecimal rate = e[4] as BigDecimal
+          // Validate rate value before returning
+          if (rate != null && rate >= 0 && rate <= MAX_TEMP_CHANGE_RATE) {
+            return rate
+          }
+        }
+      } catch (ignore) { 
+        // Skip malformed entries
+      }
     }
-  } catch (ignoreOuter) { }
+  } catch (ignoreOuter) { 
+    log(2, 'DAB', "Error finding last observed rate for ${roomId}/${hvacMode}/${hour}: ${ignoreOuter?.message}")
+  }
   return null
 }
 
@@ -3930,7 +3955,105 @@ def recordHistoryError(String message) {
   def errs = atomicState?.dabHistoryErrors ?: []
   String ts = new Date().format('yyyy-MM-dd HH:mm:ss', location?.timeZone ?: TimeZone.getTimeZone('UTC'))
   errs << "${ts} - ${message}"
+  
+  // Limit error history to prevent memory bloat
+  if (errs.size() > 100) {
+    errs = errs[-100..-1]
+  }
+  
   atomicState?.dabHistoryErrors = errs
+}
+
+// Validate DAB system health and provide diagnostic information
+def validateDabSystemHealth() {
+  def report = [:]
+  report.timestamp = new Date().format('yyyy-MM-dd HH:mm:ss', location?.timeZone ?: TimeZone.getTimeZone('UTC'))
+  report.issues = []
+  report.stats = [:]
+  
+  try {
+    // Check if DAB is enabled
+    if (!isDabEnabled()) {
+      report.issues << "DAB is not enabled"
+      return report
+    }
+    
+    // Validate DAB history structure
+    def hist = atomicState?.dabHistory
+    if (!hist) {
+      report.issues << "DAB history is null"
+      return report
+    }
+    
+    if (!(hist instanceof Map)) {
+      report.issues << "DAB history has incorrect data structure (not Map)"
+    }
+    
+    if (!hist.entries) {
+      report.issues << "DAB history entries is null or missing"
+    } else {
+      report.stats.totalEntries = hist.entries.size()
+    }
+    
+    if (!hist.hourlyRates) {
+      report.issues << "DAB hourly rates index is null or missing"
+    } else {
+      report.stats.roomsWithData = hist.hourlyRates.size()
+    }
+    
+    // Check retention settings
+    Integer retention = getRetentionDays()
+    if (retention < 1 || retention > 30) {
+      report.issues << "DAB retention days is out of valid range: ${retention}"
+    } else {
+      report.stats.retentionDays = retention
+    }
+    
+    // Validate entries within retention window
+    if (hist.entries) {
+      Long cutoff = now() - retention * 24L * 60L * 60L * 1000L
+      def validEntries = hist.entries.findAll { e ->
+        try { return (e[0] as Long) >= cutoff } catch (ignore) { return false }
+      }
+      def invalidEntries = hist.entries.size() - validEntries.size()
+      if (invalidEntries > 0) {
+        report.issues << "Found ${invalidEntries} entries outside retention window that need cleanup"
+      }
+      report.stats.validEntries = validEntries.size()
+    }
+    
+    // Check for errors in DAB history
+    def errors = atomicState?.dabHistoryErrors ?: []
+    if (errors.size() > 0) {
+      report.issues << "DAB has recorded ${errors.size()} errors - check dabHistoryErrors"
+      report.stats.errorCount = errors.size()
+      report.recentErrors = errors.size() > 5 ? errors[-5..-1] : errors
+    }
+    
+    // Validate room data
+    if (atomicState?.ventsByRoomId) {
+      report.stats.totalRooms = atomicState.ventsByRoomId.size()
+      
+      // Check for rooms with invalid data
+      def problematicRooms = []
+      atomicState.ventsByRoomId.each { roomId, ventIds ->
+        if (!roomId || !ventIds || ventIds.size() == 0) {
+          problematicRooms << roomId
+        }
+      }
+      if (problematicRooms.size() > 0) {
+        report.issues << "Found rooms with invalid data: ${problematicRooms}"
+      }
+    }
+    
+    report.status = report.issues.size() == 0 ? 'HEALTHY' : 'ISSUES_DETECTED'
+    
+  } catch (Exception e) {
+    report.issues << "Exception during health check: ${e?.message}"
+    report.status = 'ERROR'
+  }
+  
+  return report
 }
 
 private boolean isFanActive(String opState = null) {
