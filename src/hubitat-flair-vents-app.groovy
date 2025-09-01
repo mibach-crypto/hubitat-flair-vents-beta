@@ -1899,6 +1899,15 @@ def initializeDabTracking() {
     atomicState.dabActivityLog = atomicState.dabActivityLog ?: []
     atomicState.recentVentDecisions = atomicState.recentVentDecisions ?: []
     state.recentErrors = state.recentErrors ?: []
+    
+    // Initialize diagnostic tracking for new features
+    atomicState.diagnostics = atomicState.diagnostics ?: [:]
+    
+    // Cooling cycle state is initialized on-demand in DabManager
+    // but we ensure the parent diagnostics structure exists
+    if (!atomicState.diagnostics.hourlyCommits) {
+      atomicState.diagnostics.hourlyCommits = 0
+    }
   } catch (ignored) { }
 }
 

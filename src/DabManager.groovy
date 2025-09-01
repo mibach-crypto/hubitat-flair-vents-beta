@@ -41,9 +41,307 @@ import groovy.transform.Field
 @Field static final BigDecimal DEFAULT_COOLING_SETPOINT_C = 24.0
 @Field static final BigDecimal DEFAULT_HEATING_SETPOINT_C = 20.0
 
+// Dynamic Cooling End Detection Constants
+@Field static final Integer POLL_INTERVAL_SECONDS = 60
+@Field static final Integer STABILIZATION_POLLS = 2
+@Field static final BigDecimal EMA_ALPHA = 0.25
+@Field static final BigDecimal COOLING_BASE_RISE_F = 3.0
+@Field static final BigDecimal COOLING_MIN_RISE_FROM_MIN_F = 2.0
+@Field static final BigDecimal COOLING_FAST_RISE_F = 5.0
+@Field static final BigDecimal COOLING_DELTA_COLLAPSE_PCT = 0.55
+@Field static final BigDecimal COOLING_DELTA_ABSOLUTE_MIN_F = 0.8
+@Field static final BigDecimal COOLING_BASE_MAX_VAR_F = 1.5
+@Field static final Integer END_CONFIRMATION_POLLS = 2
+@Field static final Integer MIN_VALID_CYCLE_SECONDS = 180
+
 // =================================================================================
-// Core Balancing Lifecycle Methods
+// Dynamic Cooling End Detection State Management
 // =================================================================================
+
+/** Initialize cooling cycle tracking state for dynamic end detection. */
+def initializeCoolingCycleState() {
+    if (!app.atomicState.coolingCycleState) {
+        app.atomicState.coolingCycleState = [
+            ductMinF: null,                    // Minimum duct temp seen this cycle
+            ductBaseF: null,                   // EMA of base duct temp
+            deltaBaseF: null,                  // EMA of hottest-room delta  
+            lastDuctTemps: [],                 // Rolling 5 samples of duct temps
+            lastRoomDeltas: [],                // Rolling 5 samples of room deltas
+            stabilizationPolls: STABILIZATION_POLLS,  // Countdown for stabilization
+            confirmationCount: 0,              // Consecutive polls confirming end
+            cycleStartTime: app.now(),         // When cycle started
+            pollCount: 0,                      // Total polls this cycle
+            endReason: null,                   // Why cycle ended
+            riseAmountF: null,                 // Amount of rise detected
+            collapsePercent: null              // Percent of delta collapse
+        ]
+        app.log(3, 'CycleCool', 'Initialized cooling cycle state for dynamic end detection')
+    }
+}
+
+/** Reset cooling cycle state at the start of a new cycle. */
+def resetCoolingCycleState() {
+    app.atomicState.coolingCycleState = null
+    app.log(3, 'CycleCool', 'Reset cooling cycle state')
+}
+
+/** Update EMA (Exponential Moving Average) value. */
+private def updateEMA(BigDecimal currentEMA, BigDecimal newValue, BigDecimal alpha = EMA_ALPHA) {
+    if (currentEMA == null) {
+        return newValue
+    }
+    return (alpha * newValue) + ((1.0 - alpha) * currentEMA)
+}
+
+/** Add value to rolling array and maintain max size. */
+private def addToRollingArray(List array, def value, int maxSize = 5) {
+    array.add(value)
+    while (array.size() > maxSize) {
+        array.remove(0)
+    }
+    return array
+}
+
+/** Get current duct temperature from all vents (median). */
+private def getCurrentDuctTempF() {
+    def vents = app.getChildDevices()?.findAll { 
+        it.currentValue('duct-temperature-c') != null 
+    }
+    
+    if (!vents) return null
+    
+    def temps = vents.collect { v ->
+        try {
+            def tempC = v.currentValue('duct-temperature-c') as BigDecimal
+            return (tempC * 9.0/5.0) + 32.0  // Convert to Fahrenheit
+        } catch (ignore) { return null }
+    }.findAll { it != null }
+    
+    if (!temps) return null
+    
+    def sorted = temps.sort()
+    return sorted[sorted.size().intdiv(2)] as BigDecimal
+}
+
+/** Get current hottest room delta (room temp - setpoint) in Fahrenheit. */
+private def getHottestRoomDeltaF() {
+    def vents = app.getChildDevices()?.findAll { 
+        it.currentValue('room-current-temperature-c') != null ||
+        it.currentValue('current-temperature-c') != null
+    }
+    
+    if (!vents) return null
+    
+    def setpointC = app.getGlobalSetpoint(COOLING) ?: DEFAULT_COOLING_SETPOINT_C
+    def setpointF = (setpointC * 9.0/5.0) + 32.0
+    
+    def deltas = vents.collect { v ->
+        try {
+            def tempC = (v.currentValue('room-current-temperature-c') ?: 
+                        v.currentValue('current-temperature-c')) as BigDecimal
+            def tempF = (tempC * 9.0/5.0) + 32.0
+            return tempF - setpointF  // How much above setpoint
+        } catch (ignore) { return null }
+    }.findAll { it != null }
+    
+    return deltas ? deltas.max() : null
+}
+
+/** Dynamic cooling end detection with multiple criteria paths. */
+def checkDynamicCoolingEnd() {
+    def state = app.atomicState.coolingCycleState
+    if (!state) return false
+    
+    def currentDuctF = getCurrentDuctTempF()
+    def currentDeltaF = getHottestRoomDeltaF()
+    
+    if (currentDuctF == null || currentDeltaF == null) {
+        app.log(4, 'CycleCool', 'Cannot check cooling end - missing temperature readings')
+        return false
+    }
+    
+    state.pollCount++
+    
+    // Update minimums and EMAs
+    if (state.ductMinF == null || currentDuctF < state.ductMinF) {
+        state.ductMinF = currentDuctF
+    }
+    
+    state.ductBaseF = updateEMA(state.ductBaseF, currentDuctF)
+    state.deltaBaseF = updateEMA(state.deltaBaseF, currentDeltaF)
+    
+    // Update rolling arrays
+    addToRollingArray(state.lastDuctTemps, currentDuctF, 5)
+    addToRollingArray(state.lastRoomDeltas, currentDeltaF, 5)
+    
+    // Check if we're still in stabilization period
+    if (state.stabilizationPolls > 0) {
+        state.stabilizationPolls--
+        app.log(3, 'CycleCool', "Stabilization: ${state.stabilizationPolls} polls remaining, duct=${String.format('%.1f', currentDuctF)}°F, delta=${String.format('%.1f', currentDeltaF)}°F")
+        app.atomicState.coolingCycleState = state
+        return false
+    }
+    
+    // Check minimum cycle duration (unless aborted)
+    def cycleSeconds = (app.now() - state.cycleStartTime) / 1000
+    if (cycleSeconds < MIN_VALID_CYCLE_SECONDS) {
+        app.atomicState.coolingCycleState = state
+        return false
+    }
+    
+    // Check end criteria paths
+    def endDetected = false
+    def endReason = null
+    def riseAmount = null
+    def collapsePercent = null
+    
+    // Path A: Base Rise Detection
+    if (state.ductBaseF != null && state.ductMinF != null) {
+        riseAmount = state.ductBaseF - state.ductMinF
+        if (riseAmount >= COOLING_BASE_RISE_F || riseAmount >= COOLING_MIN_RISE_FROM_MIN_F) {
+            endDetected = true
+            endReason = "Rise(A)"
+        }
+    }
+    
+    // Path B: Delta Collapse Detection
+    if (!endDetected && state.deltaBaseF != null && state.lastRoomDeltas.size() >= 3) {
+        def initialDelta = state.lastRoomDeltas[0]
+        def currentCollapse = initialDelta > 0 ? (initialDelta - currentDeltaF) / initialDelta : 0
+        if (currentCollapse >= COOLING_DELTA_COLLAPSE_PCT && currentDeltaF <= COOLING_DELTA_ABSOLUTE_MIN_F) {
+            endDetected = true
+            endReason = "DeltaCollapse(B)"
+            collapsePercent = currentCollapse
+        }
+    }
+    
+    // Path C: Fast Rise Detection
+    if (!endDetected && state.lastDuctTemps.size() >= 2) {
+        def fastRise = currentDuctF - state.lastDuctTemps[-2]  // Compare to previous poll
+        if (fastRise >= COOLING_FAST_RISE_F) {
+            endDetected = true
+            endReason = "FastRise(C)"
+            riseAmount = fastRise
+        }
+    }
+    
+    // Path D: Trend Slope Detection (optional - simple version)
+    if (!endDetected && state.lastDuctTemps.size() >= 5) {
+        def oldTemp = state.lastDuctTemps[0]
+        def slope = (currentDuctF - oldTemp) / 5.0  // Rise per poll over 5 polls
+        if (slope > 0.5) {  // Rising trend
+            endDetected = true
+            endReason = "TrendSlope(D)"
+            riseAmount = slope * 5.0
+        }
+    }
+    
+    // Handle end detection confirmation
+    if (endDetected) {
+        state.confirmationCount++
+        app.log(3, 'CycleCool', "End detected via ${endReason}, confirmation ${state.confirmationCount}/${END_CONFIRMATION_POLLS}")
+    } else {
+        state.confirmationCount = 0  // Reset if no end detected
+    }
+    
+    // Check if we have enough confirmation
+    if (state.confirmationCount >= END_CONFIRMATION_POLLS) {
+        state.endReason = endReason
+        state.riseAmountF = riseAmount
+        state.collapsePercent = collapsePercent
+        
+        def logMsg = "Cooling cycle end confirmed: ${endReason}"
+        if (riseAmount != null) logMsg += ", rise=${String.format('%.1f', riseAmount)}°F"
+        if (collapsePercent != null) logMsg += ", collapse=${String.format('%.0f', collapsePercent * 100)}%"
+        
+        app.log(2, 'CycleCool', logMsg)
+        app.atomicState.coolingCycleState = state
+        return true
+    }
+    
+    app.atomicState.coolingCycleState = state
+    return false
+}
+
+/** Enhanced cooling start detection with baseline initialization. */
+def checkCoolingStart() {
+    def currentDuctF = getCurrentDuctTempF()
+    def currentDeltaF = getHottestRoomDeltaF() 
+    
+    if (currentDuctF == null || currentDeltaF == null) return false
+    
+    // Use existing threshold-based detection but with baseline init
+    def vents = app.getChildDevices()?.findAll {
+        it.currentValue('duct-temperature-c') != null &&
+        (it.currentValue('room-current-temperature-c') != null || it.currentValue('current-temperature-c') != null)
+    }
+    
+    if (!vents || vents.isEmpty()) return false
+    
+    def diffs = []
+    vents.each { v ->
+        try {
+            BigDecimal duct = v.currentValue('duct-temperature-c') as BigDecimal
+            BigDecimal room = (v.currentValue('room-current-temperature-c') ?: v.currentValue('current-temperature-c')) as BigDecimal
+            diffs << (duct - room)
+        } catch (ignore) { }
+    }
+    
+    if (!diffs) return false
+    
+    def sorted = diffs.sort()
+    BigDecimal median = sorted[sorted.size().intdiv(2)] as BigDecimal
+    
+    // Cooling start detected if median difference < -DUCT_TEMP_DIFF_THRESHOLD
+    if (median < -DUCT_TEMP_DIFF_THRESHOLD) {
+        initializeCoolingCycleState()  // Initialize tracking for this cycle
+        return true
+    }
+    
+    return false
+}
+
+/** Handle mid-cycle hourly commits for continuous runs. */
+def performHourlyCommit() {
+    def thermostatState = app.atomicState.thermostat1State
+    if (!thermostatState || !thermostatState.startedRunning) {
+        app.log(3, 'DAB', 'Skipping hourly commit: no active HVAC cycle')
+        return
+    }
+    
+    def runningMinutes = (app.now() - thermostatState.startedRunning) / (1000 * 60)
+    if (runningMinutes < 60) {
+        app.log(3, 'DAB', "Skipping hourly commit: cycle only ${Math.round(runningMinutes)} minutes old")
+        return
+    }
+    
+    app.log(2, 'DAB', "Performing hourly commit for continuous run (${Math.round(runningMinutes)} minutes)")
+    app.appendDabActivityLog("Hourly commit for continuous run")
+    
+    // Perform finalize and re-initialize to commit current progress
+    def params = [
+        ventIdsByRoomId: app.atomicState.ventsByRoomId,
+        startedCycle: thermostatState.startedCycle,
+        startedRunning: thermostatState.startedRunning,
+        finishedRunning: app.now(),
+        hvacMode: thermostatState.mode
+    ]
+    
+    // Record as HourCommit event
+    try {
+        def diagnostics = app.atomicState.diagnostics ?: [:]
+        diagnostics.hourlyCommits = (diagnostics.hourlyCommits ?: 0) + 1
+        diagnostics.lastHourlyCommit = app.now()
+        app.atomicState.diagnostics = diagnostics
+    } catch (ignore) { }
+    
+    finalizeRoomStates(params)
+    
+    // Update start time for next hour but keep original cycle start
+    app.atomicStateUpdate('thermostat1State', 'startedRunning', app.now())
+    
+    initializeRoomStates(thermostatState.mode)
+}
 
 /** Initializes a DAB cycle when the HVAC turns on. */
 def initializeRoomStates(String hvacMode) {
@@ -280,6 +578,7 @@ def updateHvacStateFromDuctTemps() {
             app.recordStartingTemperatures()
             app.runEvery5Minutes('evaluateRebalancingVents')
             app.runEvery30Minutes('reBalanceVents')
+            app.runEvery1Hour('performHourlyCommit')  // Add hourly commit for continuous runs
             app.updateDevicePollingInterval((app.settings?.pollingIntervalActive ?: app.POLLING_INTERVAL_ACTIVE) as Integer)
         }
     } else { // HVAC is idle
@@ -288,6 +587,7 @@ def updateHvacStateFromDuctTemps() {
             app.unschedule('finalizeRoomStates')
             app.unschedule('evaluateRebalancingVents')
             app.unschedule('reBalanceVents')
+            app.unschedule('performHourlyCommit')  // Clean up hourly commit scheduling
             app.atomicStateUpdate('thermostat1State', 'finishedRunning', app.now())
             if (app.isDabEnabled()) {
                 def params = [
@@ -299,13 +599,14 @@ def updateHvacStateFromDuctTemps() {
                 ]
                 app.runInMillis(app.TEMP_READINGS_DELAY_MS, 'finalizeRoomStates', [data: params])
             }
+            resetCoolingCycleState()  // Clean up cooling cycle state
             app.atomicState.remove('thermostat1State')
             app.updateDevicePollingInterval((app.settings?.pollingIntervalIdle ?: app.POLLING_INTERVAL_IDLE) as Integer)
         }
     }
 }
 
-/** Robust HVAC mode detection using median duct-room temperature difference. */
+/** Robust HVAC mode detection with dynamic cooling end detection. */
 def calculateHvacModeRobust() {
     def vents = app.getChildDevices()?.findAll {
         it.currentValue('duct-temperature-c') != null &&
@@ -337,19 +638,142 @@ def calculateHvacModeRobust() {
     def sorted = diffs.sort()
     BigDecimal median = sorted[sorted.size().intdiv(2)] as BigDecimal
     
-    if (median > DUCT_TEMP_DIFF_THRESHOLD) { return HEATING }
-    if (median < -DUCT_TEMP_DIFF_THRESHOLD) { return COOLING }
+    def currentState = app.atomicState.thermostat1State?.mode ?: 'idle'
+    
+    // Check for heating start
+    if (median > DUCT_TEMP_DIFF_THRESHOLD) { 
+        if (currentState == COOLING) {
+            resetCoolingCycleState()  // End cooling tracking if switching to heating
+        }
+        return HEATING 
+    }
+    
+    // Check for cooling with dynamic end detection
+    if (median < -DUCT_TEMP_DIFF_THRESHOLD) {
+        if (currentState == COOLING) {
+            // Currently cooling - check if we should end dynamically
+            if (checkDynamicCoolingEnd()) {
+                app.log(2, 'CycleCool', 'Dynamic cooling end detected - transitioning to idle')
+                resetCoolingCycleState()
+                return 'idle'
+            }
+            return COOLING  // Continue cooling
+        } else {
+            // Starting cooling - check traditional start conditions
+            if (checkCoolingStart()) {
+                app.log(2, 'CycleCool', 'Dynamic cooling start detected')
+                return COOLING
+            }
+        }
+    }
+    
+    // If we were in cooling but no longer meet conditions, check dynamic end
+    if (currentState == COOLING) {
+        if (checkDynamicCoolingEnd()) {
+            app.log(2, 'CycleCool', 'Dynamic cooling end detected via transition check')
+            resetCoolingCycleState()
+            return 'idle'
+        }
+        return COOLING  // Continue cooling even if basic threshold not met
+    }
+    
+    // Default fallback
     return (fallbackFromThermostat() ?: 'idle')
 }
 
-// --- Diagnostics placeholder ---
+// --- Enhanced Cycle Diagnostics ---
 def runDabDiagnostic() {
     try {
+        def currentTime = new Date()
+        def timeZone = app.location?.timeZone ?: TimeZone.getTimeZone('UTC')
+        def thermostatState = app.atomicState.thermostat1State
+        def coolingState = app.atomicState.coolingCycleState
+        def diagnostics = app.atomicState.diagnostics ?: [:]
+        
+        def result = [
+            timestamp: currentTime.format('yyyy-MM-dd HH:mm:ss', timeZone),
+            currentHvacMode: thermostatState?.mode ?: 'idle',
+            cycleInfo: [:]
+        ]
+        
+        // Current cycle information
+        if (thermostatState) {
+            def runningMinutes = (app.now() - thermostatState.startedRunning) / (1000 * 60)
+            result.cycleInfo.runningMinutes = Math.round(runningMinutes)
+            result.cycleInfo.startedAt = new Date(thermostatState.startedRunning).format('HH:mm:ss', timeZone)
+            
+            if (thermostatState.startedCycle) {
+                def totalMinutes = (app.now() - thermostatState.startedCycle) / (1000 * 60)
+                result.cycleInfo.totalMinutes = Math.round(totalMinutes)
+            }
+        }
+        
+        // Cooling cycle debug information
+        if (coolingState && thermostatState?.mode == COOLING) {
+            def currentDuctF = getCurrentDuctTempF()
+            def currentDeltaF = getHottestRoomDeltaF()
+            
+            result.coolingCycleDebug = [
+                pollCount: coolingState.pollCount ?: 0,
+                stabilizationRemaining: coolingState.stabilizationPolls ?: 0,
+                confirmationCount: coolingState.confirmationCount ?: 0,
+                currentDuctTempF: currentDuctF ? String.format('%.1f', currentDuctF) : 'N/A',
+                currentRoomDeltaF: currentDeltaF ? String.format('%.1f', currentDeltaF) : 'N/A',
+                ductMinF: coolingState.ductMinF ? String.format('%.1f', coolingState.ductMinF) : 'N/A',
+                ductBaseF: coolingState.ductBaseF ? String.format('%.1f', coolingState.ductBaseF) : 'N/A',
+                deltaBaseF: coolingState.deltaBaseF ? String.format('%.1f', coolingState.deltaBaseF) : 'N/A',
+                lastDuctTemps: coolingState.lastDuctTemps?.collect { String.format('%.1f', it) }?.join(', ') ?: 'N/A',
+                lastRoomDeltas: coolingState.lastRoomDeltas?.collect { String.format('%.1f', it) }?.join(', ') ?: 'N/A'
+            ]
+            
+            // Calculate potential end reasons for debug
+            if (coolingState.ductBaseF != null && coolingState.ductMinF != null) {
+                def riseAmount = coolingState.ductBaseF - coolingState.ductMinF
+                result.coolingCycleDebug.potentialRiseEnd = String.format('%.1f', riseAmount)
+                result.coolingCycleDebug.riseThresholdMet = (riseAmount >= COOLING_BASE_RISE_F || riseAmount >= COOLING_MIN_RISE_FROM_MIN_F)
+            }
+        }
+        
+        // System diagnostics
+        result.systemDiagnostics = [
+            hourlyCommits: diagnostics.hourlyCommits ?: 0,
+            lastHourlyCommit: diagnostics.lastHourlyCommit ? new Date(diagnostics.lastHourlyCommit).format('HH:mm:ss', timeZone) : 'Never',
+            hardResets: diagnostics.hardResets ?: 0,
+            stuckWarnings: diagnostics.stuckWarnings ?: 0
+        ]
+        
+        // Temperature readings from vents
+        def vents = app.getChildDevices()?.findAll { 
+            it.currentValue('duct-temperature-c') != null 
+        }?.take(5) // Limit to first 5 for brevity
+        
+        if (vents) {
+            result.ventReadings = vents.collect { v ->
+                try {
+                    def ductC = v.currentValue('duct-temperature-c') as BigDecimal
+                    def roomC = (v.currentValue('room-current-temperature-c') ?: v.currentValue('current-temperature-c')) as BigDecimal
+                    return [
+                        name: v.getLabel() ?: v.currentValue('room-name') ?: 'Unknown',
+                        ductF: String.format('%.1f', (ductC * 9.0/5.0) + 32.0),
+                        roomF: roomC ? String.format('%.1f', (roomC * 9.0/5.0) + 32.0) : 'N/A',
+                        diff: roomC ? String.format('%.1f', ductC - roomC) : 'N/A'
+                    ]
+                } catch (ignore) {
+                    return [name: v.getLabel() ?: 'Unknown', error: 'Failed to read temps']
+                }
+            }
+        }
+        
+        app.state.dabDiagnosticResult = result
+        app.log(2, 'DAB', "Diagnostic completed: ${thermostatState?.mode ?: 'idle'} mode, ${result.cycleInfo.runningMinutes ?: 0} min running")
+        
+    } catch (Exception e) {
+        app.logError("DAB diagnostic error: ${e.message}", 'DAB')
         app.state.dabDiagnosticResult = [
             timestamp: new Date().format('yyyy-MM-dd HH:mm:ss', app.location?.timeZone ?: TimeZone.getTimeZone('UTC')),
-            message: 'No diagnostic data available yet. Let the system run a few cycles.'
+            error: e.message
         ]
-    } catch (ignore) { }
+    }
 }
 
 // NOTE: other helpers referenced above (e.g., getAverageHourlyRate, appendHourlyRate, etc.)
