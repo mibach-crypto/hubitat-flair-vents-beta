@@ -3322,48 +3322,80 @@ private Map assessOutlierForHourly(String roomId, String hvacMode, Integer hour,
 
 // Ensure DAB history structures are present and normalize legacy formats
 def initializeDabHistory() {
-  try {
-    def hist = atomicState?.dabHistory
-    if (hist == null) {
-      atomicState.dabHistory = [entries: [], hourlyRates: [:]]
-      return
-    }
-    if (hist instanceof List) {
-      atomicState.dabHistory = [entries: hist, hourlyRates: [:]]
-      return
-    }
-    if (hist instanceof Map) {
-      if (hist.entries == null) { hist.entries = [] }
-      if (hist.hourlyRates == null) { hist.hourlyRates = [:] }
-      // Build hourly index if missing and we have entries
-      if ((hist.hourlyRates == null || hist.hourlyRates.isEmpty()) && hist.entries && hist.entries.size() > 0) {
-        def index = [:]
-        try {
-          Integer retention = getRetentionDays()
-          Long cutoff = now() - retention * 24L * 60L * 60L * 1000L
-          hist.entries.each { e ->
-            try {
-              Long ts = e[0] as Long; if (ts < cutoff) { return }
-              String r = e[1]; String m = e[2]; Integer h = (e[3] as Integer)
-              BigDecimal rate = e[4] as BigDecimal
-              def room = index[r] ?: [:]
-              def mode = room[m] ?: [:]
-              def list = (mode[h] ?: []) as List
-              list << rate
-              // Trim list to retention size
-              if (list.size() > retention) { list = list[-retention..-1] }
-              mode[h] = list
-              room[m] = mode
-              index[r] = room
-            } catch (ignore) { }
-          }
-          hist.hourlyRates = index
-        } catch (ignore) { }
+  synchronized(this) {
+    try {
+      def hist = atomicState?.dabHistory
+      if (hist == null) {
+        atomicState.dabHistory = [entries: [], hourlyRates: [:]]
+        return
       }
-      try { atomicState.dabHistory = hist } catch (ignoreX) { }
+      
+      if (hist instanceof List) {
+        // Convert old List format to new Map format
+        atomicState.dabHistory = [entries: hist, hourlyRates: [:]]
+        return
+      }
+      
+      if (hist instanceof Map) {
+        // Ensure required keys exist
+        if (hist.entries == null) { hist.entries = [] }
+        if (hist.hourlyRates == null) { hist.hourlyRates = [:] }
+        
+        // Build hourly index if missing and we have entries
+        if ((hist.hourlyRates == null || hist.hourlyRates.isEmpty()) && hist.entries && hist.entries.size() > 0) {
+          def index = [:]
+          try {
+            Integer retention = getRetentionDays()
+            Long cutoff = now() - retention * 24L * 60L * 60L * 1000L
+            
+            // Use conservative entry limit per hour to handle dramatic temperature swings
+            def entryCountPerHour = [:]
+            
+            hist.entries.each { e ->
+              try {
+                Long ts = e[0] as Long
+                if (ts < cutoff) { return } // Skip old entries
+                
+                String r = e[1]; String m = e[2]; Integer h = (e[3] as Integer)
+                BigDecimal rate = e[4] as BigDecimal
+                
+                // Track entry count for this room/mode/hour
+                def key = "${r}:${m}:${h}"
+                entryCountPerHour[key] = (entryCountPerHour[key] ?: 0) + 1
+                
+                // Limit entries per hour to prevent memory bloat
+                if (entryCountPerHour[key] > 48) { return } // Max 48 entries per hour
+                
+                def room = index[r] ?: [:]
+                def mode = room[m] ?: [:]
+                def list = (mode[h] ?: []) as List
+                list << rate
+                
+                // Trim list to retention size
+                if (list.size() > retention * 48) { 
+                  list = list[-(retention * 48)..-1] 
+                }
+                
+                mode[h] = list
+                room[m] = mode
+                index[r] = room
+              } catch (ignore) { 
+                recordHistoryError("Error processing DAB history entry during initialization: ${ignore?.message}")
+              }
+            }
+            hist.hourlyRates = index
+          } catch (ignore) { 
+            recordHistoryError("Error building hourly index during DAB initialization: ${ignore?.message}")
+          }
+        }
+        
+        // Single atomic update
+        atomicState.dabHistory = hist
+      }
+    } catch (Exception e) {
+      logWarn "Failed to initialize/normalize DAB history: ${e?.message}"
+      recordHistoryError("Critical DAB initialization error: ${e?.message}")
     }
-  } catch (Exception e) {
-    logWarn "Failed to initialize/normalize DAB history: ${e?.message}"
   }
 }
 
@@ -3397,21 +3429,31 @@ private boolean isDabEnabled() {
 // and retrieval.
 def getAverageHourlyRate(String roomId, String hvacMode, Integer hour) {
   initializeDabHistory()
+  
+  // Input validation
+  if (!roomId || !hvacMode || hour == null) {
+    logWarn "getAverageHourlyRate: Invalid input parameters - roomId: ${roomId}, hvacMode: ${hvacMode}, hour: ${hour}"
+    return cleanDecimalForJson(MIN_TEMP_CHANGE_RATE)
+  }
+  
   // Prefer EWMA if enabled and available
   if (atomicState?.enableEwma) {
     def ew = getEwmaRate(roomId, hvacMode, hour)
-    if (ew != null) { return cleanDecimalForJson(ew as BigDecimal) }
+    if (ew != null && ew > 0) { return cleanDecimalForJson(ew as BigDecimal) }
   }
+  
   def hist = atomicState?.dabHistory
   def rates = []
   try {
     rates = hist?.hourlyRates?.get(roomId)?.get(hvacMode)?.get(hour as Integer) ?: []
   } catch (ignore) { rates = [] }
+  
   if (!rates || rates.size() == 0) {
     rates = getHourlyRates(roomId, hvacMode, hour) ?: []
   }
+  
   // Carry-forward: if no data for this hour, optionally use the most recent prior hour's last observed rate
-  if ((!rates || rates.size() == 0)) {
+  if (!rates || rates.size() == 0) {
     boolean carry = true
     try { carry = (atomicState?.carryForwardLastHour != false) } catch (ignore) { carry = true }
     if (carry) {
@@ -3419,22 +3461,53 @@ def getAverageHourlyRate(String roomId, String hvacMode, Integer hour) {
         int prevHour = ((hour as int) - i) % 24
         if (prevHour < 0) { prevHour += 24 }
         def last = getLastObservedHourlyRate(roomId, hvacMode, prevHour)
-        if (last != null) { return cleanDecimalForJson(last as BigDecimal) }
+        if (last != null && last > 0) { return cleanDecimalForJson(last as BigDecimal) }
       }
     }
-    return 0.0
+    // If no historical data available, return minimum rate to prevent zero efficiency
+    return cleanDecimalForJson(MIN_TEMP_CHANGE_RATE)
   }
+  
+  // Validate rates before averaging
+  def validRates = rates.findAll { rate ->
+    try {
+      BigDecimal r = rate as BigDecimal
+      return r != null && r >= 0 && r <= MAX_TEMP_CHANGE_RATE
+    } catch (ignore) { return false }
+  }
+  
+  if (validRates.size() == 0) {
+    logWarn "getAverageHourlyRate: No valid rates found for room ${roomId}, mode ${hvacMode}, hour ${hour}"
+    return cleanDecimalForJson(MIN_TEMP_CHANGE_RATE)
+  }
+  
+  // Calculate average with safety checks
   BigDecimal sum = 0.0
-  rates.each { sum += it as BigDecimal }
-  BigDecimal base = (sum / rates.size())
+  validRates.each { 
+    try {
+      sum += (it as BigDecimal) 
+    } catch (ignore) { 
+      log(2, 'DAB', "Skipping invalid rate value: ${it}")
+    }
+  }
+  
+  BigDecimal base = sum / validRates.size()
+  
   // Apply adaptive boost from recent hours if enabled
   try {
     boolean enabled = (atomicState?.enableAdaptiveBoost != false)
     if (enabled) {
       BigDecimal boost = getAdaptiveBoostFactor(roomId, hvacMode, hour)
-      base = base * (1.0 + boost)
+      if (boost > 0) {
+        base = base * (1.0 + boost)
+        // Cap the boosted rate to maximum allowable
+        if (base > MAX_TEMP_CHANGE_RATE) {
+          base = MAX_TEMP_CHANGE_RATE
+        }
+      }
     }
   } catch (ignore) { }
+  
   return cleanDecimalForJson(base)
 }
 
@@ -3508,39 +3581,55 @@ def appendHourlyRate(String roomId, String hvacMode, Integer hour, BigDecimal ra
     return
   }
   initializeDabHistory()
-  def hist = atomicState?.dabHistory
-  if (hist == null) { hist = [entries: [], hourlyRates: [:]] }
-  def hourly = (hist instanceof Map) ? (hist?.hourlyRates ?: [:]) : [:]
-  def room = hourly[roomId] ?: [:]
-  def mode = room[hvacMode] ?: [:]
-  Integer h = hour as Integer
-  def list = (mode[h] ?: []) as List
-  list << (rate as BigDecimal)
-  Integer retention = getRetentionDays()
-  if (list.size() > retention) {
-    list = list[-retention..-1]
-  }
-  mode[h] = list
-  room[hvacMode] = mode
-  hourly[roomId] = room
-  try { hist.hourlyRates = hourly } catch (ignore) { }
-  // Also mirror into flat entries for union-based queries (CI/tests and progress page)
-  try {
-    def entries = (hist instanceof List) ? (hist as List) : (hist.entries ?: [])
+  
+  // Use synchronized block to prevent data race conditions
+  synchronized(this) {
+    def hist = atomicState?.dabHistory
+    if (hist == null) { hist = [entries: [], hourlyRates: [:]] }
+    
+    // Ensure consistent Map format
+    if (hist instanceof List) {
+      hist = [entries: hist, hourlyRates: [:]]
+    }
+    
+    def hourly = hist?.hourlyRates ?: [:]
+    def room = hourly[roomId] ?: [:]
+    def mode = room[hvacMode] ?: [:]
+    Integer h = hour as Integer
+    def list = (mode[h] ?: []) as List
+    
+    // Add the new rate
+    list << (rate as BigDecimal)
+    
+    // Use proper retention limit: retention days * max entries per day (conservative estimate: 48)
+    // This accounts for multiple HVAC cycles per day and rebalancing operations
+    Integer retention = getRetentionDays()
+    Integer maxEntriesPerHour = 48 // Conservative: up to 48 entries per hour for dramatic swings
+    if (list.size() > retention * maxEntriesPerHour) {
+      list = list[-(retention * maxEntriesPerHour)..-1]
+    }
+    
+    mode[h] = list
+    room[hvacMode] = mode
+    hourly[roomId] = room
+    hist.hourlyRates = hourly
+    
+    // Also mirror into flat entries for union-based queries (CI/tests and progress page)
+    def entries = hist.entries ?: []
     Long ts = now()
     entries << [ts, roomId, hvacMode, h, (rate as BigDecimal)]
+    
+    // Time-based cleanup of entries
     Long cutoff = ts - retention * 24L * 60L * 60L * 1000L
     entries = entries.findAll { e ->
       try { return (e[0] as Long) >= cutoff } catch (ignore) { return false }
     }
-    if (hist instanceof List) {
-      atomicState.dabHistory = entries
-    } else {
-      try { hist.entries = entries } catch (ignore) { }
-    }
-  } catch (ignore) { }
-  atomicState.dabHistory = hist
-  atomicState.lastHvacMode = hvacMode
+    hist.entries = entries
+    
+    // Single atomic update to prevent partial state
+    atomicState.dabHistory = hist
+    atomicState.lastHvacMode = hvacMode
+  }
 }
 
 def appendDabHistory(String roomId, String hvacMode, Integer hour, BigDecimal rate) {
@@ -3548,25 +3637,47 @@ def appendDabHistory(String roomId, String hvacMode, Integer hour, BigDecimal ra
     recordHistoryError('Null value detected while appending DAB history entry')
     return
   }
-  initializeDabHistory()
-  def hist = atomicState?.dabHistory
-  if (hist == null) { hist = [entries: [], hourlyRates: [:]] }
-  def entries = (hist instanceof List) ? (hist as List) : (hist?.entries ?: [])
-  Long ts = now()
-  entries << [ts, roomId, hvacMode, (hour as Integer), (rate as BigDecimal)]
-  Integer retention = getRetentionDays()
-  Long cutoff = ts - retention * 24L * 60L * 60L * 1000L
-  entries = entries.findAll { e ->
-    try { return (e[0] as Long) >= cutoff } catch (ignore) { return false }
+  
+  // Use synchronized block to prevent data race conditions
+  synchronized(this) {
+    initializeDabHistory()
+    def hist = atomicState?.dabHistory
+    if (hist == null) { hist = [entries: [], hourlyRates: [:]] }
+    
+    // Ensure consistent Map format
+    if (hist instanceof List) {
+      hist = [entries: hist, hourlyRates: [:]]
+    }
+    
+    def entries = hist?.entries ?: []
+    Long ts = now()
+    entries << [ts, roomId, hvacMode, (hour as Integer), (rate as BigDecimal)]
+    
+    Integer retention = getRetentionDays()
+    Long cutoff = ts - retention * 24L * 60L * 60L * 1000L
+    
+    // Cleanup old entries with size limit to prevent memory bloat
+    entries = entries.findAll { e ->
+      try { return (e[0] as Long) >= cutoff } catch (ignore) { return false }
+    }
+    
+    // Limit total entries to prevent memory issues (retention days * 48 entries per hour * 24 hours)
+    Integer maxEntries = retention * 48 * 24
+    if (entries.size() > maxEntries) {
+      entries = entries[-maxEntries..-1]
+    }
+    
+    hist.entries = entries
+    
+    // Update start timestamp if we have entries
+    if (entries && entries.size() > 0) {
+      atomicState.dabHistoryStartTimestamp = (entries[0][0] as Long)
+    }
+    
+    // Single atomic update to prevent partial state
+    atomicState.dabHistory = hist
+    atomicState.lastHvacMode = hvacMode
   }
-  if (hist instanceof List) {
-    try { atomicState.dabHistory = entries } catch (ignore) { }
-  } else {
-    try { hist.entries = entries } catch (ignore) { }
-    try { atomicState.dabHistory = hist } catch (ignore) { }
-  }
-  try { if (entries) { atomicState.dabHistoryStartTimestamp = (entries[0][0] as Long) } } catch (ignore) { }
-  try { atomicState.lastHvacMode = hvacMode } catch (ignore) { }
 }
 
 // Aggregate previous day's hourly rates into daily averages
@@ -3868,118 +3979,185 @@ def finalizeRoomStates(data) {
 
     data.ventIdsByRoomId.each { roomId, ventIds ->
       try {
-      // Compute aggregated percent-open for the whole room (sum, capped to 100)
-      int roomPercentOpen = 0
-      try {
-        ventIds.each { vid ->
-          def v = getChildDevice(vid)
-          if (!v) { return }
-          def p = (v?.currentValue('percent-open') ?: v?.currentValue('level') ?: 0)
-          if (settings?.useCachedRawForDab) {
-            def samp = getLatestRawSample(vid)
-            if (samp && samp.size() >= 9 && samp[6] != null) { p = (samp[6] as BigDecimal) }
-          }
-          try { roomPercentOpen += ((p ?: 0) as BigDecimal).intValue() } catch (ignore) { }
-        }
-        if (roomPercentOpen > 100) { roomPercentOpen = 100 }
-      } catch (ignore) { roomPercentOpen = 0 }
-
-      for (ventId in ventIds) {
-        def vent = getChildDevice(ventId)
-        if (!vent) {
-          log(3, 'App', "Failed getting vent Id ${ventId}")
-          continue
+        // Validate room data before processing
+        if (!roomId || !ventIds || ventIds.size() == 0) {
+          log(2, 'DAB', "Skipping room ${roomId} - invalid room data")
+          return
         }
         
-        def roomName = vent.currentValue('room-name')
-        def ratePropName = data.hvacMode == COOLING ? 'room-cooling-rate' : 'room-heating-rate'
-        
-        // Check if rate already calculated for this room
-        if (roomRates.containsKey(roomName)) {
-          // Use the already calculated rate for this room
-          def rate = roomRates[roomName]
-          sendEvent(vent, [name: ratePropName, value: rate])
-          log(3, 'App', "Applying same ${ratePropName} (${roundBigDecimal(rate)}) to additional vent in '${roomName}'")
-          continue
-        }
-        
-        // Calculate rate for this room (first vent in room) using aggregated room opening
-        def percentOpen = roomPercentOpen
-        BigDecimal currentTemp = getRoomTemp(vent)
-        BigDecimal lastStartTemp = vent.currentValue('room-starting-temperature-c') ?: 0
-        BigDecimal currentRate = vent.currentValue(ratePropName) ?: 0
-        def newRate = calculateRoomChangeRate(lastStartTemp, currentTemp, totalCycleMinutes, percentOpen, currentRate)
-        
-        if (newRate <= 0) {
-          log(3, 'App', "New rate for ${roomName} is ${newRate}")
-          
-          // Check if room is already at or beyond setpoint
-          def spRoom = vent.currentValue('room-set-point-c') ?: getGlobalSetpoint(data.hvacMode)
-          def isAtSetpoint = hasRoomReachedSetpoint(data.hvacMode, spRoom, currentTemp)
-          
-          if (isAtSetpoint && currentRate > 0) {
-            // Room is already at setpoint - maintain last known efficiency
-            log(3, 'App', "${roomName} is already at setpoint, maintaining last known efficiency rate: ${currentRate}")
-            newRate = currentRate  // Keep existing rate
-          } else if (percentOpen > 0) {
-            // Vent was open but no temperature change - use minimum rate
-            newRate = MIN_TEMP_CHANGE_RATE
-            log(3, 'App', "Setting minimum rate for ${roomName} - no temperature change detected with ${percentOpen}% room opening")
-          } else if (currentRate == 0) {
-            // Room has zero efficiency and vent was closed - set baseline efficiency
-            def maxRate = data.hvacMode == COOLING ? 
-                atomicState.maxCoolingRate ?: MAX_TEMP_CHANGE_RATE : 
-                atomicState.maxHeatingRate ?: MAX_TEMP_CHANGE_RATE
-            newRate = maxRate * 0.1  // 10% of maximum as baseline
-            log(3, 'App', "Setting baseline efficiency for ${roomName} (10% of max rate: ${newRate})")
-          } else {
-            continue  // Skip if vent was closed and room has existing efficiency
-          }
-        }
-        
-        def rate = rollingAverage(currentRate, newRate, percentOpen / 100, 4)
-        def cleanedRate = cleanDecimalForJson(rate)
-
-        // Skip outlier rejection and EWMA until core behavior is validated
-        BigDecimal persistedRate = cleanedRate
-        sendEvent(vent, [name: ratePropName, value: cleanedRate])
-        log(3, 'App', "Updating ${roomName}'s ${ratePropName} to ${roundBigDecimal(cleanedRate)}")
-
-        // Store the calculated rate for this room
-        roomRates[roomName] = cleanedRate
-        // Record adaptive adjustment mark vs seeded rate
+        // Compute aggregated percent-open for the whole room (sum, capped to 100)
+        int roomPercentOpen = 0
+        int activeVents = 0
         try {
-          def seeded = (atomicState?.lastSeededRate ?: [:])?.get(roomId)?.get(data.hvacMode)?.get(hour as Integer) as BigDecimal
-          if (persistedRate != null && (persistedRate as BigDecimal) > 0) {
-            BigDecimal base = (seeded != null && seeded > 0) ? seeded : (persistedRate as BigDecimal)
-            BigDecimal ratio = ((persistedRate as BigDecimal) - base) / base
-            appendAdaptiveMark(roomId, data.hvacMode, hour, ratio)
+          ventIds.each { vid ->
+            def v = getChildDevice(vid)
+            if (!v) { return }
+            activeVents++
+            def p = (v?.currentValue('percent-open') ?: v?.currentValue('level') ?: 0)
+            if (settings?.useCachedRawForDab) {
+              def samp = getLatestRawSample(vid)
+              if (samp && samp.size() >= 9 && samp[6] != null) { p = (samp[6] as BigDecimal) }
+            }
+            try { roomPercentOpen += ((p ?: 0) as BigDecimal).intValue() } catch (ignore) { }
           }
-        } catch (ignore) { }
-        if (persistedRate != null) {
-          appendHourlyRate(roomId, data.hvacMode, hour, persistedRate)
-          appendDabHistory(roomId, data.hvacMode, hour, persistedRate)
+          if (roomPercentOpen > 100) { roomPercentOpen = 100 }
+        } catch (Exception e) { 
+          log(2, 'DAB', "Error calculating room opening percentage for ${roomId}: ${e?.message}")
+          roomPercentOpen = 0 
         }
         
-        // Track maximum rates for baseline calculations
-        if (cleanedRate > 0) {
-          if (data.hvacMode == COOLING) {
-            def maxCoolRate = atomicState.maxCoolingRate ?: 0
-            if (cleanedRate > maxCoolRate) {
-              atomicState.maxCoolingRate = cleanDecimalForJson(cleanedRate)
-              log(3, 'App', "Updated maximum cooling rate to ${cleanedRate}")
+        if (activeVents == 0) {
+          log(2, 'DAB', "Skipping room ${roomId} - no active vents found")
+          return
+        }
+
+        for (ventId in ventIds) {
+          try {
+            def vent = getChildDevice(ventId)
+            if (!vent) {
+              log(3, 'DAB', "Failed getting vent Id ${ventId} for room ${roomId}")
+              continue
             }
-          } else if (data.hvacMode == HEATING) {
-            def maxHeatRate = atomicState.maxHeatingRate ?: 0
-            if (cleanedRate > maxHeatRate) {
-              atomicState.maxHeatingRate = cleanDecimalForJson(cleanedRate)
-              log(3, 'App', "Updated maximum heating rate to ${cleanedRate}")
+            
+            def roomName = vent.currentValue('room-name') ?: "Room_${roomId}"
+            def ratePropName = data.hvacMode == COOLING ? 'room-cooling-rate' : 'room-heating-rate'
+            
+            // Check if rate already calculated for this room
+            if (roomRates.containsKey(roomName)) {
+              // Use the already calculated rate for this room
+              def rate = roomRates[roomName]
+              sendEvent(vent, [name: ratePropName, value: rate])
+              log(3, 'DAB', "Applying same ${ratePropName} (${roundBigDecimal(rate)}) to additional vent in '${roomName}'")
+              continue
             }
+            
+            // Calculate rate for this room (first vent in room) using aggregated room opening
+            def percentOpen = roomPercentOpen
+            BigDecimal currentTemp = getRoomTemp(vent)
+            BigDecimal lastStartTemp = vent.currentValue('room-starting-temperature-c') ?: 0
+            BigDecimal currentRate = vent.currentValue(ratePropName) ?: 0
+            
+            // Validate temperature readings before calculating rate
+            if (currentTemp == null || lastStartTemp == null) {
+              log(2, 'DAB', "Invalid temperature readings for ${roomName} - current: ${currentTemp}, start: ${lastStartTemp}")
+              continue
+            }
+            
+            // Check for dramatic temperature swings that might indicate sensor issues
+            BigDecimal tempDiff = Math.abs(currentTemp - lastStartTemp)
+            if (tempDiff > 10.0) { // More than 10°C change is likely a sensor error
+              log(1, 'DAB', "WARNING: Dramatic temperature swing detected in ${roomName}: ${tempDiff}°C (${lastStartTemp}°C → ${currentTemp}°C)")
+              recordHistoryError("Dramatic temperature swing in ${roomName}: ${tempDiff}°C change")
+              // Use a capped temperature difference to prevent extreme rate calculations
+              BigDecimal cappedDiff = tempDiff > 5.0 ? (tempDiff > 0 ? 5.0 : -5.0) : tempDiff
+              BigDecimal adjustedTemp = lastStartTemp + (currentTemp > lastStartTemp ? cappedDiff : -cappedDiff)
+              log(2, 'DAB', "Capping temperature change for ${roomName} from ${tempDiff}°C to ${Math.abs(adjustedTemp - lastStartTemp)}°C")
+              currentTemp = adjustedTemp
+            }
+            
+            def newRate = calculateRoomChangeRate(lastStartTemp, currentTemp, totalCycleMinutes, percentOpen, currentRate)
+            
+            // Validate calculated rate
+            if (newRate == null || newRate < 0 || newRate > MAX_TEMP_CHANGE_RATE) {
+              if (newRate > MAX_TEMP_CHANGE_RATE) {
+                log(2, 'DAB', "Capping excessive rate for ${roomName}: ${newRate} → ${MAX_TEMP_CHANGE_RATE}")
+                newRate = MAX_TEMP_CHANGE_RATE
+              } else if (newRate <= 0) {
+                log(3, 'DAB', "Invalid rate calculated for ${roomName}: ${newRate}")
+                
+                // Check if room is already at or beyond setpoint
+                def spRoom = vent.currentValue('room-set-point-c') ?: getGlobalSetpoint(data.hvacMode)
+                def isAtSetpoint = hasRoomReachedSetpoint(data.hvacMode, spRoom, currentTemp)
+                
+                if (isAtSetpoint && currentRate > 0) {
+                  // Room is already at setpoint - maintain last known efficiency
+                  log(3, 'DAB', "${roomName} is already at setpoint, maintaining last known efficiency rate: ${currentRate}")
+                  newRate = currentRate
+                } else if (percentOpen > 0) {
+                  // Vent was open but no temperature change - use minimum rate
+                  newRate = MIN_TEMP_CHANGE_RATE
+                  log(3, 'DAB', "Setting minimum rate for ${roomName} - no temperature change detected with ${percentOpen}% room opening")
+                } else if (currentRate == 0) {
+                  // Room has zero efficiency and vent was closed - set baseline efficiency
+                  def maxRate = data.hvacMode == COOLING ? 
+                      atomicState.maxCoolingRate ?: MAX_TEMP_CHANGE_RATE : 
+                      atomicState.maxHeatingRate ?: MAX_TEMP_CHANGE_RATE
+                  newRate = maxRate * 0.1  // 10% of maximum as baseline
+                  log(3, 'DAB', "Setting baseline efficiency for ${roomName} (10% of max rate: ${newRate})")
+                } else {
+                  continue  // Skip if vent was closed and room has existing efficiency
+                }
+              }
+            }
+            
+            // Apply rolling average with validation
+            def rate = rollingAverage(currentRate, newRate, Math.max(0, Math.min(100, percentOpen)) / 100.0, 4)
+            def cleanedRate = cleanDecimalForJson(rate)
+            
+            // Final validation of the cleaned rate
+            if (cleanedRate == null || cleanedRate < 0 || cleanedRate > MAX_TEMP_CHANGE_RATE) {
+              log(2, 'DAB', "Final rate validation failed for ${roomName}: ${cleanedRate}, using minimum rate")
+              cleanedRate = cleanDecimalForJson(MIN_TEMP_CHANGE_RATE)
+            }
+
+            BigDecimal persistedRate = cleanedRate
+            sendEvent(vent, [name: ratePropName, value: cleanedRate])
+            log(3, 'DAB', "Updating ${roomName}'s ${ratePropName} to ${roundBigDecimal(cleanedRate)}")
+
+            // Store the calculated rate for this room
+            roomRates[roomName] = cleanedRate
+            
+            // Record adaptive adjustment mark vs seeded rate
+            try {
+              def seeded = (atomicState?.lastSeededRate ?: [:])?.get(roomId)?.get(data.hvacMode)?.get(hour as Integer) as BigDecimal
+              if (persistedRate != null && (persistedRate as BigDecimal) > 0) {
+                BigDecimal base = (seeded != null && seeded > 0) ? seeded : (persistedRate as BigDecimal)
+                BigDecimal ratio = ((persistedRate as BigDecimal) - base) / base
+                appendAdaptiveMark(roomId, data.hvacMode, hour, ratio)
+              }
+            } catch (Exception e) { 
+              log(2, 'DAB', "Error recording adaptive mark for ${roomName}: ${e?.message}")
+            }
+            
+            if (persistedRate != null) {
+              try {
+                appendHourlyRate(roomId, data.hvacMode, hour, persistedRate)
+                appendDabHistory(roomId, data.hvacMode, hour, persistedRate)
+              } catch (Exception e) {
+                log(1, 'DAB', "Error persisting rate data for ${roomName}: ${e?.message}")
+                recordHistoryError("Failed to persist rate data for ${roomName}: ${e?.message}")
+              }
+            }
+            
+            // Track maximum rates for baseline calculations
+            if (cleanedRate > 0) {
+              try {
+                if (data.hvacMode == COOLING) {
+                  def maxCoolRate = atomicState.maxCoolingRate ?: 0
+                  if (cleanedRate > maxCoolRate) {
+                    atomicState.maxCoolingRate = cleanDecimalForJson(cleanedRate)
+                    log(3, 'DAB', "Updated maximum cooling rate to ${cleanedRate}")
+                  }
+                } else if (data.hvacMode == HEATING) {
+                  def maxHeatRate = atomicState.maxHeatingRate ?: 0
+                  if (cleanedRate > maxHeatRate) {
+                    atomicState.maxHeatingRate = cleanDecimalForJson(cleanedRate)
+                    log(3, 'DAB', "Updated maximum heating rate to ${cleanedRate}")
+                  }
+                }
+              } catch (Exception e) {
+                log(2, 'DAB', "Error updating maximum rates: ${e?.message}")
+              }
+            }
+          } catch (Exception e) {
+            log(1, 'DAB', "Error processing vent ${ventId} in room ${roomId}: ${e?.message}")
+            recordHistoryError("Error processing vent ${ventId} in room ${roomId}: ${e?.message}")
           }
         }
-      }
       } catch (Exception e) {
-        logError("Error processing room ${roomId} in finalizeRoomStates: ${e?.message}", 'DAB', roomId)
+        log(1, 'DAB', "Error processing room ${roomId} in finalizeRoomStates: ${e?.message}")
+        recordHistoryError("Critical error processing room ${roomId}: ${e?.message}")
+        // Continue processing other rooms even if one fails
       }
     }
   } else {
