@@ -421,6 +421,12 @@ def mainPage() {
                  description: 'See recent HVAC mode transitions',
                  page: 'dabActivityLogPage'
           }
+          // DAB Snapshot Link
+          section {
+            href name: 'dabSnapshotLink', title: 'View DAB Snapshot',
+                 description: 'Comprehensive diagnostics view with room stats and targets',
+                 page: 'dabSnapshotPage'
+          }
           // DAB History Export
           section {
             input name: 'dabHistoryFormat', type: 'enum', title: 'Export Format',
@@ -4321,8 +4327,18 @@ def finalizeRoomStates(data) {
           }
         } catch (ignore) { }
         if (persistedRate != null) {
-          appendHourlyRate(roomId, data.hvacMode, hour, persistedRate)
+          def rateResult = appendHourlyRate(roomId, data.hvacMode, hour, persistedRate)
           appendDabHistory(roomId, data.hvacMode, hour, persistedRate)
+          
+          // Set carry-forward attribute on all vents in this room
+          if (rateResult && rateResult.metadata) {
+            ventIds.each { vid ->
+              def v = getChildDevice(vid)
+              if (v) {
+                sendEvent(v, [name: 'dab-carry-forward', value: rateResult.metadata.carryForwardUsed ?: 0])
+              }
+            }
+          }
         }
         
         // Track maximum rates for baseline calculations
@@ -4620,38 +4636,215 @@ def getAttribsPerVentIdWeighted(ventsByRoomId, String hvacMode) {
 }
 
 def calculateOpenPercentageForAllVents(rateAndTempPerVentId, String hvacMode, BigDecimal setpoint, longestTime, boolean closeInactive = true) {
-  def percentOpenMap = [:]
+  // Step 1: Calculate raw need weights using inverse rate interpretation
+  Map<String, BigDecimal> rawNeedWeights = [:]
+  Map<String, BigDecimal> rawTargets = [:]
+  def autoControlledVents = [:]
+  
+  // First pass: identify auto-controlled vents and calculate their inverse weights
   rateAndTempPerVentId.each { ventId, stateVal ->
     try {
-      def percentageOpen = MIN_PERCENTAGE_OPEN
       def vdev = getChildDevice(ventId)
       BigDecimal spForVent = (vdev?.currentValue('room-set-point-c') ?: setpoint) as BigDecimal
       boolean atSetpoint = hasRoomReachedSetpoint(hvacMode, spForVent, stateVal.temp, REBALANCING_TOLERANCE)
-
+      boolean isManualOverride = (atomicState?.manualOverrides ?: [:]).containsKey(ventId)
+      
       if (closeInactive && !stateVal.active) {
-        log(3, 'App', "Closing vent on inactive room: ${stateVal.name}")
+        rawTargets[ventId] = MIN_PERCENTAGE_OPEN
+        log(3, 'DAB', "Closing vent on inactive room: ${stateVal.name}")
       } else if (atSetpoint) {
-        // Room is already on the comfortable side of the setpoint - keep at floor
-        percentageOpen = MIN_PERCENTAGE_OPEN
-      } else if (stateVal.rate < MIN_TEMP_CHANGE_RATE) {
-        // Unknown or too-low learning rate: open fully unless already at/below setpoint
-        percentageOpen = MAX_PERCENTAGE_OPEN
-        log(3, 'App', "Opening vent at max since change rate is too low: ${stateVal.name}")
+        rawTargets[ventId] = MIN_PERCENTAGE_OPEN
+        log(3, 'DAB', "Room at setpoint, keeping at floor: ${stateVal.name}")
+      } else if (isManualOverride) {
+        // Manual overrides are excluded from auto-calculations but included in final
+        def manualPercent = atomicState.manualOverrides[ventId] as BigDecimal
+        rawTargets[ventId] = manualPercent
+        log(3, 'DAB', "Manual override: ${stateVal.name} set to ${manualPercent}%")
       } else {
-        percentageOpen = calculateVentOpenPercentage(stateVal.name, stateVal.temp, spForVent, hvacMode, stateVal.rate, longestTime)
+        // Auto-controlled vent: calculate inverse weight
+        BigDecimal rate = Math.max(stateVal.rate ?: MIN_TEMP_CHANGE_RATE, EPS_RATE)
+        BigDecimal weight = 1.0 / rate  // Higher rate = more efficient = lower weight = less opening needed
+        rawNeedWeights[ventId] = weight
+        autoControlledVents[ventId] = stateVal
+        log(4, 'DAB', "Vent ${stateVal.name}: rate=${rate}, weight=${weight}")
       }
-      // Trace raw decision before overrides/rounding
-      logVentDecision([
-        stage: 'raw', hvacMode: hvacMode, ventId: ventId,
-        room: stateVal.name, temp: stateVal.temp, setpoint: setpoint,
-        rate: stateVal.rate, atSetpoint: atSetpoint, percent: percentageOpen
-      ])
-      percentOpenMap[ventId] = percentageOpen
     } catch (err) {
-      logError err
+      logError "Error calculating weight for vent ${ventId}: ${err.message}"
+      rawTargets[ventId] = MIN_PERCENTAGE_OPEN
     }
   }
-  return percentOpenMap
+  
+  // Step 2: Calculate coefficient of variation for adaptive granularity
+  BigDecimal coefficientOfVariation = 0.0
+  if (rawNeedWeights.size() > 1) {
+    def weights = rawNeedWeights.values()
+    BigDecimal mean = weights.sum() / weights.size()
+    BigDecimal variance = weights.collect { (it - mean) ** 2 }.sum() / weights.size()
+    BigDecimal stdDev = Math.sqrt(variance)
+    coefficientOfVariation = mean > 0 ? stdDev / mean : 0.0
+    log(3, 'DAB', "Coefficient of variation: ${coefficientOfVariation.setScale(3, BigDecimal.ROUND_HALF_UP)}")
+  }
+  
+  // Step 3: Normalize weights and calculate raw targets for auto-controlled vents
+  if (rawNeedWeights.size() > 0) {
+    BigDecimal totalWeight = rawNeedWeights.values().sum()
+    BigDecimal availableBudget = 100.0  // Will be adjusted after accounting for manual overrides
+    
+    // Calculate budget used by manual overrides and floors
+    BigDecimal usedByManuals = 0.0
+    rawTargets.each { ventId, percent ->
+      if (!autoControlledVents.containsKey(ventId)) {
+        usedByManuals += percent
+      }
+    }
+    
+    // Adjust available budget and redistribute to auto-controlled vents
+    availableBudget = Math.max(MIN_COMBINED_VENT_FLOW, 100.0 - usedByManuals)
+    
+    rawNeedWeights.each { ventId, weight ->
+      BigDecimal proportion = weight / totalWeight
+      BigDecimal rawTarget = availableBudget * proportion
+      
+      // Apply floors (minimum opening)
+      rawTarget = Math.max(rawTarget, MIN_PERCENTAGE_OPEN)
+      
+      rawTargets[ventId] = rawTarget
+      
+      // Send raw target as new vent attribute for diagnostics
+      def vdev = getChildDevice(ventId)
+      if (vdev) {
+        sendEvent(vdev, [name: 'dab-raw-target-percent', value: rawTarget.setScale(1, BigDecimal.ROUND_HALF_UP)])
+      }
+    }
+  }
+  
+  // Step 4: Apply change dampening (soft smoothing)
+  rawTargets = applyChangeDampening(rawTargets, hvacMode, setpoint)
+  
+  // Step 5: Apply adaptive rounding based on coefficient of variation
+  def finalTargets = adaptiveRound(rawTargets, coefficientOfVariation)
+  
+  // Step 6: Log decisions and set final target attributes
+  finalTargets.each { ventId, percentOpen ->
+    def vdev = getChildDevice(ventId)
+    def stateVal = rateAndTempPerVentId[ventId]
+    if (vdev && stateVal) {
+      // Send final target as vent attribute for diagnostics
+      sendEvent(vdev, [name: 'dab-target-percent', value: percentOpen.setScale(1, BigDecimal.ROUND_HALF_UP)])
+      
+      // Send effective rate and other diagnostic attributes
+      BigDecimal effectiveRate = stateVal.rate ?: MIN_TEMP_CHANGE_RATE
+      sendEvent(vdev, [name: 'dab-hourly-rate', value: effectiveRate.setScale(4, BigDecimal.ROUND_HALF_UP)])
+      
+      // Get anomaly factor and send as attribute
+      Integer currentHour = new Date().format('H', location?.timeZone ?: TimeZone.getTimeZone('UTC')) as Integer
+      BigDecimal anomalyFactor = getAnomalyFactor(stateVal.roomId ?: 'unknown', hvacMode, currentHour)
+      sendEvent(vdev, [name: 'dab-anomaly-factor', value: anomalyFactor.setScale(2, BigDecimal.ROUND_HALF_UP)])
+      
+      // Trace final decision
+      logVentDecision([
+        stage: 'final', hvacMode: hvacMode, ventId: ventId,
+        room: stateVal.name, temp: stateVal.temp, setpoint: setpoint,
+        rate: effectiveRate, cv: coefficientOfVariation, 
+        rawTarget: rawTargets[ventId], finalTarget: percentOpen
+      ])
+    }
+  }
+  
+  return finalTargets
+}
+
+/** Apply change dampening to limit percentage changes per cycle */
+def applyChangeDampening(Map<String, BigDecimal> rawTargets, String hvacMode, BigDecimal setpoint) {
+  def dampenedTargets = [:]
+  
+  rawTargets.each { ventId, rawTarget ->
+    try {
+      def vdev = getChildDevice(ventId)
+      if (!vdev) {
+        dampenedTargets[ventId] = rawTarget
+        return
+      }
+      
+      // Get current vent opening
+      BigDecimal currentPercent = (vdev.currentValue('percent-open') ?: 0) as BigDecimal
+      BigDecimal maxChange = MAX_PERCENT_CHANGE_PER_CYCLE
+      
+      // Check exceptions for change dampening
+      def roomTemp = getRoomTemp(vdev)
+      boolean roomNotAtSetpoint = !hasRoomReachedSetpoint(hvacMode, setpoint, roomTemp, REBALANCING_TOLERANCE)
+      
+      // Check if this room has an anomaly flag (bypass dampening for anomalies)
+      Integer currentHour = new Date().format('H', location?.timeZone ?: TimeZone.getTimeZone('UTC')) as Integer
+      def stateVal = atomicState?.ventsByRoomId?.find { roomId, ventIds -> ventIds.contains(ventId) }
+      String roomId = stateVal ? stateVal.key : 'unknown'
+      BigDecimal anomalyFactor = getAnomalyFactor(roomId, hvacMode, currentHour)
+      boolean hasAnomaly = anomalyFactor < 1.0
+      
+      if (roomNotAtSetpoint || hasAnomaly) {
+        // Room not at setpoint or has anomaly - allow full change
+        dampenedTargets[ventId] = rawTarget
+        log(4, 'DAB', "No dampening for ${vdev.getLabel()}: roomNotAtSetpoint=${roomNotAtSetpoint}, hasAnomaly=${hasAnomaly}")
+      } else {
+        // Apply change dampening
+        BigDecimal targetChange = rawTarget - currentPercent
+        BigDecimal maxChangeAbs = Math.min(maxChange, Math.abs(targetChange))
+        BigDecimal dampenedChange = targetChange > 0 ? maxChangeAbs : -maxChangeAbs
+        BigDecimal dampenedTarget = currentPercent + dampenedChange
+        
+        // Ensure we stay within valid bounds
+        dampenedTarget = Math.max(MIN_PERCENTAGE_OPEN, Math.min(MAX_PERCENTAGE_OPEN, dampenedTarget))
+        
+        dampenedTargets[ventId] = dampenedTarget
+        
+        if (Math.abs(targetChange) > maxChange) {
+          log(3, 'DAB', "Change dampening applied to ${vdev.getLabel()}: ${rawTarget}% -> ${dampenedTarget}% (limited to ±${maxChange}%)")
+        }
+      }
+    } catch (err) {
+      log(2, 'DAB', "Error in change dampening for ${ventId}: ${err.message}")
+      dampenedTargets[ventId] = rawTargets[ventId]
+    }
+  }
+  
+  return dampenedTargets
+}
+
+/** Apply adaptive rounding based on coefficient of variation */
+def adaptiveRound(Map<String, BigDecimal> targets, BigDecimal coefficientOfVariation) {
+  def roundedTargets = [:]
+  
+  // Determine granularity based on CV and user setting
+  Integer userGranularity = (settings?.ventGranularity ?: '5') as Integer
+  Integer effectiveGranularity = userGranularity
+  boolean useInternalFine = false
+  
+  if (coefficientOfVariation < CV_LOW_THRESHOLD && userGranularity > 5) {
+    effectiveGranularity = 5
+    log(3, 'DAB', "Adaptive granularity: using 5% (CV=${coefficientOfVariation.setScale(3, BigDecimal.ROUND_HALF_UP)} < ${CV_LOW_THRESHOLD})")
+  } else if (coefficientOfVariation < CV_VERY_LOW_THRESHOLD && userGranularity == 5) {
+    useInternalFine = true
+    log(3, 'DAB', "Adaptive granularity: using internal 2% fine rounding (CV=${coefficientOfVariation.setScale(3, BigDecimal.ROUND_HALF_UP)} < ${CV_VERY_LOW_THRESHOLD})")
+  }
+  
+  targets.each { ventId, target ->
+    BigDecimal rounded
+    
+    if (useInternalFine) {
+      // Internal fine rounding to 2%, then round outward to 5%
+      BigDecimal fineRounded = Math.round(target / (INTERNAL_FINE_STEP * 100)) * (INTERNAL_FINE_STEP * 100)
+      rounded = Math.round(fineRounded / 5) * 5  // Round outward to 5%
+    } else {
+      // Standard rounding to effective granularity
+      rounded = Math.round(target / effectiveGranularity) * effectiveGranularity
+    }
+    
+    // Ensure bounds
+    rounded = Math.max(MIN_PERCENTAGE_OPEN, Math.min(MAX_PERCENTAGE_OPEN, rounded))
+    roundedTargets[ventId] = rounded
+  }
+  
+  return roundedTargets
 }
 
 // Append a compact decision entry for diagnostics (keeps last 60)
@@ -5632,6 +5825,24 @@ def dabDailySummaryPage() {
   }
 }
 
+def dabSnapshotPage() {
+  dynamicPage(name: 'dabSnapshotPage', title: 'DAB Snapshot', install: false, uninstall: false) {
+    section('Current DAB Status') {
+      paragraph buildDabSnapshotTable()
+    }
+    section('Actions') {
+      input name: 'dumpDabSnapshotNow', type: 'button', title: 'Dump DAB Snapshot to Logs', submitOnChange: true
+      if (settings?.dumpDabSnapshotNow) {
+        dumpDabSnapshotNow()
+        app.updateSetting('dumpDabSnapshotNow', '')
+      }
+    }
+    section {
+      href name: 'backToMain', title: 'Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+    }
+  }
+}
+
 String buildDabChart() {
   def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
   // Prefer explicitly selected chart mode from settings; fall back to mirrors/thermostat/last mode
@@ -6036,6 +6247,159 @@ String buildDabDailySummaryTable() {
   }
   html << '</table>'
   html.toString()
+}
+
+String buildDabSnapshotTable() {
+  def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+  if (!vents || vents.size() == 0) {
+    return '<p>No vent data available.</p>'
+  }
+  
+  String hvacMode = getThermostat1Mode() ?: atomicState?.lastHvacMode ?: COOLING
+  Integer currentHour = new Date().format('H', location?.timeZone ?: TimeZone.getTimeZone('UTC')) as Integer
+  
+  def html = new StringBuilder()
+  html << "<table style='width:100%;border-collapse:collapse;font-family:monospace;'>"
+  html << "<tr style='background-color:#f0f0f0;'>"
+  html << "<th style='text-align:left;padding:4px;border:1px solid #ccc;'>Room</th>"
+  html << "<th style='text-align:center;padding:4px;border:1px solid #ccc;'>Mode</th>"
+  html << "<th style='text-align:center;padding:4px;border:1px solid #ccc;'>Hour</th>"
+  html << "<th style='text-align:center;padding:4px;border:1px solid #ccc;'>Samples</th>"
+  html << "<th style='text-align:center;padding:4px;border:1px solid #ccc;'>RawAvg</th>"
+  html << "<th style='text-align:center;padding:4px;border:1px solid #ccc;'>CarryForward</th>"
+  html << "<th style='text-align:center;padding:4px;border:1px solid #ccc;'>AnomalyFactor</th>"
+  html << "<th style='text-align:center;padding:4px;border:1px solid #ccc;'>RawTarget</th>"
+  html << "<th style='text-align:center;padding:4px;border:1px solid #ccc;'>FinalTarget</th>"
+  html << "</tr>"
+  
+  // Group vents by room and collect snapshot data
+  Map<String, Map> roomData = [:]
+  vents.each { vent ->
+    def roomId = vent.currentValue('room-id') ?: vent.getId()
+    def roomName = vent.currentValue('room-name') ?: vent.getLabel()
+    
+    // Get diagnostic attributes from vent
+    def rawTarget = vent.currentValue('dab-raw-target-percent') ?: 0
+    def finalTarget = vent.currentValue('dab-target-percent') ?: 0
+    def hourlyRate = vent.currentValue('dab-hourly-rate') ?: 0
+    def anomalyFactor = vent.currentValue('dab-anomaly-factor') ?: 1.0
+    def carryForward = vent.currentValue('dab-carry-forward') ?: 0
+    
+    // Get metadata from DAB history
+    def metadata = getHourMetadata(roomId, hvacMode, currentHour)
+    
+    if (!roomData[roomName]) {
+      roomData[roomName] = [
+        roomId: roomId,
+        mode: hvacMode,
+        hour: currentHour,
+        samples: metadata.samplesCount ?: 0,
+        rawAvg: metadata.rawAvg ?: 0,
+        carryForward: carryForward,
+        anomalyFactor: anomalyFactor,
+        rawTarget: rawTarget,
+        finalTarget: finalTarget
+      ]
+    }
+  }
+  
+  // Sort rooms by name and build table rows
+  roomData.keySet().sort().each { roomName ->
+    def data = roomData[roomName]
+    html << "<tr>"
+    html << "<td style='text-align:left;padding:4px;border:1px solid #ccc;'>${roomName}</td>"
+    html << "<td style='text-align:center;padding:4px;border:1px solid #ccc;'>${data.mode}</td>"
+    html << "<td style='text-align:center;padding:4px;border:1px solid #ccc;'>${data.hour}</td>"
+    html << "<td style='text-align:center;padding:4px;border:1px solid #ccc;'>${data.samples}</td>"
+    html << "<td style='text-align:center;padding:4px;border:1px solid #ccc;'>${roundBigDecimal(data.rawAvg as BigDecimal, 4)}</td>"
+    html << "<td style='text-align:center;padding:4px;border:1px solid #ccc;'>${data.carryForward}</td>"
+    html << "<td style='text-align:center;padding:4px;border:1px solid #ccc;'>${roundBigDecimal(data.anomalyFactor as BigDecimal, 2)}</td>"
+    html << "<td style='text-align:center;padding:4px;border:1px solid #ccc;'>${roundBigDecimal(data.rawTarget as BigDecimal, 1)}%</td>"
+    html << "<td style='text-align:center;padding:4px;border:1px solid #ccc;'>${roundBigDecimal(data.finalTarget as BigDecimal, 1)}%</td>"
+    html << "</tr>"
+  }
+  
+  html << "</table>"
+  html << "<p><small>Snapshot taken at hour ${currentHour} for mode ${hvacMode}</small></p>"
+  
+  return html.toString()
+}
+
+/** Get metadata for a specific room/mode/hour combination */
+def getHourMetadata(String roomId, String hvacMode, Integer hour) {
+  try {
+    initializeDabHistory()
+    def hist = atomicState?.dabHistory
+    def metadata = hist?.hourlyMetadata ?: [:]
+    return metadata[roomId]?.[hvacMode]?.[hour] ?: [samplesCount: 0, rawAvg: 0, carryForwardUsed: 0, anomalyFlag: 0]
+  } catch (ignore) {
+    return [samplesCount: 0, rawAvg: 0, carryForwardUsed: 0, anomalyFlag: 0]
+  }
+}
+
+/** Dump comprehensive DAB snapshot to logs */
+def dumpDabSnapshotNow() {
+  try {
+    def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+    String hvacMode = getThermostat1Mode() ?: atomicState?.lastHvacMode ?: COOLING
+    Integer currentHour = new Date().format('H', location?.timeZone ?: TimeZone.getTimeZone('UTC')) as Integer
+    def tz = location?.timeZone ?: TimeZone.getTimeZone('UTC')
+    String timestamp = new Date().format('yyyy-MM-dd HH:mm:ss', tz)
+    
+    def snapshot = [
+      timestamp: timestamp,
+      hvacMode: hvacMode,
+      currentHour: currentHour,
+      rooms: []
+    ]
+    
+    // Collect data for each room
+    Map<String, Map> roomData = [:]
+    vents.each { vent ->
+      def roomId = vent.currentValue('room-id') ?: vent.getId()
+      def roomName = vent.currentValue('room-name') ?: vent.getLabel()
+      
+      if (!roomData[roomName]) {
+        def metadata = getHourMetadata(roomId, hvacMode, currentHour)
+        def anomalyFactor = getAnomalyFactor(roomId, hvacMode, currentHour)
+        
+        roomData[roomName] = [
+          roomId: roomId,
+          roomName: roomName,
+          mode: hvacMode,
+          hour: currentHour,
+          samples: metadata.samplesCount ?: 0,
+          rawAvg: metadata.rawAvg ?: 0,
+          carryForwardUsed: metadata.carryForwardUsed ?: 0,
+          anomalyFlag: metadata.anomalyFlag ?: 0,
+          anomalyFactor: anomalyFactor,
+          rawTarget: vent.currentValue('dab-raw-target-percent') ?: 0,
+          finalTarget: vent.currentValue('dab-target-percent') ?: 0,
+          hourlyRate: vent.currentValue('dab-hourly-rate') ?: 0,
+          currentPercent: vent.currentValue('percent-open') ?: 0,
+          roomTemp: getRoomTemp(vent)
+        ]
+      }
+    }
+    
+    snapshot.rooms = roomData.values().sort { it.roomName }
+    
+    // Log structured JSON
+    def jsonSnapshot = JsonOutput.toJson(snapshot)
+    log.info "DAB Snapshot: ${jsonSnapshot}"
+    
+    // Also log formatted text
+    log.info "=== DAB Snapshot ${timestamp} ==="
+    log.info "HVAC Mode: ${hvacMode}, Current Hour: ${currentHour}"
+    roomData.keySet().sort().each { roomName ->
+      def data = roomData[roomName]
+      log.info "${roomName}: samples=${data.samples}, rawAvg=${data.rawAvg}, CF=${data.carryForwardUsed}, anomaly=${data.anomalyFactor}, raw=${data.rawTarget}%, final=${data.finalTarget}%"
+    }
+    log.info "=== End DAB Snapshot ==="
+    
+  } catch (e) {
+    log.error "Error creating DAB snapshot: ${e.message}"
+  }
 }
 
 // ------------------------------
