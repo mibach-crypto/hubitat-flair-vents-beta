@@ -144,6 +144,17 @@ import java.net.URLEncoder
 @Field static final BigDecimal ADAPTIVE_BOOST_PERCENT = 12.5
 @Field static final BigDecimal ADAPTIVE_MAX_BOOST_PERCENT = 25.0
 
+// DAB Stabilization and Enhancement Constants
+@Field static final BigDecimal ANOMALY_PERCENT_THRESHOLD = 0.40         // 40% threshold for anomaly detection
+@Field static final BigDecimal ANOMALY_MAD_MULTIPLIER = 2.5             // MAD multiplier for spread detection  
+@Field static final Integer MIN_SAMPLES_FOR_ANOMALY_CHECK = 4           // Minimum samples before anomaly detection
+@Field static final Integer ANOMALY_DECAY_STEPS = 2                     // Steps for anomaly influence decay
+@Field static final BigDecimal CV_LOW_THRESHOLD = 0.10                  // Coefficient of variation low threshold
+@Field static final BigDecimal CV_VERY_LOW_THRESHOLD = 0.05             // CV very low threshold for fine granularity
+@Field static final BigDecimal INTERNAL_FINE_STEP = 0.02                // Internal fine step (2%) for calculations
+@Field static final BigDecimal EPS_RATE = 0.0001                        // Epsilon to avoid division by zero in rates
+@Field static final BigDecimal MAX_PERCENT_CHANGE_PER_CYCLE = 25.0      // Maximum percentage change per cycle
+
 // Raw data cache defaults and fallbacks
 @Field static final Integer RAW_CACHE_DEFAULT_HOURS = 24
 @Field static final Integer RAW_CACHE_MAX_ENTRIES = 20000
@@ -1016,6 +1027,79 @@ def calculateHvacModeRobust() {
   if (median > DUCT_TEMP_DIFF_THRESHOLD) { return HEATING }
   if (median < -DUCT_TEMP_DIFF_THRESHOLD) { return COOLING }
   return (fallbackFromThermostat() ?: 'idle')
+}
+
+/** Enhanced HVAC mode detection with hysteresis and detailed reason logging */
+def calculateHvacModeWithHysteresis() {
+  def vents = getChildDevices()?.findAll {
+    it.currentValue('duct-temperature-c') != null &&
+    (it.currentValue('room-current-temperature-c') != null ||
+     it.currentValue('current-temperature-c') != null ||
+     it.currentValue('temperature') != null)
+  }
+
+  def fallbackFromThermostat = {
+    try {
+      String op = settings?.thermostat1?.currentValue('thermostatOperatingState')?.toString()?.toLowerCase()
+      if (op in ['heating', 'pending heat']) { return [mode: HEATING, reason: 'thermostat fallback: heating'] }
+      if (op in ['cooling', 'pending cool']) { return [mode: COOLING, reason: 'thermostat fallback: cooling'] }
+    } catch (ignore) { }
+    return [mode: 'idle', reason: 'thermostat fallback: idle']
+  }
+
+  if (!vents || vents.isEmpty()) { 
+    return (fallbackFromThermostat() ?: [mode: 'idle', reason: 'no vents with temperature data'])
+  }
+
+  def diffs = []
+  def validVents = 0
+  vents.each { v ->
+    try {
+      BigDecimal duct = v.currentValue('duct-temperature-c') as BigDecimal
+      BigDecimal room = (v.currentValue('room-current-temperature-c') ?:
+                         v.currentValue('current-temperature-c') ?:
+                         v.currentValue('temperature')) as BigDecimal
+      if (duct != null && room != null) {
+        BigDecimal diff = duct - room
+        diffs << diff
+        validVents++
+        log(4, 'DAB', "Vent ${v?.displayName ?: v?.id}: duct=${duct}C room=${room}C diff=${diff}C", v?.id)
+      }
+    } catch (ignore) { }
+  }
+  
+  if (!diffs || validVents < 1) { 
+    return (fallbackFromThermostat() ?: [mode: 'idle', reason: 'insufficient valid temperature readings'])
+  }
+  
+  def sorted = diffs.sort()
+  BigDecimal median = sorted[sorted.size().intdiv(2)] as BigDecimal
+  BigDecimal absMedian = median.abs()
+  
+  // Apply hysteresis - require stronger signal to change from current state
+  String currentMode = atomicState.thermostat1State?.mode ?: 'idle'
+  BigDecimal hysteresisThreshold = DUCT_TEMP_DIFF_THRESHOLD
+  
+  // If currently running, require stronger opposite signal to stop
+  if (currentMode in [COOLING, HEATING]) {
+    hysteresisThreshold = DUCT_TEMP_DIFF_THRESHOLD * 1.2  // 20% higher threshold
+  }
+  
+  log(4, 'DAB', "Median duct-room temp diff=${median}C (threshold=${hysteresisThreshold}C, samples=${validVents})")
+  
+  if (median > hysteresisThreshold) { 
+    return [mode: HEATING, reason: "duct temp delta ${median}C > ${hysteresisThreshold}C threshold (${validVents} samples)"]
+  }
+  if (median < -hysteresisThreshold) { 
+    return [mode: COOLING, reason: "duct temp delta ${median}C < -${hysteresisThreshold}C threshold (${validVents} samples)"]
+  }
+  
+  // Check if we're in hysteresis zone
+  if (absMedian > DUCT_TEMP_DIFF_THRESHOLD * 0.5) {
+    return [mode: currentMode, reason: "hysteresis hold - delta ${median}C within threshold band (${validVents} samples)"]
+  }
+  
+  return (fallbackFromThermostat() ?: [mode: 'idle', reason: "delta ${median}C below threshold (${validVents} samples)"])
 }
 
 void removeChildren() {
@@ -3131,17 +3215,32 @@ def thermostat1ChangeStateHandler(evt) {
 def updateHvacStateFromDuctTemps() {
   // Detection runs even if DAB is disabled; only DAB actions are gated by dabEnabled
   String previousMode = atomicState.thermostat1State?.mode ?: 'idle'
-  String hvacMode = (calculateHvacModeRobust() ?: 'idle')
+  
+  // Enhanced HVAC mode detection with hysteresis and detailed logging
+  Map hvacDetectionResult = calculateHvacModeWithHysteresis()
+  String hvacMode = hvacDetectionResult.mode ?: 'idle'
+  String reason = hvacDetectionResult.reason ?: 'unknown'
+  
+  // Log reasons when remaining idle
+  if (hvacMode == 'idle' && previousMode == 'idle') {
+    log(3, 'DAB', "Remaining idle: ${reason}")
+  }
+  
   if (hvacMode != previousMode) {
-    appendDabActivityLog("Start: ${previousMode} -> ${hvacMode}")
+    recordDabEvent('CycleTransition', [from: previousMode, to: hvacMode, reason: reason])
     try { atomicState.hvacLastMode = previousMode } catch (ignore) { }
     try { atomicState.hvacCurrentMode = hvacMode } catch (ignore) { }
     try { atomicState.hvacLastChangeTs = now() } catch (ignore) { }
   }
+  
   if (hvacMode in [COOLING, HEATING]) {
     if (!atomicState.thermostat1State || atomicState.thermostat1State?.mode != hvacMode) {
+      // Starting new cycle
       atomicStateUpdate('thermostat1State', 'mode', hvacMode)
       atomicStateUpdate('thermostat1State', 'startedRunning', now())
+      atomicStateUpdate('thermostat1State', 'startedCycle', now())
+      recordDabEvent('CycleStart', [mode: hvacMode, reason: reason])
+      
       unschedule('initializeRoomStates')
       runInMillis(POST_STATE_CHANGE_DELAY_MS, 'initializeRoomStates', [data: hvacMode])
       recordStartingTemperatures()
@@ -3150,12 +3249,15 @@ def updateHvacStateFromDuctTemps() {
       updateDevicePollingInterval((settings?.pollingIntervalActive ?: POLLING_INTERVAL_ACTIVE) as Integer)
     }
   } else {
+    // HVAC going idle or remaining idle
     if (atomicState.thermostat1State) {
       unschedule('initializeRoomStates')
-      unschedule('finalizeRoomStates')
+      unschedule('finalizeRoomStates') 
       unschedule('evaluateRebalancingVents')
       unschedule('reBalanceVents')
       atomicStateUpdate('thermostat1State', 'finishedRunning', now())
+      recordDabEvent('CycleEnd', [mode: atomicState.thermostat1State?.mode, reason: reason])
+      
       if (settings?.dabEnabled) {
         def params = [
           ventIdsByRoomId: atomicState.ventsByRoomId,
@@ -3169,10 +3271,6 @@ def updateHvacStateFromDuctTemps() {
       atomicState.remove('thermostat1State')
       updateDevicePollingInterval((settings?.pollingIntervalIdle ?: POLLING_INTERVAL_IDLE) as Integer)
     }
-  }
-  String currentMode = atomicState.thermostat1State?.mode ?: 'idle'
-  if (currentMode != previousMode) {
-    appendDabActivityLog("End: ${previousMode} -> ${currentMode}")
   }
 }
 
@@ -3505,42 +3603,268 @@ private void appendAdaptiveMark(String roomId, String hvacMode, Integer hour, Bi
 def appendHourlyRate(String roomId, String hvacMode, Integer hour, BigDecimal rate) {
   if (!roomId || !hvacMode || hour == null || rate == null) {
     recordHistoryError('Null value detected while appending hourly rate')
-    return
+    return [effectiveRate: MIN_TEMP_CHANGE_RATE, metadata: [error: 'invalid input']]
   }
+  
   initializeDabHistory()
   def hist = atomicState?.dabHistory
-  if (hist == null) { hist = [entries: [], hourlyRates: [:]] }
+  if (hist == null) { hist = [entries: [], hourlyRates: [:], hourlyMetadata: [:]] }
+  
+  // Ensure hourlyMetadata structure exists
+  def metadata = hist.hourlyMetadata ?: [:]
+  if (!metadata[roomId]) { metadata[roomId] = [:] }
+  if (!metadata[roomId][hvacMode]) { metadata[roomId][hvacMode] = [:] }
+  if (!metadata[roomId][hvacMode][hour]) { 
+    metadata[roomId][hvacMode][hour] = [rawAvg: 0, samplesCount: 0, carryForwardUsed: 0, anomalyFlag: 0] 
+  }
+  
+  // Get current date for duplicate prevention
+  def tz = location?.timeZone ?: TimeZone.getTimeZone('UTC')
+  String currentDate = new Date().format('yyyy-MM-dd', tz)
+  
+  // Check for duplicate in same runtime cycle (prevent duplicate append)
+  def entries = (hist instanceof List) ? (hist as List) : (hist.entries ?: [])
+  Long ts = now()
+  Long todayStart = Date.parse('yyyy-MM-dd', currentDate).time
+  Long todayEnd = todayStart + (24 * 60 * 60 * 1000L) - 1
+  
+  def existingToday = entries.findAll { e ->
+    try {
+      return e[1] == roomId && e[2] == hvacMode && (e[3] as Integer) == (hour as Integer) &&
+             (e[0] as Long) >= todayStart && (e[0] as Long) <= todayEnd
+    } catch (ignore) { return false }
+  }
+  
+  // Get existing rates for this hour slot
   def hourly = (hist instanceof Map) ? (hist?.hourlyRates ?: [:]) : [:]
   def room = hourly[roomId] ?: [:]
   def mode = room[hvacMode] ?: [:]
   Integer h = hour as Integer
   def list = (mode[h] ?: []) as List
-  list << (rate as BigDecimal)
+  
+  // If duplicate today, update the last entry instead of appending
+  boolean isDuplicate = existingToday.size() > 0
+  if (isDuplicate && list.size() > 0) {
+    list[list.size() - 1] = rate as BigDecimal
+    log(3, 'DAB', "Updated duplicate hourly rate for ${roomId} ${hvacMode} h${hour}: ${rate}")
+  } else {
+    // Append new rate
+    list << (rate as BigDecimal)
+  }
+  
+  // Apply retention
   Integer retention = getRetentionDays()
   if (list.size() > retention) {
     list = list[-retention..-1]
   }
+  
+  // Detect anomaly and calculate effective rate
+  def anomalyResult = detectAnomaly(roomId, hvacMode, hour, rate as BigDecimal, list)
+  boolean isAnomaly = anomalyResult.isAnomaly
+  BigDecimal anomalyFactor = getAnomalyFactor(roomId, hvacMode, hour)
+  
+  // Calculate effective rate (arithmetic mean with anomaly influence dampening)
+  BigDecimal effectiveRate = MIN_TEMP_CHANGE_RATE
+  boolean carryForwardUsed = false
+  
+  if (list.size() >= 1) {
+    // Calculate arithmetic mean
+    BigDecimal sum = list.inject(0) { acc, val -> acc + (val as BigDecimal) }
+    BigDecimal rawAvg = sum / list.size()
+    
+    // Apply anomaly influence dampening if needed
+    if (anomalyFactor < 1.0 && list.size() > 1) {
+      // Reduce influence of anomalous samples
+      BigDecimal dampedSum = 0
+      BigDecimal dampedCount = 0
+      list.each { val ->
+        BigDecimal weight = 1.0
+        if (isAnomaly && val == rate) {
+          weight = anomalyFactor
+        }
+        dampedSum += (val as BigDecimal) * weight
+        dampedCount += weight
+      }
+      if (dampedCount > 0) {
+        effectiveRate = dampedSum / dampedCount
+      } else {
+        effectiveRate = rawAvg
+      }
+    } else {
+      effectiveRate = rawAvg
+    }
+    
+    // Update metadata
+    metadata[roomId][hvacMode][hour].rawAvg = rawAvg
+    metadata[roomId][hvacMode][hour].samplesCount = list.size()
+    metadata[roomId][hvacMode][hour].anomalyFlag = isAnomaly ? 1 : 0
+  } else {
+    // No samples - use carry-forward from previous hour
+    Integer prevHour = ((hour - 1 + 24) % 24)
+    def prevHourRate = getEffectiveHourlyRate(roomId, hvacMode, prevHour)
+    if (prevHourRate != null) {
+      effectiveRate = prevHourRate
+      carryForwardUsed = true
+      recordDabEvent('CarryForward', [room: roomId, mode: hvacMode, hour: hour, fromHour: prevHour])
+    }
+    metadata[roomId][hvacMode][hour].carryForwardUsed = carryForwardUsed ? 1 : 0
+  }
+  
+  // Record anomaly event if detected
+  if (isAnomaly) {
+    recordDabEvent('Anomaly', [room: roomId, mode: hvacMode, hour: hour, rate: rate, factor: anomalyFactor])
+  }
+  
+  // Update structures
   mode[h] = list
   room[hvacMode] = mode
   hourly[roomId] = room
-  try { hist.hourlyRates = hourly } catch (ignore) { }
-  // Also mirror into flat entries for union-based queries (CI/tests and progress page)
-  try {
-    def entries = (hist instanceof List) ? (hist as List) : (hist.entries ?: [])
-    Long ts = now()
+  hist.hourlyRates = hourly
+  hist.hourlyMetadata = metadata
+  
+  // Update flat entries for union-based queries (avoiding duplicates)
+  if (!isDuplicate) {
     entries << [ts, roomId, hvacMode, h, (rate as BigDecimal)]
-    Long cutoff = ts - retention * 24L * 60L * 60L * 1000L
-    entries = entries.findAll { e ->
-      try { return (e[0] as Long) >= cutoff } catch (ignore) { return false }
+  } else if (existingToday.size() > 0) {
+    // Update the existing entry
+    def lastExisting = existingToday[-1]
+    def entryIndex = entries.indexOf(lastExisting)
+    if (entryIndex >= 0) {
+      entries[entryIndex] = [ts, roomId, hvacMode, h, (rate as BigDecimal)]
     }
-    if (hist instanceof List) {
-      atomicState.dabHistory = entries
-    } else {
-      try { hist.entries = entries } catch (ignore) { }
-    }
-  } catch (ignore) { }
+  }
+  
+  // Apply retention to entries
+  Long cutoff = ts - retention * 24L * 60L * 60L * 1000L
+  entries = entries.findAll { e ->
+    try { return (e[0] as Long) >= cutoff } catch (ignore) { return false }
+  }
+  
+  if (hist instanceof List) {
+    atomicState.dabHistory = entries
+  } else {
+    hist.entries = entries
+  }
+  
   atomicState.dabHistory = hist
   atomicState.lastHvacMode = hvacMode
+  
+  recordDabEvent('HourCommit', [room: roomId, mode: hvacMode, hour: hour, rate: effectiveRate])
+  
+  return [
+    effectiveRate: effectiveRate,
+    metadata: [
+      rawAvg: metadata[roomId][hvacMode][hour].rawAvg,
+      samplesCount: metadata[roomId][hvacMode][hour].samplesCount,
+      carryForwardUsed: carryForwardUsed ? 1 : 0,
+      anomalyFlag: isAnomaly ? 1 : 0,
+      anomalyFactor: anomalyFactor
+    ]
+  ]
+}
+
+/** Helper function to get effective hourly rate for carry-forward logic */
+def getEffectiveHourlyRate(String roomId, String hvacMode, Integer hour) {
+  try {
+    initializeDabHistory()
+    def hist = atomicState?.dabHistory
+    def hourly = (hist instanceof Map) ? (hist?.hourlyRates ?: [:]) : [:]
+    def room = hourly[roomId] ?: [:]
+    def mode = room[hvacMode] ?: [:]
+    def list = (mode[hour] ?: []) as List
+    
+    if (list && list.size() > 0) {
+      // Calculate arithmetic mean
+      BigDecimal sum = list.inject(0) { acc, val -> acc + (val as BigDecimal) }
+      return sum / list.size()
+    }
+  } catch (ignore) { }
+  return null
+}
+
+/** Anomaly detection using percentage and MAD thresholds */
+def detectAnomaly(String roomId, String hvacMode, Integer hour, BigDecimal newRate, List<BigDecimal> existingRates) {
+  if (!existingRates || existingRates.size() < MIN_SAMPLES_FOR_ANOMALY_CHECK) {
+    return [isAnomaly: false, reason: 'insufficient samples']
+  }
+  
+  try {
+    // Calculate current mean (excluding the new rate)
+    def ratesForStats = existingRates.size() > 1 ? existingRates[0..-2] : existingRates
+    if (ratesForStats.isEmpty()) {
+      return [isAnomaly: false, reason: 'no baseline rates']
+    }
+    
+    BigDecimal sum = ratesForStats.inject(0) { acc, val -> acc + (val as BigDecimal) }
+    BigDecimal mean = sum / ratesForStats.size()
+    
+    // Calculate MAD (Median Absolute Deviation)
+    def deviations = ratesForStats.collect { ((it as BigDecimal) - mean).abs() }
+    deviations.sort()
+    BigDecimal mad = deviations[deviations.size().intdiv(2)]
+    
+    // Check percentage threshold
+    BigDecimal percentDiff = ((newRate - mean).abs() / Math.max(mean.abs(), EPS_RATE))
+    boolean exceedsPercentThreshold = percentDiff > ANOMALY_PERCENT_THRESHOLD
+    
+    // Check MAD threshold
+    BigDecimal madThreshold = mad * ANOMALY_MAD_MULTIPLIER
+    boolean exceedsMadThreshold = (newRate - mean).abs() > madThreshold
+    
+    boolean isAnomaly = exceedsPercentThreshold && exceedsMadThreshold
+    
+    return [
+      isAnomaly: isAnomaly,
+      reason: isAnomaly ? "percent=${(percentDiff*100).setScale(1, BigDecimal.ROUND_HALF_UP)}% mad=${madThreshold.setScale(3, BigDecimal.ROUND_HALF_UP)}" : 'within thresholds',
+      percentDiff: percentDiff,
+      madThreshold: madThreshold,
+      mean: mean
+    ]
+  } catch (e) {
+    log(2, 'DAB', "Error in anomaly detection: ${e.message}")
+    return [isAnomaly: false, reason: 'calculation error']
+  }
+}
+
+/** Get current anomaly influence factor for a room/hour slot */
+def getAnomalyFactor(String roomId, String hvacMode, Integer hour) {
+  try {
+    def anomalyInfluence = atomicState?.anomalyInfluence ?: [:]
+    def key = "${roomId}_${hvacMode}_${hour}"
+    def influence = anomalyInfluence[key]
+    
+    if (influence && influence.step != null && influence.factor != null) {
+      // Check if influence should decay or expire
+      if (influence.step >= ANOMALY_DECAY_STEPS) {
+        // Remove expired influence
+        anomalyInfluence.remove(key)
+        atomicState.anomalyInfluence = anomalyInfluence
+        return 1.0
+      } else {
+        // Decay influence for next time
+        influence.step = (influence.step as Integer) + 1
+        switch (influence.step) {
+          case 1: influence.factor = 0.6; break
+          case 2: influence.factor = 0.3; break
+          default: influence.factor = 0.1; break
+        }
+        anomalyInfluence[key] = influence
+        atomicState.anomalyInfluence = anomalyInfluence
+        return influence.factor as BigDecimal
+      }
+    }
+  } catch (ignore) { }
+  return 1.0
+}
+
+/** Record anomaly influence for future dampening */
+def recordAnomalyInfluence(String roomId, String hvacMode, Integer hour) {
+  try {
+    def anomalyInfluence = atomicState?.anomalyInfluence ?: [:]
+    def key = "${roomId}_${hvacMode}_${hour}"
+    anomalyInfluence[key] = [step: 0, factor: 1.0]
+    atomicState.anomalyInfluence = anomalyInfluence
+  } catch (ignore) { }
 }
 
 def appendDabHistory(String roomId, String hvacMode, Integer hour, BigDecimal rate) {
@@ -3775,6 +4099,46 @@ def appendDabActivityLog(String message) {
   archive << [type: 'activity', ts: ts, since: startStr, message: message]
   if (archive.size() > 1000) { archive = archive[-1000..-1] }
   try { atomicState.dabHistoryArchive = archive } catch (ignore) { }
+}
+
+/** Enhanced activity logging with structured event types */
+def recordDabEvent(String type, Map data = [:]) {
+  def tz = location?.timeZone ?: TimeZone.getTimeZone('UTC')
+  String ts = new Date().format('yyyy-MM-dd HH:mm:ss', tz)
+  
+  // Create structured message based on event type
+  String message = ""
+  switch(type) {
+    case 'CycleStart':
+      message = "Cycle Start: ${data.mode} (${data.reason})"
+      break
+    case 'CycleEnd':
+      message = "Cycle End: ${data.mode} (${data.reason})"
+      break
+    case 'CycleTransition':
+      message = "Transition: ${data.from} -> ${data.to} (${data.reason})"
+      break
+    case 'HourCommit':
+      message = "Hour Commit: ${data.room} ${data.mode} h${data.hour} rate=${data.rate}"
+      break
+    case 'CarryForward':
+      message = "Carry Forward: ${data.room} ${data.mode} h${data.hour} from h${data.fromHour}"
+      break
+    case 'Anomaly':
+      message = "Anomaly: ${data.room} ${data.mode} h${data.hour} rate=${data.rate} factor=${data.factor}"
+      break
+    default:
+      message = "${type}: ${data.toString()}"
+  }
+  
+  // Use existing appendDabActivityLog for consistency
+  appendDabActivityLog(message)
+  
+  // Also maintain structured log for diagnostics
+  def events = atomicState?.dabStructuredEvents ?: []
+  events << [type: type, ts: ts, data: data, message: message]
+  if (events.size() > 500) { events = events[-500..-1] }
+  try { atomicState.dabStructuredEvents = events } catch (ignore) { }
 }
 
 // Read combined DAB history archive (structured). Falls back to in-memory activity log.
