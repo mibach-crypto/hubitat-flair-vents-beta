@@ -379,6 +379,7 @@ def mainPage() {
             input name: 'enableOutlierRejection', type: 'bool', title: 'Robust outlier handling (MAD)', defaultValue: true, submitOnChange: true
             input name: 'outlierThresholdMad', type: 'number', title: 'Outlier threshold (k Ã¢â€Å“ÃƒÂ¹ MAD)', defaultValue: 3, submitOnChange: true
             input name: 'outlierMode', type: 'enum', title: 'Outlier mode', options: ['reject':'Reject', 'clip':'Clip to bound'], defaultValue: 'clip', submitOnChange: true
+            input name: 'dabVerboseLogging', type: 'bool', title: 'Verbose DAB logging (debug per-vent deltas)', defaultValue: false, submitOnChange: true
             // Mirror to atomicState for CI-safe access
             try {
               atomicState.enableEwma = settings?.enableEwma == true
@@ -388,6 +389,7 @@ def mainPage() {
               atomicState.outlierMode = settings?.outlierMode ?: 'clip'
               atomicState.carryForwardLastHour = settings?.carryForwardLastHour != false
               atomicState.enableAdaptiveBoost = settings?.enableAdaptiveBoost != false
+              atomicState.dabVerboseLogging = settings?.dabVerboseLogging == true
               atomicState.adaptiveLookbackPeriods = (settings?.adaptiveLookbackPeriods ?: 3) as Integer
               atomicState.adaptiveThresholdPercent = (settings?.adaptiveThresholdPercent ?: 25) as BigDecimal
               atomicState.adaptiveBoostPercent = (settings?.adaptiveBoostPercent ?: 12.5) as BigDecimal
@@ -630,6 +632,45 @@ def diagnosticsPage() {
         }
       }
       paragraph '<small>Snapshot data is logged for analysis. Check app logs for structured JSON output.</small>'
+    }
+    
+    section('Cycle Debug (Last 5 Transitions)') {
+      def cycleEvents = (atomicState.dabEvents ?: []).findAll { 
+        it.type in ['CycleStart', 'CycleEnd', 'CycleAbort', 'CycleTransition'] 
+      }.takeRight(5)
+      
+      if (cycleEvents) {
+        cycleEvents.each { event ->
+          def ts = new Date(event.timestamp).format('HH:mm:ss', location?.timeZone ?: TimeZone.getTimeZone('UTC'))
+          if (event.type == 'CycleStart' || event.type == 'CycleEnd') {
+            paragraph "<code>${ts} - ${event.type}: mode=${event.data.mode}</code>"
+          } else if (event.type == 'CycleAbort') {
+            paragraph "<code>${ts} - ${event.type}: reason=${event.data.reason}, duration=${event.data.duration}s</code>"
+          } else if (event.type == 'CycleTransition') {
+            paragraph "<code>${ts} - ${event.data.phase}: ${event.data.from} -> ${event.data.to}</code>"
+          }
+        }
+      } else {
+        paragraph 'No cycle events recorded yet.'
+      }
+      
+      // Show current cycle state
+      if (atomicState.thermostat1State) {
+        def runningTime = atomicState.thermostat1State.startedRunning ? 
+          ((now() - atomicState.thermostat1State.startedRunning) / 1000).toInteger() : 0
+        paragraph "<b>Current Cycle:</b> mode=${atomicState.thermostat1State.mode}, running=${runningTime}s"
+      } else {
+        paragraph "<b>Current State:</b> Idle"
+      }
+      
+      // Show confirmation counters
+      def confirmations = atomicState.findAll { it.key.startsWith('startConfirm_') || it.key.startsWith('endConfirm_') }
+      if (confirmations) {
+        paragraph "<b>Active Confirmations:</b> ${confirmations.collect { "${it.key}=${it.value}" }.join(', ')}"
+      }
+      
+      // Show migration status
+      paragraph "<b>Migration Status:</b> v2=${atomicState.dabMigration_v2 == true ? 'Applied' : 'Pending'}"
     }
     
     section('Actions') {
@@ -1180,13 +1221,17 @@ def calculateHvacModeRobust() {
                          v.currentValue('temperature')) as BigDecimal
       BigDecimal diff = duct - room
       diffs << diff
-      log(4, 'DAB', "Vent ${v?.displayName ?: v?.id}: duct=${duct}C room=${room}C diff=${diff}C", v?.id)
+      if (atomicState.dabVerboseLogging == true) {
+        log(4, 'DAB', "Vent ${v?.displayName ?: v?.id}: duct=${duct}°C room=${room}°C diff=${diff}°C", v?.id)
+      }
     } catch (ignore) { }
   }
   if (!diffs) { return (fallbackFromThermostat() ?: 'idle') }
   def sorted = diffs.sort()
   BigDecimal median = sorted[sorted.size().intdiv(2)] as BigDecimal
-  log(4, 'DAB', "Median duct-room temp diff=${median}C")
+  if (atomicState.dabVerboseLogging == true) {
+    log(4, 'DAB', "Median duct-room temp diff=${median}°C")
+  }
   if (median > DUCT_TEMP_DIFF_THRESHOLD) { return HEATING }
   if (median < -DUCT_TEMP_DIFF_THRESHOLD) { return COOLING }
   return (fallbackFromThermostat() ?: 'idle')
