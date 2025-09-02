@@ -974,8 +974,7 @@ private BigDecimal getRoomTemp(def vent) {
   def ventId = vent.getId()
   def roomName = vent.currentValue('room-name') ?: 'Unknown'
   def tempDevice = settings."vent${ventId}Thermostat"
-  
-  // 1. If enabled, prefer latest cached raw sample
+  // If enabled, prefer latest cached raw sample
   if (settings?.useCachedRawForDab) {
     def samp = getLatestRawSample(vent.getDeviceNetworkId())
     if (samp && samp.size() >= 9) {
@@ -984,36 +983,29 @@ private BigDecimal getRoomTemp(def vent) {
     }
   }
   
-  // 2. Check external temperature device (Puck or Thermostat)
   if (tempDevice) {
     def temp = tempDevice.currentValue('temperature')
-    if (temp != null) {
-        if (settings.thermostat1TempUnit == '2') {
-          // Assuming '2' means Fahrenheit based on original code context
-          temp = convertFahrenheitToCentigrade(temp)
-        }
-        log(2, 'App', "Got temp from ${tempDevice?.getLabel() ?: 'Unknown'} for '${roomName}': ${temp}C")
-        return temp
+    if (temp == null) {
+      log(2, 'App', "WARNING: Temperature device ${tempDevice?.getLabel() ?: 'Unknown'} for room '${roomName}' is not reporting temperature!")
+      // Fall back to room temperature
+      def roomTemp = vent.currentValue('room-current-temperature-c') ?: 0
+      log(2, 'App', "Falling back to room temperature for '${roomName}': ${roomTemp}Ã¢â€Â¬Ã¢â€“â€˜C")
+      return roomTemp
     }
-    // If tempDevice exists but reports null, log warning and fall through.
-    log(2, 'App', "WARNING: Temperature device ${tempDevice?.getLabel() ?: 'Unknown'} for room '${roomName}' is not reporting temperature!")
+    if (settings.thermostat1TempUnit == '2') {
+      temp = convertFahrenheitToCentigrade(temp)
+    }
+    log(2, 'App', "Got temp from ${tempDevice?.getLabel() ?: 'Unknown'} for '${roomName}': ${temp}Ã¢â€Â¬Ã¢â€“â€˜C")
+    return temp
   }
   
-  // 3. Fall back to room temperature reported by the vent/room API
   def roomTemp = vent.currentValue('room-current-temperature-c')
-  if (roomTemp != null) {
-    // If we fell back from a failed Puck/Thermostat, log it.
-    if (tempDevice) {
-        log(2, 'App', "Falling back to room temperature for '${roomName}': ${roomTemp}C")
-    } else {
-        log(2, 'App', "Using room temperature for '${roomName}': ${roomTemp}C")
-    }
-    return roomTemp
+  if (roomTemp == null) {
+    log(2, 'App', "ERROR: No temperature available for room '${roomName}' - neither from Puck nor from room API!")
+    return 0
   }
-  
-  // 4. All sources failed. Return null.
-  log(2, 'App', "ERROR: No temperature available for room '${roomName}' from any source!")
-  return null
+  log(2, 'App', "Using room temperature for '${roomName}': ${roomTemp}Ã¢â€Â¬Ã¢â€“â€˜C")
+  return roomTemp
 }
 
 private atomicStateUpdate(String stateKey, String key, value) {
@@ -3228,8 +3220,14 @@ def patchVentDevice(device, percentOpen, attempt = 1) {
 
 // Keep the old method name for backward compatibility
 def patchVent(device, percentOpen) {
-  // The caller (initializeRoomStates or Quick Controls) is responsible for determining the correct value,
-  // including respecting manual overrides via applyOverridesAndFloors or similar logic.
+  try {
+    String vid = device?.getDeviceNetworkId()
+    def overrides = atomicState?.manualOverrides ?: [:]
+    if (vid && overrides?.containsKey(vid)) {
+      // Hard-enforce manual override: never let algorithmic calls reduce it
+      percentOpen = (overrides[vid] as Integer)
+    }
+  } catch (ignore) { }
   patchVentDevice(device, percentOpen)
 }
 
@@ -3675,24 +3673,22 @@ def getHourlyRates(String roomId, String hvacMode, Integer hour) {
 // EWMA + MAD helpers
 // -------------
 private BigDecimal getEwmaRate(String roomId, String hvacMode, Integer hour) {
-  String hourStr = hour.toString() // Use string key
-  try { return (atomicState?.dabEwma?.get(roomId)?.get(hvacMode)?.get(hourStr)) as BigDecimal } catch (ignore) { return null }
+  try { return (atomicState?.dabEwma?.get(roomId)?.get(hvacMode)?.get(hour as Integer)) as BigDecimal } catch (ignore) { return null }
 }
 
 private BigDecimal updateEwmaRate(String roomId, String hvacMode, Integer hour, BigDecimal newRate) {
-  String hourStr = hour.toString() // Use string key
   try {
     def map = atomicState?.dabEwma ?: [:]
     def room = map[roomId] ?: [:]
     def mode = room[hvacMode] ?: [:]
-    BigDecimal prev = (mode[hourStr]) as BigDecimal
+    BigDecimal prev = (mode[hour as Integer]) as BigDecimal
     BigDecimal alpha = computeEwmaAlpha()
     BigDecimal updated = (prev == null) ? newRate : (alpha * newRate + (1 - alpha) * prev)
-    mode[hourStr] = cleanDecimalForJson(updated)
+    mode[hour as Integer] = cleanDecimalForJson(updated)
     room[hvacMode] = mode
     map[roomId] = room
     try { atomicState.dabEwma = map } catch (ignore) { }
-    return mode[hourStr] as BigDecimal
+    return mode[hour as Integer] as BigDecimal
   } catch (ignore) { return newRate }
 }
 
@@ -3771,15 +3767,14 @@ def initializeDabHistory() {
             try {
               Long ts = e[0] as Long; if (ts < cutoff) { return }
               String r = e[1]; String m = e[2]; Integer h = (e[3] as Integer)
-              String hourStr = h.toString() // Use string key
               BigDecimal rate = e[4] as BigDecimal
               def room = index[r] ?: [:]
               def mode = room[m] ?: [:]
-              def list = (mode[hourStr] ?: []) as List
+              def list = (mode[h] ?: []) as List
               list << rate
               // Trim list to retention size
               if (list.size() > retention) { list = list[-retention..-1] }
-              mode[hourStr] = list
+              mode[h] = list
               room[m] = mode
               index[r] = room
             } catch (ignore) { }
@@ -3824,8 +3819,6 @@ private boolean isDabEnabled() {
 // and retrieval.
 def getAverageHourlyRate(String roomId, String hvacMode, Integer hour) {
   initializeDabHistory()
-  String hourStr = hour.toString() // Use string key
-
   // Prefer EWMA if enabled and available
   if (atomicState?.enableEwma) {
     def ew = getEwmaRate(roomId, hvacMode, hour)
@@ -3834,8 +3827,7 @@ def getAverageHourlyRate(String roomId, String hvacMode, Integer hour) {
   def hist = atomicState?.dabHistory
   def rates = []
   try {
-    // Access using String key
-    rates = hist?.hourlyRates?.get(roomId)?.get(hvacMode)?.get(hourStr) ?: []
+    rates = hist?.hourlyRates?.get(roomId)?.get(hvacMode)?.get(hour as Integer) ?: []
   } catch (ignore) { rates = [] }
   if (!rates || rates.size() == 0) {
     rates = getHourlyRates(roomId, hvacMode, hour) ?: []
@@ -4613,20 +4605,9 @@ def finalizeRoomStates(data) {
         // Calculate rate for this room (first vent in room) using aggregated room opening
         def percentOpen = roomPercentOpen
         BigDecimal currentTemp = getRoomTemp(vent)
-        if (currentTemp == null) { // Handle null temp
-            log(3, 'App', "Skipping rate calculation for ${roomName} (Temp unavailable)")
-            continue
-        }
-        
-        BigDecimal lastStartTemp = vent.currentValue('room-starting-temperature-c')
-        if (lastStartTemp == null) {
-             log(3, 'App', "Skipping rate calculation for ${roomName} (Start Temp unavailable)")
-            continue
-        }
-
+        BigDecimal lastStartTemp = vent.currentValue('room-starting-temperature-c') ?: 0
         BigDecimal currentRate = vent.currentValue(ratePropName) ?: 0
-        // Call the directional calculation function
-        def newRate = calculateRoomChangeRate(lastStartTemp, currentTemp, totalCycleMinutes, percentOpen, currentRate, data.hvacMode)
+        def newRate = calculateRoomChangeRate(lastStartTemp, currentTemp, totalCycleMinutes, percentOpen, currentRate)
         
         if (newRate <= 0) {
           log(3, 'App', "New rate for ${roomName} is ${newRate}")
@@ -4813,15 +4794,7 @@ def initializeRoomStates(String hvacMode) {
       // Enhanced DAB: Apply change dampening and set vent attributes
       try {
         def rawTargetPercent = percentOpen as BigDecimal
-        
-        // Check if manually overridden before applying dampening
-        boolean isOverridden = (atomicState?.manualOverrides ?: [:]).containsKey(ventId)
-        def dampedTargetPercent = rawTargetPercent
-        if (!isOverridden) {
-            // Only apply dampening if not manually overridden
-            dampedTargetPercent = applyChangeDampening(ventId, rawTargetPercent, hvacMode)
-        }
-        
+        def dampedTargetPercent = applyChangeDampening(ventId, rawTargetPercent, hvacMode)
         __target = roundToNearestMultiple(dampedTargetPercent)
         
         // Set enhanced vent attributes for debugging/diagnostics
@@ -5124,17 +5097,9 @@ def calculateOpenPercentageForAllVents(rateAndTempPerVentId, String hvacMode, Bi
         // Room is already on the comfortable side of the setpoint - keep at floor
         percentageOpen = MIN_PERCENTAGE_OPEN
       } else if (stateVal.rate < MIN_TEMP_CHANGE_RATE) {
-        // Unknown or too-low learning rate.
-        // FIX: Check if we have a current position, if so, maintain it instead of resetting to 100%.
-        def currentOpen = (vdev?.currentValue('percent-open') ?: vdev?.currentValue('level'))
-        if (currentOpen != null && currentOpen > MIN_PERCENTAGE_OPEN) {
-            percentageOpen = currentOpen
-            log(3, 'App', "Maintaining current vent position (${percentageOpen}%) since change rate is unknown/low: ${stateVal.name}")
-        } else {
-            // Fallback to 100% only if we don't have a current position or it's already closed.
-            percentageOpen = MAX_PERCENTAGE_OPEN
-            log(3, 'App', "Opening vent at max since change rate is unknown/low and no previous position: ${stateVal.name}")
-        }
+        // Unknown or too-low learning rate: open fully unless already at/below setpoint
+        percentageOpen = MAX_PERCENTAGE_OPEN
+        log(3, 'App', "Opening vent at max since change rate is too low: ${stateVal.name}")
       } else {
         percentageOpen = calculateVentOpenPercentage(stateVal.name, stateVal.temp, spForVent, hvacMode, stateVal.rate, longestTime)
       }
@@ -5243,14 +5208,12 @@ def calculateRoomChangeRate(def lastStartTemp, def currentTemp, def totalMinutes
   }
   
   try {
-    // Call the main function with hvacMode=null (fallback to absolute difference)
     return calculateRoomChangeRate(
       lastStartTemp as BigDecimal, 
       currentTemp as BigDecimal, 
       totalMinutes as BigDecimal, 
       percentOpen as int, 
-      currentRate as BigDecimal,
-      null // hvacMode
+      currentRate as BigDecimal
     )
   } catch (Exception e) {
     log(3, 'App', "calculateRoomChangeRate casting error: ${e.message}")
@@ -5258,8 +5221,7 @@ def calculateRoomChangeRate(def lastStartTemp, def currentTemp, def totalMinutes
   }
 }
 
-def calculateRoomChangeRate(BigDecimal lastStartTemp, BigDecimal currentTemp, BigDecimal totalMinutes, int percentOpen, BigDecimal currentRate, String hvacMode = null) {
-  // ... (Existing checks for MIN_MINUTES_TO_SETPOINT, MIN_RUNTIME_FOR_RATE_CALC, MIN_PERCENTAGE_OPEN remain the same) ...
+def calculateRoomChangeRate(BigDecimal lastStartTemp, BigDecimal currentTemp, BigDecimal totalMinutes, int percentOpen, BigDecimal currentRate) {
   if (totalMinutes < MIN_MINUTES_TO_SETPOINT) {
     log(3, 'App', "Insufficient number of minutes required to calculate change rate (${totalMinutes} should be greater than ${MIN_MINUTES_TO_SETPOINT})")
     return -1
@@ -5276,64 +5238,31 @@ def calculateRoomChangeRate(BigDecimal lastStartTemp, BigDecimal currentTemp, Bi
     return -1
   }
   
-  BigDecimal diffTemps = 0
+  BigDecimal diffTemps = Math.abs(lastStartTemp - currentTemp)
   
-  // Calculate directional temperature difference if hvacMode is provided
-  if (hvacMode == COOLING) {
-      diffTemps = lastStartTemp - currentTemp // Positive if cooling occurred
-  } else if (hvacMode == HEATING) {
-      diffTemps = currentTemp - lastStartTemp // Positive if heating occurred
-  } else {
-      // Fallback for tests or unknown mode: use absolute difference
-      diffTemps = Math.abs(lastStartTemp - currentTemp)
-  }
-
-  // Check if temperature change is in the wrong direction or too small (if mode is known)
-  if (hvacMode != null) {
-      if (diffTemps < MIN_DETECTABLE_TEMP_CHANGE) {
-        if (diffTemps < 0) {
-            log(2, 'App', "Temperature moved in the wrong direction during ${hvacMode} (Start: ${lastStartTemp}, End: ${currentTemp}). Excluding from rate calculation.")
-        } else {
-            log(2, 'App', "Temperature change (${diffTemps}C) is below minimum detectable threshold (${MIN_DETECTABLE_TEMP_CHANGE}C).")
-        }
-        
-        // If vent was significantly open but no positive change in the right direction, assign minimum efficiency
-        if (percentOpen >= 30) {
-          log(2, 'App', "Vent was ${percentOpen}% open but no meaningful improvement detected - assigning minimum efficiency")
-          return MIN_TEMP_CHANGE_RATE
-        }
-        return -1
-      }
-  } else {
-      // Original logic for absolute difference (fallback/test mode)
-      if (Math.abs(diffTemps) < MIN_DETECTABLE_TEMP_CHANGE) {
-        log(2, 'App', "Temperature change (${Math.abs(diffTemps)}C) is below minimum detectable threshold (${MIN_DETECTABLE_TEMP_CHANGE}C) - likely sensor noise")
-        
-        // If no meaningful temperature change but vent was significantly open, assign minimum efficiency
-        if (percentOpen >= 30) {
-          log(2, 'App', "Vent was ${percentOpen}% open but no meaningful temperature change detected - assigning minimum efficiency")
-          return MIN_TEMP_CHANGE_RATE
-        }
-        return -1
-      }
+  // Check if temperature change is within sensor noise/accuracy range
+  if (diffTemps < MIN_DETECTABLE_TEMP_CHANGE) {
+    log(2, 'App', "Temperature change (${diffTemps}Ã¢â€Â¬Ã¢â€“â€˜C) is below minimum detectable threshold (${MIN_DETECTABLE_TEMP_CHANGE}Ã¢â€Â¬Ã¢â€“â€˜C) - likely sensor noise")
+    
+    // If no meaningful temperature change but vent was significantly open, assign minimum efficiency
+    if (percentOpen >= 30) {
+      log(2, 'App', "Vent was ${percentOpen}% open but no meaningful temperature change detected - assigning minimum efficiency")
+      return MIN_TEMP_CHANGE_RATE
+    }
+    return -1
   }
   
   // Account for sensor accuracy when detecting minimal changes
-  if (Math.abs(diffTemps) < TEMP_SENSOR_ACCURACY) {
-    log(2, 'App', "Temperature change (${Math.abs(diffTemps)}C) is within sensor accuracy range (${TEMP_SENSOR_ACCURACY}C) - adjusting calculation")
+  if (diffTemps < TEMP_SENSOR_ACCURACY) {
+    log(2, 'App', "Temperature change (${diffTemps}Ã¢â€Â¬Ã¢â€“â€˜C) is within sensor accuracy range (Ã¢â€Â¬Ã¢â€“â€™${TEMP_SENSOR_ACCURACY}Ã¢â€Â¬Ã¢â€“â€˜C) - adjusting calculation")
     // Use a minimum reliable change for calculation to avoid division by near-zero
-    diffTemps = diffTemps >= 0 ? Math.max(Math.abs(diffTemps), MIN_DETECTABLE_TEMP_CHANGE) : -Math.max(Math.abs(diffTemps), MIN_DETECTABLE_TEMP_CHANGE)
+    diffTemps = Math.max(diffTemps, MIN_DETECTABLE_TEMP_CHANGE)
   }
   
-  BigDecimal rate = Math.abs(diffTemps) / totalMinutes
+  BigDecimal rate = diffTemps / totalMinutes
   BigDecimal pOpen = percentOpen / 100
-
-  // Use currentRate only if it's valid, otherwise use the newly calculated rate for normalization base
-  BigDecimal normalizationBase = (currentRate != null && currentRate > 0) ? currentRate : rate
-  
-  // Ensure normalizationBase is not zero before division
-  BigDecimal approxRate = (normalizationBase > 0) ? (rate / normalizationBase) / pOpen : 0
-
+  BigDecimal maxRate = rate.max(currentRate)
+  BigDecimal approxRate = maxRate != 0 ? (rate / maxRate) / pOpen : 0
   if (approxRate > MAX_TEMP_CHANGE_RATE) {
     log(3, 'App', "Change rate (${roundBigDecimal(approxRate)}) is greater than ${MAX_TEMP_CHANGE_RATE}, therefore it is being excluded")
     return -1
