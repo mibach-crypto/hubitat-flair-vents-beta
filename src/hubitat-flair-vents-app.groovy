@@ -35,7 +35,8 @@ import java.net.URLEncoder
 @Field static final Long DEVICE_CACHE_DURATION_MS = 30000 // 30 second cache duration for device readings
 @Field static final Integer MAX_CACHE_SIZE = 50 // Maximum cache entries per instance
 @Field static final Integer DEFAULT_HISTORY_RETENTION_DAYS = 10 // Default days to retain DAB history
-@Field static final Integer DAILY_SUMMARY_PAGE_SIZE = 30 // Entries per page for daily summary
+@Field static final Integer DAILY_SUMMARY_PAGE_SIZE = 30 // Entries per page for daily summar
+
 @Field static final Long LOG_RATE_LIMIT_MS = 5000 // Min ms between identical log entries
 
 // Content-Type header for API requests.
@@ -189,9 +190,9 @@ definition(
 )
 
 preferences {
-  page(name: 'mainPage')
+  page(name: 'landingPage')
+  page(name: 'setupPage')
   page(name: 'efficiencyDataPage')
-  page(name: 'dabChartPage')
   page(name: 'dabRatesTablePage')
   page(name: 'dabActivityLogPage')
   page(name: 'dabHistoryPage')
@@ -200,14 +201,69 @@ preferences {
   page(name: 'diagnosticsPage')
 }
 
-def mainPage() {
+def landingPage() {
+  dynamicPage(name: 'landingPage', title: 'Dashboard', install: true, uninstall: true) {
+    section('System Health') {
+      def issues = getDataIssues()
+      if (issues) {
+        issues.each { paragraph "<span style='color:red;'>${it}</span>" }
+      } else {
+        paragraph "<span style='color:green;'>No data issues detected.</span>"
+      }
+      def err = state.lastCommandError
+      if (err) {
+        paragraph "<b>${err.action}</b>: ${err.message}"
+        if (err.suggestion) { paragraph "<small>${err.suggestion}</small>" }
+        input name: 'clearLastCommandError', type: 'button', title: 'Clear Last Command Error', submitOnChange: true
+        if (settings?.clearLastCommandError) {
+          state.remove('lastCommandError')
+          app.updateSetting('clearLastCommandError', null)
+          paragraph "<span style='color: green;'>&#10003; Cleared</span>"
+        }
+      }
+    }
+    section('DAB Health') {
+      if (settings?.dabEnabled) {
+        paragraph "<span style='color:green;'>Dynamic Airflow Balancing enabled</span>"
+      } else {
+        paragraph "<span style='color:red;'>Dynamic Airflow Balancing disabled</span>"
+      }
+    }
+    section('Rooms') {
+      def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+      vents.each { vent ->
+        def roomName = vent.currentValue('room-name') ?: vent.getLabel()
+        def temp = vent.currentValue('temperature') ?: '-'
+        def pct = vent.currentValue('percent-open') ?: '-'
+        paragraph "<b>${roomName}</b>: ${temp}&deg; | ${pct}% open"
+        String key = "refresh_${vent.getId()}"
+        input name: key, type: 'button', title: 'Refresh', submitOnChange: true
+        if (settings?."${key}") {
+          try { vent.refresh() } catch (ignore) { }
+          app.updateSetting(key, null)
+          paragraph "<span style='color: green;'>&#10003; Refreshed</span>"
+        }
+      }
+    }
+    section('Navigation') {
+      href name: 'quickControlsLinkTop', title: '\u26A1 Open Quick Controls', description: 'Per-room manual controls', page: 'quickControlsPage'
+      href name: 'setupLink', title: 'Configuration', description: 'One-time setup and advanced settings', page: 'setupPage'
+      href name: 'dabRatesTableLink', title: 'View DAB Rates Table', page: 'dabRatesTablePage'
+      href name: 'dabProgressLink', title: 'View DAB Progress', page: 'dabProgressPage'
+      href name: 'dabDailySummaryLink', title: 'View Daily DAB Summary', page: 'dabDailySummaryPage'
+      href name: 'dabActivityLogLink', title: 'View DAB Activity Log', page: 'dabActivityLogPage'
+    }
+  }
+}
+
+def setupPage() {
   def validation = validatePreferences()
   if (settings?.validateNow) {
     performValidationTest()
     app.updateSetting('validateNow', null)
   }
 
-  dynamicPage(name: 'mainPage', title: 'Setup', install: validation.valid, uninstall: true) {
+  dynamicPage(name: 'setupPage', title: 'Setup', install: validation.valid, uninstall: true) {
     section('OAuth Setup') {
       input name: 'clientId', type: 'text', title: 'Client Id (OAuth 2.0)', required: true, submitOnChange: true
       input name: 'clientSecret', type: 'password', title: 'Client Secret OAuth 2.0', required: true, submitOnChange: true
@@ -431,12 +487,6 @@ def mainPage() {
               }
               paragraph "<small><b>Current Status:</b> ${roomsWithData.size()} of ${vents.size()} rooms have learned efficiency data</small>"
             }
-          }
-          // Hourly DAB Chart Link
-          section {
-            href name: 'dabChartLink', title: 'View Hourly DAB Rates',
-                 description: 'Visualize 24-hour average airflow rates for each room',
-                 page: 'dabChartPage'
           }
           // Hourly DAB Rates Table Link
           section {
@@ -5889,7 +5939,7 @@ def efficiencyDataPage() {
     }
     
     section {
-      href name: 'backToMain', title: 'Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+      href name: 'backToMain', title: 'Back to Main Settings', description: 'Return to the main app configuration', page: 'landingPage'
     }
   }
 }
@@ -5918,7 +5968,7 @@ def efficiencyDataPage() {
       paragraph result.table
     }
     section {
-      href name: 'backToMain', title: 'Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+      href name: 'backToMain', title: 'Back to Main Settings', description: 'Return to the main app configuration', page: 'landingPage'
     }
   }
 } */
@@ -5926,15 +5976,23 @@ def efficiencyDataPage() {
 def dabActivityLogPage() {
   dynamicPage(name: 'dabActivityLogPage', title: 'DAB Activity Log', install: false, uninstall: false) {
     section {
-      def entries = atomicState?.dabActivityLog ?: []
+      int page = (settings?.activityLogPage ?: 1) as int
+      def entries = (atomicState?.dabActivityLog ?: []).reverse()
       if (entries) {
-        entries.reverse().each { paragraph "<code>${it}</code>" }
+        int totalPages = ((entries.size() - 1) / ACTIVITY_LOG_PAGE_SIZE) + 1
+        if (page < 1) { page = 1 }
+        if (page > totalPages) { page = totalPages }
+        int start = (page - 1) * ACTIVITY_LOG_PAGE_SIZE
+        int end = Math.min(start + ACTIVITY_LOG_PAGE_SIZE, entries.size())
+        paragraph "<p>Page ${page} of ${totalPages}</p>"
+        entries.subList(start, end).each { paragraph "<code>${it}</code>" }
+        input name: 'activityLogPage', type: 'number', title: 'Page', defaultValue: page, submitOnChange: true
       } else {
         paragraph 'No activity yet.'
       }
     }
     section {
-      href name: 'backToMain', title: 'Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+      href name: 'backToMain', title: 'Back to Main Settings', description: 'Return to the main app configuration', page: 'landingPage'
     }
   }
 }
@@ -5946,6 +6004,7 @@ def dabHistoryPage() {
             options: [(COOLING): 'Cooling', (HEATING): 'Heating', 'both': 'Both']
       input name: 'historyStart', type: 'date', title: 'Start Date', required: false, submitOnChange: true
       input name: 'historyEnd', type: 'date', title: 'End Date', required: false, submitOnChange: true
+      input name: 'historyPage', type: 'number', title: 'Page', required: false, defaultValue: 1, submitOnChange: true
     }
     section {
       def history = atomicState?.dabHistory ?: [:]
@@ -5970,7 +6029,14 @@ def dabHistoryPage() {
       }
       entries.sort { a, b -> (a.date <=> b.date) ?: (a.hour <=> b.hour) }
       if (entries) {
-        entries.each { e ->
+        int page = (settings?.historyPage ?: 1) as int
+        int totalPages = ((entries.size() - 1) / HISTORY_PAGE_SIZE) + 1
+        if (page < 1) { page = 1 }
+        if (page > totalPages) { page = totalPages }
+        int startIdx = (page - 1) * HISTORY_PAGE_SIZE
+        int endIdx = Math.min(startIdx + HISTORY_PAGE_SIZE, entries.size())
+        paragraph "<p>Page ${page} of ${totalPages}</p>"
+        entries.subList(startIdx, endIdx).each { e ->
           String hr = e.hour.toString().padLeft(2, '0')
           paragraph "<code>${e.date} ${hr}:00 ${e.room} (${e.hvacMode}) - ${e.rate}</code>"
         }
@@ -5979,7 +6045,7 @@ def dabHistoryPage() {
       }
     }
     section {
-      href name: 'backToMain', title: 'Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+      href name: 'backToMain', title: 'Back to Main Settings', description: 'Return to the main app configuration', page: 'landingPage'
     }
   }
 }
@@ -5992,20 +6058,7 @@ def dabRatesTablePage() {
       paragraph buildDabRatesTable()
     }
     section {
-      href name: 'backToMain', title: 'Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
-    }
-  }
-}
-
-def dabChartPage() {
-  dynamicPage(name: 'dabChartPage', title: 'Hourly DAB Rates', install: false, uninstall: false) {
-    section {
-      input name: 'chartHvacMode', type: 'enum', title: 'HVAC Mode', required: false, submitOnChange: true,
-            options: [(COOLING): 'Cooling', (HEATING): 'Heating', 'both': 'Both']
-      paragraph buildDabChart()
-    }
-    section {
-      href name: 'backToMain', title: 'Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+      href name: 'backToMain', title: 'Back to Main Settings', description: 'Return to the main app configuration', page: 'landingPage'
     }
   }
 }
@@ -6028,7 +6081,7 @@ def dabProgressPage() {
       if (hasVents) { paragraph buildDabProgressTable() }
     }
     section {
-      href name: 'backToMain', title: 'Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+      href name: 'backToMain', title: 'Back to Main Settings', description: 'Return to the main app configuration', page: 'landingPage'
     }
   }
 }
@@ -6040,134 +6093,9 @@ def dabDailySummaryPage() {
       paragraph buildDabDailySummaryTable()
     }
     section {
-      href name: 'backToMain', title: 'Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+      href name: 'backToMain', title: 'Back to Main Settings', description: 'Return to the main app configuration', page: 'landingPage'
     }
   }
-}
-
-String buildDabChart() {
-  def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
-  // Prefer explicitly selected chart mode from settings; fall back to mirrors/thermostat/last mode
-  String hvacMode
-  try {
-    def st = null
-    try { st = settings } catch (ignore) { }
-    hvacMode = st?.chartHvacMode as String
-  } catch (ignore) {
-    hvacMode = null
-  }
-  if (!hvacMode) { try { hvacMode = (atomicState?.chartHvacMode as String) } catch (ignore) { } }
-  if (!hvacMode) { hvacMode = getThermostat1Mode() ?: atomicState?.lastHvacMode }
-  if (hvacMode in [COOLING, HEATING]) { hvacMode = hvacMode.toString().toLowerCase() }
-  if (!hvacMode || hvacMode in ['auto', 'manual']) { hvacMode = atomicState?.lastHvacMode }
-  hvacMode = (hvacMode ?: COOLING)
-  def labels = (0..23).collect { it.toString() }
-  def datasets = []
-  if (!vents.isEmpty()) {
-    datasets = vents.collect { vent ->
-      // Use the Flair room ID if available to match stored hourly rate data
-      def roomId = vent.currentValue('room-id') ?: vent.getId()
-      def roomName = vent.currentValue('room-name') ?: vent.getLabel()
-      def data = (0..23).collect { hr ->
-        def cList = getHourlyRates(roomId, COOLING, hr) ?: []
-        def hList = getHourlyRates(roomId, HEATING, hr) ?: []
-        def both = (cList + hList)
-        if (hvacMode == 'both' || (cList && hList)) {
-          both ? cleanDecimalForJson((both.sum() as BigDecimal) / both.size()) : 0.0
-        } else if (hvacMode == COOLING) {
-          cList ? cleanDecimalForJson((cList.sum() as BigDecimal) / cList.size()) : 0.0
-        } else if (hvacMode == HEATING) {
-          hList ? cleanDecimalForJson((hList.sum() as BigDecimal) / hList.size()) : 0.0
-        } else {
-          // Unknown/idle: prefer combined if any, else whichever has data
-          if (both) {
-            cleanDecimalForJson((both.sum() as BigDecimal) / both.size())
-          } else if (cList) {
-            cleanDecimalForJson((cList.sum() as BigDecimal) / cList.size())
-          } else if (hList) {
-            cleanDecimalForJson((hList.sum() as BigDecimal) / hList.size())
-          } else {
-            0.0
-          }
-        }
-      }
-      [label: roomName, data: data]
-    }
-  } else {
-    // Fallback for CI/tests without devices: infer rooms from stored history
-    def rooms = []
-    def hist = atomicState?.dabHistory
-    if (hist instanceof Map && hist.hourlyRates) {
-      rooms = hist.hourlyRates.keySet() as List
-    } else if (hist instanceof List) {
-      rooms = hist.collect { it[1] }.unique()
-    }
-    datasets = rooms.collect { roomId ->
-      def data = (0..23).collect { hr ->
-        def cList = getHourlyRates(roomId, COOLING, hr) ?: []
-        def hList = getHourlyRates(roomId, HEATING, hr) ?: []
-        def both = (cList + hList)
-        if (hvacMode == 'both' || (cList && hList)) {
-          both ? cleanDecimalForJson((both.sum() as BigDecimal) / both.size()) : 0.0
-        } else if (hvacMode == COOLING) {
-          cList ? cleanDecimalForJson((cList.sum() as BigDecimal) / cList.size()) : 0.0
-        } else if (hvacMode == HEATING) {
-          hList ? cleanDecimalForJson((hList.sum() as BigDecimal) / hList.size()) : 0.0
-        } else {
-          if (both) {
-            cleanDecimalForJson((both.sum() as BigDecimal) / both.size())
-          } else if (cList) {
-            cleanDecimalForJson((cList.sum() as BigDecimal) / cList.size())
-          } else if (hList) {
-            cleanDecimalForJson((hList.sum() as BigDecimal) / hList.size())
-          } else {
-            0.0
-          }
-        }
-      }
-      [label: roomId, data: data]
-    }
-  }
-  // If all datasets are empty, try alternate mode, else show message
-  boolean hasData = datasets.any { ds -> ds.data.any { it != 0 } }
-  if (!hasData && hvacMode != 'both') {
-    String alt = (hvacMode == COOLING) ? HEATING : COOLING
-    def altDatasets = []
-    if (!vents.isEmpty()) {
-      altDatasets = vents.collect { vent ->
-        def roomId = vent.currentValue('room-id') ?: vent.getId()
-        def roomName = vent.currentValue('room-name') ?: vent.getLabel()
-        def data = (0..23).collect { hr -> getAverageHourlyRate(roomId, alt, hr) ?: 0.0 }
-        [label: roomName, data: data]
-      }
-    } else {
-      def hist = atomicState?.dabHistory
-      def rooms = (hist instanceof Map && hist.hourlyRates) ? (hist.hourlyRates.keySet() as List) : ((hist instanceof List) ? hist.collect { it[1] }.unique() : [])
-      altDatasets = rooms.collect { roomId -> [label: roomId, data: (0..23).collect { hr -> getAverageHourlyRate(roomId, alt, hr) ?: 0.0 }] }
-    }
-    if (altDatasets.any { ds -> ds.data.any { it != 0 } }) {
-      datasets = altDatasets
-    }
-  }
-  hasData = datasets.any { ds -> ds.data.any { it != 0 } }
-  if (!hasData) { return '<p>No DAB rate history available for the selected mode.</p>' }
-
-  def config = [
-    type: 'line',
-    data: [labels: labels, datasets: datasets],
-    options: [
-      plugins: [legend: [position: 'bottom']],
-      scales: [
-        x: [title: [display: true, text: 'Hour']],
-        y: [title: [display: true, text: 'Avg Rate'], beginAtZero: true]
-      ]
-    ]
-  ]
-
-  // Build QuickChart URL (use c= JSON param for broad compatibility)
-  def configJson = JsonOutput.toJson(config)
-  def urlJson = URLEncoder.encode(configJson, 'UTF-8')
-  "<img src='https://quickchart.io/chart?c=${urlJson}' style='max-width:100%'>"
 }
 
 String buildDabRatesTable() {
@@ -6537,7 +6465,7 @@ def quickControlsPage() {
       if (settings?.setAutoAll) { clearAllManualOverrides(); app.updateSetting('setAutoAll','') }
     }
     section {
-      href name: 'backToMain', title: '\u2795 Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+      href name: 'backToMain', title: '\u2795 Back to Main Settings', description: 'Return to the main app configuration', page: 'landingPage'
     }
   }
 }

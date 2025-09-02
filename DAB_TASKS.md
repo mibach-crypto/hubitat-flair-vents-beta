@@ -6,13 +6,7 @@
   - Risk: medium
 
 ## Priority 2 - Structural improvements
-- 5 v1 Paginate heavy DAB reports and remove overly complex charts
-  - Complexity: medium
-  - Risk: medium
-- 6 v1 Move one-time setup items to dedicated configuration page(s)
-  - Complexity: low
-  - Risk: low
-- 7 v1 Create landing page with DAB & system health indicators and command confirmation icons
+
   - Complexity: high
   - Risk: medium-high
 
