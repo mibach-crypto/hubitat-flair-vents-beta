@@ -3664,7 +3664,7 @@ def getHourlyRates(String roomId, String hvacMode, Integer hour) {
   if (list && list.size() > 0) { return list }
   // Fallback to hourlyRates index if entries empty
   try {
-    def rates = hist?.hourlyRates?.get(roomId)?.get(hvacMode)?.get(hour as Integer) ?: []
+    def rates = hist?.hourlyRates?.get(roomId)?.get(hvacMode)?.get(hour.toString()) ?: []
     return rates.collect { it as BigDecimal }
   } catch (ignore) {
     return []
