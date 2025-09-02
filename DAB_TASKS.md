@@ -1,16 +1,7 @@
 # DAB Improvement Tasks
 
 ## Priority 1 - High impact, low risk
-- [x] 1 v1 Cooling cycle counter with reset button
-  - Complexity: low
-  - Risk: low
-- [x] 2 v1 Surface DAB command errors in UI with actionable messages
-  - Complexity: medium
-  - Risk: medium
-- [x] 3 v1 Prompt user to resolve missing data (sensors, network) without code changes
-  - Complexity: medium
-  - Risk: low
-- [x] 4 v1 Add rate-limited diagnostic logging and export option
+
   - Complexity: medium
   - Risk: medium
 
