@@ -249,6 +249,25 @@ def mainPage() {
     }
 
     if (state.flairAccessToken) {
+      section('System Health') {
+        def issues = getDataIssues()
+        if (issues) {
+          issues.each { paragraph "<span style='color:red;'>${it}</span>" }
+        } else {
+          paragraph "<span style='color:green;'>No data issues detected.</span>"
+        }
+        def err = state.lastCommandError
+        if (err) {
+          paragraph "<b>${err.action}</b>: ${err.message}"
+          if (err.suggestion) { paragraph "<small>${err.suggestion}</small>" }
+          input name: 'clearLastCommandError', type: 'button', title: 'Clear Last Command Error', submitOnChange: true
+          if (settings?.clearLastCommandError) {
+            state.remove('lastCommandError')
+            app.updateSetting('clearLastCommandError', null)
+            paragraph "<span style='color: green;'>&#10003; Cleared</span>"
+          }
+        }
+      }
       section('HVAC Status') {
         input name: 'refreshHvacNow', type: 'button', title: 'Refresh HVAC Status', submitOnChange: true
         if (settings?.refreshHvacNow) {
