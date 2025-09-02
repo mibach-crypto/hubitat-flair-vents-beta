@@ -35,9 +35,8 @@ import java.net.URLEncoder
 @Field static final Long DEVICE_CACHE_DURATION_MS = 30000 // 30 second cache duration for device readings
 @Field static final Integer MAX_CACHE_SIZE = 50 // Maximum cache entries per instance
 @Field static final Integer DEFAULT_HISTORY_RETENTION_DAYS = 10 // Default days to retain DAB history
-@Field static final Integer DAILY_SUMMARY_PAGE_SIZE = 30 // Entries per page for daily summary
-@Field static final Integer ACTIVITY_LOG_PAGE_SIZE = 50 // Entries per page for activity log
-@Field static final Integer HISTORY_PAGE_SIZE = 50 // Entries per page for raw history
+@Field static final Integer DAILY_SUMMARY_PAGE_SIZE = 30 // Entries per page for daily summar
+
 @Field static final Long LOG_RATE_LIMIT_MS = 5000 // Min ms between identical log entries
 
 // Content-Type header for API requests.
