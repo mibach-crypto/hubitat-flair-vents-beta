@@ -1247,6 +1247,34 @@ def rollingAverage(BigDecimal currentAverage, BigDecimal newNumber, BigDecimal w
   return sum / numEntries
 }
 
+// Cache size limiting helper with defensive guard for Map types
+def limitCacheSize(String cacheKey, Integer maxSize = MAX_CACHE_SIZE) {
+  try {
+    def cache = state."${cacheKey}" ?: [:]
+    // Defensive guard: only operate when the state value is a Map
+    if (!(cache instanceof Map)) {
+      log(3, 'Cache', "Skipping cache size limit for ${cacheKey} - not a Map type")
+      return
+    }
+    if (cache.size() > maxSize) {
+      // Remove oldest entries (assuming keys are ordered chronologically or use LRU strategy)
+      def keysToRemove = cache.keySet().take(cache.size() - maxSize)
+      keysToRemove.each { key ->
+        cache.remove(key)
+        // Also remove corresponding timestamp cache if it exists
+        def timestampKey = "${cacheKey}Timestamps"
+        if (state."${timestampKey}") {
+          state."${timestampKey}".remove(key)
+        }
+      }
+      state."${cacheKey}" = cache
+      log(3, 'Cache', "Limited ${cacheKey} size to ${maxSize} entries (removed ${keysToRemove.size()})")
+    }
+  } catch (Exception e) {
+    log(4, 'Cache', "Failed to limit cache size for ${cacheKey}: ${e?.message}")
+  }
+}
+
 def hasRoomReachedSetpoint(String hvacMode, BigDecimal setpoint, BigDecimal currentTemp, BigDecimal offset = 0) {
   (hvacMode == COOLING && currentTemp <= setpoint - offset) ||
   (hvacMode == HEATING && currentTemp >= setpoint + offset)
@@ -2002,6 +2030,9 @@ def getDataAsync(String uri, String callback, data = null, int retryCount = 0) {
 }
 
 // Wrapper method for getDataAsync retry
+// Note: Callbacks invoked through asyncHttpCallback wrapper should NOT call decrementActiveRequests()
+// as it is handled centrally. Direct asynchttp* callbacks (like handleAuthResponse, handleStructureResponse)
+// must handle their own decrementing.
 def retryGetDataAsyncWrapper(data) {
   if (!data || !data.uri) {
     logError "retryGetDataAsyncWrapper called with invalid data: ${data}"
@@ -2010,7 +2041,7 @@ def retryGetDataAsyncWrapper(data) {
   
   // Check if this is a room data request that should go through cache
   if (data.uri.contains('/room') && data.callback == 'handleRoomGetWithCache' && data.data?.deviceId) {
-    // When retry data is passed through runInMillis, device objects become serialized
+    // When retry data is passed through runAfterMs, device objects become serialized
     // So we need to look up the device by ID instead
     def deviceId = data.data.deviceId
     def device = getChildDevice(deviceId)
