@@ -23,8 +23,6 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.net.URLEncoder
 
-library "bot.flair.DabUIManager", "0.240.0"
-
 // ------------------------------
 // Constants and Configuration
 // ------------------------------
@@ -3233,6 +3231,28 @@ def patchVent(device, percentOpen) {
   patchVentDevice(device, percentOpen)
 }
 
+private void patchVentWithVerification(device, Integer percentOpen) {
+  patchVent(device, percentOpen)
+  try {
+    runInMillis(VENT_VERIFY_DELAY_MS, 'verifyVentCommand', [data: [ventId: device.getDeviceNetworkId(), target: percentOpen, attempt: 1]])
+  } catch (ignore) { }
+}
+
+def verifyVentCommand(Map data) {
+  if (!data?.ventId) { return }
+  def v = getChildDevice(data.ventId)
+  if (!v) { return }
+  Integer target = (data.target ?: 0) as Integer
+  Integer attempt = (data.attempt ?: 1) as Integer
+  Integer current = (v.currentValue('percent-open') ?: v.currentValue('level') ?: 0) as int
+  if (current != target && attempt < MAX_VENT_VERIFY_ATTEMPTS) {
+    runInMillis(VENT_VERIFY_DELAY_MS, 'verifyVentCommand', [data: [ventId: data.ventId, target: target, attempt: attempt + 1]])
+    patchVent(v, target)
+  } else if (current != target) {
+    logWarn("Vent ${v.currentValue('room-name') ?: data.ventId} failed to reach ${target}% after ${attempt} attempts", 'QuickControl')
+  }
+}
+
 def handleVentPatch(resp, data) {
   decrementActiveRequests()  // Always decrement when response comes back
   if (!isValidResponse(resp) || !data) {
@@ -3603,6 +3623,7 @@ def recordDabEvent(String eventType, Map data) {
 def reBalanceVents() {
   log(3, 'App', 'Rebalancing Vents!!!')
   appendDabActivityLog("Rebalancing vents")
+  runDynamicAirflowBalancing()
   def params = [
     ventIdsByRoomId: atomicState.ventsByRoomId,
     startedCycle: atomicState.thermostat1State?.startedCycle,
@@ -4913,6 +4934,90 @@ def adjustVentOpeningsToEnsureMinimumAirflowTarget(rateAndTempPerVentId, String 
     }
   }
   return calculatedPercentOpen
+}
+
+private void runDynamicAirflowBalancing() {
+  if (!settings?.dabEnabled) { return }
+  String hvacMode = atomicState.thermostat1State?.mode
+  if (!hvacMode) { return }
+  def ventData = collectVentData(hvacMode)
+  if (!ventData) { return }
+  def targets = calculateVentTargets(ventData, hvacMode)
+  applyVentTargets(targets, hvacMode)
+  checkMissingDiagnostics()
+}
+
+private Map collectVentData(String hvacMode) {
+  def data = [:]
+  def ventsByRoomId = atomicState?.ventsByRoomId ?: [:]
+  ventsByRoomId.each { roomId, ventIds ->
+    ventIds.each { vid ->
+      def vent = getChildDevice(vid)
+      if (!vent) { return }
+      def record = [
+        name: vent.currentValue('room-name') ?: vent.getLabel(),
+        temp: getRoomTemp(vent),
+        rate: (hvacMode == COOLING ? vent.currentValue('room-cooling-rate') : vent.currentValue('room-heating-rate')) ?: 0,
+        active: vent.currentValue('room-active') == 'true',
+        setpoint: vent.currentValue('room-set-point-c')
+      ]
+      data[vid] = record
+      logDabDiagnostics(record.name, record)
+    }
+  }
+  return data
+}
+
+private Map calculateVentTargets(Map ventData, String hvacMode) {
+  BigDecimal setpoint = getGlobalSetpoint(hvacMode)
+  if (setpoint == null) { return [:] }
+  def maxRunningTime = atomicState.maxHvacRunningTime ?: MAX_MINUTES_TO_SETPOINT
+  def longest = calculateLongestMinutesToTarget(ventData, hvacMode, setpoint, maxRunningTime, settings.thermostat1CloseInactiveRooms)
+  if (longest < 0) { longest = maxRunningTime }
+  def targets = calculateOpenPercentageForAllVents(ventData, hvacMode, setpoint, longest, settings.thermostat1CloseInactiveRooms)
+  if (!targets) { return [:] }
+  targets = adjustVentOpeningsToEnsureMinimumAirflowTarget(ventData, hvacMode, targets, settings.thermostat1AdditionalStandardVents)
+  targets = applyOverridesAndFloors(targets)
+  return targets
+}
+
+private void applyVentTargets(Map targets, String hvacMode) {
+  if (!targets) { return }
+  int changes = 0
+  def summary = []
+  targets.each { ventId, pct ->
+    def vent = getChildDevice(ventId)
+    if (!vent) { return }
+    Integer current = (vent.currentValue('percent-open') ?: vent.currentValue('level') ?: 0) as int
+    Integer target = roundToNearestMultiple(pct)
+    if (current != target) {
+      changes++
+      summary << "${vent.currentValue('room-name') ?: vent.getLabel()}: ${current}%->${target}%"
+    }
+    patchVentWithVerification(vent, target)
+  }
+  if (changes > 0) {
+    appendDabActivityLog("Applied ${changes} vent change(s): ${summary.take(3).join(', ')}")
+  }
+}
+
+private void logDabDiagnostics(String roomId, Map data) {
+  def diag = atomicState.dabDiagnostics ?: [:]
+  diag[roomId] = data
+  atomicState.dabDiagnostics = diag
+  log(2, 'DAB', "Diagnostics for ${roomId}: ${data}")
+}
+
+private void checkMissingDiagnostics() {
+  def diag = atomicState.dabDiagnostics ?: [:]
+  if (!diag) { return }
+  def allKeys = diag.values().collectMany { it.keySet() }.unique()
+  diag.each { room, info ->
+    def missing = allKeys - info.keySet()
+    if (missing) {
+      log(2, 'DAB', "Room ${room} missing fields: ${missing.join(', ')}")
+    }
+  }
 }
 
 def getAttribsPerVentId(ventsByRoomId, String hvacMode) {
@@ -6414,8 +6519,8 @@ def quickControlsPage() {
       def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
       // Build 1 row per room
       def byRoom = [:]
-      state.qcDeviceMap = [:]
-      state.qcRoomMap = [:]
+      atomicState.qcDeviceMap = [:]
+      atomicState.qcRoomMap = [:]
       vents.each { v ->
         def rid = v.currentValue('room-id') ?: v.getDeviceNetworkId()
         if (!byRoom.containsKey(rid)) { byRoom[rid] = v }
@@ -6435,8 +6540,8 @@ def quickControlsPage() {
         def setpF = fmt1(toF(setpC))
         def vidKey = vid.replaceAll('[^A-Za-z0-9_]', '_')
         def roomKey = roomId.replaceAll('[^A-Za-z0-9_]', '_')
-        state.qcDeviceMap[vidKey] = vid
-        state.qcRoomMap[roomKey] = roomId
+        atomicState.qcDeviceMap[vidKey] = vid
+        atomicState.qcRoomMap[roomKey] = roomId
         paragraph "<b>${roomName}</b> - Vent: ${cur}% | Temp: ${tempF} °F | Setpoint: ${setpF} °F | Active: ${active ?: 'false'}" + (batt ? " | Battery: ${batt}%" : "") + (upd ? " | Updated: ${upd}" : "")
         input name: "qc_${vidKey}_percent", type: 'number', title: 'Set vent percent', required: false, submitOnChange: false
         input name: "qc_room_${roomKey}_setpoint", type: 'number', title: 'Set room setpoint (°F)', required: false, submitOnChange: false
@@ -6475,8 +6580,8 @@ def quickControlsPage() {
   private void applyQuickControls() {
     def overrides = atomicState?.manualOverrides ?: [:]
     def allKeys = (settings?.keySet() ?: []) as List
-    def deviceMap = state?.qcDeviceMap ?: [:]
-    def roomMap = state?.qcRoomMap ?: [:]
+    def deviceMap = atomicState?.qcDeviceMap ?: [:]
+    def roomMap = atomicState?.qcRoomMap ?: [:]
     // Per-vent percent controls
     def pctKeys = allKeys.findAll { (it as String).startsWith('qc_') && (it as String).endsWith('_percent') }
     pctKeys.each { k ->
@@ -6495,7 +6600,7 @@ def quickControlsPage() {
           }
         } catch (ignore) { }
         overrides[vid] = pct
-        patchVent(v, pct)
+        patchVentWithVerification(v, pct)
         app.updateSetting(k, '')
       }
     }
@@ -6544,7 +6649,7 @@ private void openAllSelected(Integer pct) {
   vents.each { v ->
     try {
       overrides[v.getDeviceNetworkId()] = pct
-      patchVent(v, pct)
+      patchVentWithVerification(v, pct)
     } catch (ignore) { }
   }
   atomicState.manualOverrides = overrides
@@ -6553,7 +6658,7 @@ private void openAllSelected(Integer pct) {
   private void manualAllEditedVents() {
     def keys = settings?.keySet()?.findAll { (it as String).startsWith('qc_') && (it as String).endsWith('_percent') } ?: []
     def overrides = atomicState?.manualOverrides ?: [:]
-    def deviceMap = state?.qcDeviceMap ?: [:]
+    def deviceMap = atomicState?.qcDeviceMap ?: [:]
     keys.each { k ->
       def sid = (k as String).replace('qc_','').replace('_percent','')
       def vid = deviceMap[sid] ?: sid
