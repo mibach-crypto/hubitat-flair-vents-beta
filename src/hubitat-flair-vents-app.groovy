@@ -961,6 +961,16 @@ def initialize() {
 // Helper Functions
 // ------------------------------
 
+// Safe scheduling helper to replace runInMillis - converts ms to seconds for runIn()
+def runAfterMs(Long delayMs, String methodName, Map dataMap = null) {
+  def delaySecs = Math.max(1, Math.round(delayMs / 1000.0) as Integer)
+  if (dataMap) {
+    runIn(delaySecs, methodName, [data: dataMap])
+  } else {
+    runIn(delaySecs, methodName)
+  }
+}
+
 private openAllVents(Map ventIdsByRoomId, int percentOpen) {
   ventIdsByRoomId.each { roomId, ventIds ->
     ventIds.each { ventId ->
@@ -1983,7 +1993,7 @@ def getDataAsync(String uri, String callback, data = null, int retryCount = 0) {
         retryData.data = data
       }
       def delay = (Math.pow(2, retryCount) * API_CALL_DELAY_MS).toLong()
-      runInMillis(delay, 'retryGetDataAsyncWrapper', [data: retryData])
+      runAfterMs(delay, 'retryGetDataAsyncWrapper', [data: retryData])
     } else {
       logError "getDataAsync failed after ${MAX_API_RETRY_ATTEMPTS} retries for URI: ${uri}"
       incrementFailureCount(uri)
@@ -2071,7 +2081,7 @@ def patchDataAsync(String uri, String callback, body, data = null, int retryCoun
     if (retryCount < MAX_API_RETRY_ATTEMPTS) {
       def retryData = [uri: uri, callback: callback, body: body, data: data, retryCount: retryCount + 1]
       def delay = (Math.pow(2, retryCount) * API_CALL_DELAY_MS).toLong()
-      runInMillis(delay, 'retryPatchDataAsyncWrapper', [data: retryData])
+      runAfterMs(delay, 'retryPatchDataAsyncWrapper', [data: retryData])
     } else {
       logError "patchDataAsync failed after ${MAX_API_RETRY_ATTEMPTS} retries for URI: ${uri}"
       recordCommandError("PATCH ${uri}", 'Request failed after retries', 'Verify network or Flair service')
@@ -2150,7 +2160,7 @@ def authenticate(int retryCount = 0) {
     // If we can't make request now, reschedule authentication
     state.authInProgress = false
     if (retryCount < MAX_API_RETRY_ATTEMPTS) {
-      runInMillis(API_CALL_DELAY_MS, 'retryAuthenticateWrapper', [data: [retryCount: retryCount + 1]])
+      runAfterMs(API_CALL_DELAY_MS, 'retryAuthenticateWrapper', [data: [retryCount: retryCount + 1]])
     } else {
       def err = "Authentication failed after ${MAX_API_RETRY_ATTEMPTS} retries"
       logError err
@@ -2305,7 +2315,7 @@ private void discover() {
 
 
 def handleAllPucks(resp, data) {
-  decrementActiveRequests()  // Always decrement when response comes back
+  // Note: decrement handled by asyncHttpCallback wrapper
   try {
     log(2, 'App', "handleAllPucks called")
     if (!isValidResponse(resp)) { 
@@ -2351,7 +2361,7 @@ def handleAllPucks(resp, data) {
 }
 
 def handleRoomsWithPucks(resp, data) {
-  decrementActiveRequests()  // Always decrement when response comes back
+  // Note: decrement handled by asyncHttpCallback wrapper
   try {
     log(2, 'App', "handleRoomsWithPucks called")
     if (!isValidResponse(resp)) { 
@@ -2464,7 +2474,7 @@ def handleRoomsWithPucks(resp, data) {
 
 
 def handleDeviceList(resp, data) {
-  decrementActiveRequests()  // Always decrement when response comes back
+  // Note: decrement handled by asyncHttpCallback wrapper
   log(2, 'App', "handleDeviceList called for ${data?.deviceType}")
   if (!isValidResponse(resp)) {
     // Check if this was a pucks request that returned 404
@@ -2651,7 +2661,7 @@ def getDeviceReadingWithCache(device, deviceId, deviceType, callback) {
 }
 
 def handleRoomGet(resp, data) {
-  decrementActiveRequests()  // Always decrement when response comes back
+  // Note: decrement handled by asyncHttpCallback wrapper
   if (!isValidResponse(resp) || !data?.device) { return }
   processRoomTraits(data.device, resp.getJson())
 }
@@ -2796,7 +2806,7 @@ def cleanupPendingRequests() {
 }
 
 def handleDeviceGet(resp, data) {
-  decrementActiveRequests()  // Always decrement when response comes back
+  // Note: decrement handled by asyncHttpCallback wrapper
   if (!isValidResponse(resp) || !data?.device) { return }
   processVentTraits(data.device, resp.getJson())
 }
@@ -2837,7 +2847,7 @@ def handleDeviceGetWithCache(resp, data) {
 }
 
 def handlePuckGet(resp, data) {
-  decrementActiveRequests()  // Always decrement when response comes back
+  // Note: decrement handled by asyncHttpCallback wrapper
   if (!isValidResponse(resp) || !data?.device) { return }
   def respJson = resp.getJson()
   if (respJson?.data) {
@@ -2898,7 +2908,7 @@ def handlePuckGetWithCache(resp, data) {
 
 
 def handlePuckReadingGet(resp, data) {
-  decrementActiveRequests()  // Always decrement when response comes back
+  // Note: decrement handled by asyncHttpCallback wrapper
   if (!isValidResponse(resp) || !data?.device) { return }
   def respJson = resp.getJson()
   if (respJson?.data) {
@@ -3038,7 +3048,7 @@ def processRoomTraits(device, details) {
 }
 
 def handleRemoteSensorGet(resp, data) {
-  decrementActiveRequests()  // Always decrement when response comes back
+  // Note: decrement handled by asyncHttpCallback wrapper
   if (!data) { return }
   
   // Don't log 404 errors for missing sensors - this is expected
@@ -3098,7 +3108,7 @@ def getStructureDataAsync(int retryCount = 0) {
   } else {
     // If we can't make request now, retry later
     if (retryCount < MAX_API_RETRY_ATTEMPTS) {
-      runInMillis(API_CALL_DELAY_MS, 'retryGetStructureDataAsyncWrapper', [data: [retryCount: retryCount + 1]])
+      runAfterMs(API_CALL_DELAY_MS, 'retryGetStructureDataAsyncWrapper', [data: [retryCount: retryCount + 1]])
     } else {
       logError "getStructureDataAsync failed after ${MAX_API_RETRY_ATTEMPTS} retries"
     }
@@ -3142,7 +3152,7 @@ def getStructureData(int retryCount = 0) {
     if (retryCount < MAX_API_RETRY_ATTEMPTS) {
       log(2, 'App', "Structure data request delayed due to concurrent limit (attempt ${retryCount + 1}/${MAX_API_RETRY_ATTEMPTS})")
       // Schedule retry asynchronously to avoid blocking
-      runInMillis(API_CALL_DELAY_MS, 'retryGetStructureDataWrapper', [data: [retryCount: retryCount + 1]])
+      runAfterMs(API_CALL_DELAY_MS, 'retryGetStructureDataWrapper', [data: [retryCount: retryCount + 1]])
       return
     } else {
       logError "getStructureData failed after ${MAX_API_RETRY_ATTEMPTS} attempts due to concurrent limits"
@@ -3185,7 +3195,7 @@ def getStructureData(int retryCount = 0) {
     if (retryCount < MAX_API_RETRY_ATTEMPTS) {
       log(2, 'App', "Structure data request failed (attempt ${retryCount + 1}/${MAX_API_RETRY_ATTEMPTS}): ${e.message}")
       // Schedule retry asynchronously
-      runInMillis(API_CALL_DELAY_MS, 'retryGetStructureDataWrapper', [data: [retryCount: retryCount + 1]])
+      runAfterMs(API_CALL_DELAY_MS, 'retryGetStructureDataWrapper', [data: [retryCount: retryCount + 1]])
     } else {
       logError "getStructureData failed after ${MAX_API_RETRY_ATTEMPTS} attempts: ${e.message}"
     }
@@ -3215,7 +3225,7 @@ def patchVentDevice(device, percentOpen, attempt = 1) {
   patchDataAsync(uri, 'handleVentPatch', body, [device: device, targetOpen: pOpen])
 
   // Schedule verification of the vent's reported percent open
-  runInMillis(VENT_VERIFY_DELAY_MS, 'verifyVentPercentOpen', [data: [deviceId: deviceId, targetOpen: pOpen, attempt: attempt]])
+  runAfterMs(VENT_VERIFY_DELAY_MS, 'verifyVentPercentOpen', [data: [deviceId: deviceId, targetOpen: pOpen, attempt: attempt]])
 }
 
 // Keep the old method name for backward compatibility
@@ -3232,7 +3242,7 @@ def patchVent(device, percentOpen) {
 }
 
 def handleVentPatch(resp, data) {
-  decrementActiveRequests()  // Always decrement when response comes back
+  // Note: decrement handled by asyncHttpCallback wrapper
   if (!isValidResponse(resp) || !data) {
     if (resp instanceof Exception || resp.toString().contains('LimitExceededException')) {
       log(2, 'App', "Vent patch failed due to hub load: ${resp.toString()}")
@@ -3288,7 +3298,7 @@ def verifyVentPercentOpen(data) {
 
 // Handle verification response and retry if needed
 def handleVentVerify(resp, data) {
-  decrementActiveRequests()
+  // Note: decrement handled by asyncHttpCallback wrapper
   if (!isValidResponse(resp) || !data?.device) { return }
   def device = data.device
   def attempt = data.attempt ?: 1
@@ -3363,7 +3373,7 @@ def thermostat1ChangeTemp(evt) {
     log(2, 'App', "Significant temperature change detected: ${tempDiff}Ã¢â€Â¬Ã¢â€“â€˜C (threshold: ${THERMOSTAT_HYSTERESIS}Ã¢â€Â¬Ã¢â€“â€˜C)")
     
     if (isThermostatAboutToChangeState(hvacMode, thermostatSetpoint, temp)) {
-      runInMillis(INITIALIZATION_DELAY_MS, 'initializeRoomStates', [data: hvacMode])
+      runAfterMs(INITIALIZATION_DELAY_MS, 'initializeRoomStates', [data: hvacMode])
     }
   } else {
     log(3, 'App', "Temperature change ${tempDiff}Ã¢â€Â¬Ã¢â€“â€˜C is below hysteresis threshold ${THERMOSTAT_HYSTERESIS}Ã¢â€Â¬Ã¢â€“â€˜C - ignoring")
@@ -3398,7 +3408,7 @@ def thermostat1ChangeStateHandler(evt) {
       atomicStateUpdate('thermostat1State', 'startedRunning', now())
       if (settings?.dabEnabled) {
         unschedule('initializeRoomStates')
-        runInMillis(POST_STATE_CHANGE_DELAY_MS, 'initializeRoomStates', [data: hvacMode])
+        runAfterMs(POST_STATE_CHANGE_DELAY_MS, 'initializeRoomStates', [data: hvacMode])
         recordStartingTemperatures()
         runEvery5Minutes('evaluateRebalancingVents')
         runEvery30Minutes('reBalanceVents')
@@ -3423,7 +3433,7 @@ def thermostat1ChangeStateHandler(evt) {
           finishedRunning: atomicState.thermostat1State?.finishedRunning,
           hvacMode: atomicState.thermostat1State?.mode
         ]
-        runInMillis(TEMP_READINGS_DELAY_MS, 'finalizeRoomStates', [data: params])
+        runAfterMs(TEMP_READINGS_DELAY_MS, 'finalizeRoomStates', [data: params])
         atomicState.remove('thermostat1State')
       }
       if (settings.fanOnlyOpenAllVents && isFanActive(evt.value) && atomicState.ventsByRoomId) {
@@ -3483,7 +3493,7 @@ def updateHvacStateFromDuctTemps() {
       
       if (settings?.dabEnabled) {
         unschedule('initializeRoomStates')
-        runInMillis(POST_STATE_CHANGE_DELAY_MS, 'initializeRoomStates', [data: hvacMode])
+        runAfterMs(POST_STATE_CHANGE_DELAY_MS, 'initializeRoomStates', [data: hvacMode])
         recordStartingTemperatures()
         runEvery5Minutes('evaluateRebalancingVents')
         runEvery30Minutes('reBalanceVents')
@@ -3513,7 +3523,7 @@ def updateHvacStateFromDuctTemps() {
           finishedRunning: currentTime,
           hvacMode: atomicState.thermostat1State?.mode
         ]
-        runInMillis(TEMP_READINGS_DELAY_MS, 'finalizeRoomStates', [data: params])
+        runAfterMs(TEMP_READINGS_DELAY_MS, 'finalizeRoomStates', [data: params])
       }
       atomicState.remove('thermostat1State')
       
