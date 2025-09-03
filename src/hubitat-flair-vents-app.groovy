@@ -6520,17 +6520,33 @@ def asyncHttpGetWrapper(response, Map data) {
 def quickControlsPage() {
   dynamicPage(name: 'quickControlsPage', title: '\u26A1 Quick Controls', install: false, uninstall: false) {
     section('Per-Room Status & Controls') {
+      def children = getChildDevices() ?: []
+      children.each { d ->
+        log(3, 'QC', "Child device id=${d?.getId()} label=${d?.getLabel()} driver=${d?.typeName ?: 'unknown'}")
+      }
       // Identify vent devices by driver type to avoid missing vents when attributes are absent
-      def vents = getChildDevices()?.findAll { (it.typeName ?: '') == 'Flair vents' } ?: []
+      def skippedDevices = []
+      def vents = children.findAll { d ->
+        boolean isVent = (d.typeName ?: '') == 'Flair vents'
+        if (!isVent) {
+          skippedDevices << "${d.getLabel()} (${d.typeName ?: 'unknown driver'}) - driver mismatch"
+        }
+        return isVent
+      } ?: []
       // Build 1 row per room
       def byRoom = [:]
       atomicState.qcDeviceMap = [:]
       atomicState.qcRoomMap = [:]
       vents.each { v ->
-        def rid = (v.currentValue('room-id') ?: v.getDeviceNetworkId())?.toString()
-        if (!byRoom.containsKey(rid)) { byRoom[rid] = v }
+        def rid = (v.currentValue('room-id') ?: v.getDeviceNetworkId())
+        if (!rid) {
+          skippedDevices << "${v.getLabel()} (${v.typeName ?: 'unknown driver'}) - missing room-id"
+        } else if (!byRoom.containsKey(rid.toString())) {
+          byRoom[rid.toString()] = v
+        }
       }
       if (byRoom.isEmpty()) {
+        log(2, 'QC', "No vents with manual control. Skipped devices: ${skippedDevices ? skippedDevices.join(', ') : 'none'}")
         paragraph 'No vents with manual control are available.'
       }
       byRoom.each { roomId, v ->
