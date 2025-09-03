@@ -6524,15 +6524,21 @@ def quickControlsPage() {
       children.each { d ->
         log(3, 'QC', "Child device id=${d?.getId()} label=${d?.getLabel()} driver=${d?.typeName ?: 'unknown'}")
       }
-      // Identify vent devices by driver type to avoid missing vents when attributes are absent
+      // Identify vent devices by driver or exposed capabilities and track skipped devices
       def skippedDevices = []
-      def vents = children.findAll { d ->
-        boolean isVent = (d.typeName ?: '') == 'Flair vents'
-        if (!isVent) {
+      def vents = []
+      children.each { d ->
+        boolean isVent = (d.typeName ?: '') == 'Flair vents' || d.hasAttribute('percent-open')
+        if (isVent) {
+          vents << d
+        } else {
           skippedDevices << "${d.getLabel()} (${d.typeName ?: 'unknown driver'}) - driver mismatch"
         }
-        return isVent
-      } ?: []
+      }
+      // De-duplicate vents by device ID before building the room map
+      def uniqueVents = [:]
+      vents.each { v -> uniqueVents[v.getId()] = v }
+      vents = uniqueVents.values() as List
       // Build 1 row per room
       def byRoom = [:]
       atomicState.qcDeviceMap = [:]
