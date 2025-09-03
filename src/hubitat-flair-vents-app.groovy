@@ -988,8 +988,12 @@ private BigDecimal getRoomTemp(def vent) {
     if (temp == null) {
       log(2, 'App', "WARNING: Temperature device ${tempDevice?.getLabel() ?: 'Unknown'} for room '${roomName}' is not reporting temperature!")
       // Fall back to room temperature
-      def roomTemp = vent.currentValue('room-current-temperature-c') ?: 0
-      log(2, 'App', "Falling back to room temperature for '${roomName}': ${roomTemp}°C")
+      def roomTemp = vent.currentValue('room-current-temperature-c') ?: '-'
+      if (roomTemp == '-') {
+        logWarn "Room data unavailable for '${roomName}'. Check network or thermostat connectivity."
+      } else {
+        log(2, 'App', "Falling back to room temperature for '${roomName}': ${roomTemp}°C")
+      }
       return roomTemp
     }
     if (settings.thermostat1TempUnit == '2') {
@@ -1000,9 +1004,9 @@ private BigDecimal getRoomTemp(def vent) {
   }
   
   def roomTemp = vent.currentValue('room-current-temperature-c')
-  if (roomTemp == null) {
-    log(2, 'App', "ERROR: No temperature available for room '${roomName}' - neither from Puck nor from room API!")
-    return 0
+  if (roomTemp == null || roomTemp == '-') {
+    logWarn "Room data unavailable for '${roomName}'. Check network or thermostat connectivity."
+    return '-'
   }
   log(2, 'App', "Using room temperature for '${roomName}': ${roomTemp}°C")
   return roomTemp
@@ -3659,7 +3663,8 @@ def evaluateRebalancingVents() {
         if (vent.currentValue('room-active') != 'true') { continue }
         def currPercentOpen = (vent.currentValue('percent-open') ?: 0).toInteger()
         if (currPercentOpen <= STANDARD_VENT_DEFAULT_OPEN) { continue }
-        def roomTemp = getRoomTemp(vent)
+        def tVal = getRoomTemp(vent)
+        def roomTemp = (tVal instanceof Number ? tVal : 0)
         if (!hasRoomReachedSetpoint(hvacMode, setPoint, roomTemp, REBALANCING_TOLERANCE)) {
           continue
         }
@@ -4631,7 +4636,8 @@ def finalizeRoomStates(data) {
         
         // Calculate rate for this room (first vent in room) using aggregated room opening
         def percentOpen = roomPercentOpen
-        BigDecimal currentTemp = getRoomTemp(vent)
+        def tVal = getRoomTemp(vent)
+        BigDecimal currentTemp = (tVal instanceof Number ? tVal : 0)
         BigDecimal lastStartTemp = vent.currentValue('room-starting-temperature-c') ?: 0
         BigDecimal currentRate = vent.currentValue(ratePropName) ?: 0
         def newRate = calculateRoomChangeRate(lastStartTemp, currentTemp, totalCycleMinutes, percentOpen, currentRate)
@@ -4724,7 +4730,8 @@ def recordStartingTemperatures() {
         if (!vent) {
           continue
         }
-        BigDecimal currentTemp = getRoomTemp(vent)
+        def tVal = getRoomTemp(vent)
+        BigDecimal currentTemp = (tVal instanceof Number ? tVal : 0)
         sendEvent(vent, [name: 'room-starting-temperature-c', value: currentTemp])
         log(2, 'App', "Starting temperature for '${vent.currentValue('room-name')}': ${currentTemp}°C")
       } catch (err) {
@@ -4803,7 +4810,8 @@ def initializeRoomStates(String hvacMode) {
     if (vent) {
       try {
         def rateAttr = hvacMode == COOLING ? 'room-cooling-rate' : 'room-heating-rate'
-        def vTemp = getRoomTemp(vent)
+        def tVal = getRoomTemp(vent)
+        BigDecimal vTemp = (tVal instanceof Number ? tVal : 0)
         boolean atSp = hasRoomReachedSetpoint(hvacMode, setpoint, vTemp, REBALANCING_TOLERANCE)
         boolean overridden = (atomicState?.manualOverrides ?: [:]).containsKey(ventId)
         Integer finalPct = roundToNearestMultiple(percentOpen)
@@ -4958,13 +4966,17 @@ private Map collectVentData(String hvacMode) {
     ventIds.each { vid ->
       def vent = getChildDevice(vid)
       if (!vent) { return }
+      def tempVal = getRoomTemp(vent)
       def record = [
         name: vent.currentValue('room-name') ?: vent.getLabel(),
-        temp: getRoomTemp(vent),
+        temp: (tempVal instanceof Number ? tempVal : 0),
         rate: (hvacMode == COOLING ? vent.currentValue('room-cooling-rate') : vent.currentValue('room-heating-rate')) ?: 0,
-        active: vent.currentValue('room-active') == 'true',
-        setpoint: vent.currentValue('room-set-point-c')
+        active: (vent.currentValue('room-active') ?: 'false') == 'true',
+        setpoint: vent.currentValue('room-set-point-c') ?: '-'
       ]
+      if (tempVal == '-' || vent.currentValue('room-set-point-c') == null) {
+        logWarn "Room data unavailable for '${record.name}'. Check network or thermostat connectivity."
+      }
       data[vid] = record
       logDabDiagnostics(record.name, record)
     }
@@ -5033,8 +5045,9 @@ def getAttribsPerVentId(ventsByRoomId, String hvacMode) {
         if (!vent) { continue }
         def rate = hvacMode == COOLING ? (vent.currentValue('room-cooling-rate') ?: 0) : (vent.currentValue('room-heating-rate') ?: 0)
         rate = rate ?: 0
-        def isActive = vent.currentValue('room-active') == 'true'
-        def roomTemp = getRoomTemp(vent)
+        def isActive = (vent.currentValue('room-active') ?: 'false') == 'true'
+        def tVal = getRoomTemp(vent)
+        def roomTemp = (tVal instanceof Number ? tVal : 0)
         def roomName = vent.currentValue('room-name') ?: ''
         
         // Log rooms with zero efficiency for debugging
@@ -5062,8 +5075,9 @@ def getAttribsPerVentIdWeighted(ventsByRoomId, String hvacMode) {
         if (!vent) { continue }
         def baseRate = hvacMode == COOLING ? (vent.currentValue('room-cooling-rate') ?: 0) : (vent.currentValue('room-heating-rate') ?: 0)
         baseRate = baseRate ?: 0
-        def isActive = vent.currentValue('room-active') == 'true'
-        def roomTemp = getRoomTemp(vent)
+        def isActive = (vent.currentValue('room-active') ?: 'false') == 'true'
+        def tVal2 = getRoomTemp(vent)
+        def roomTemp = (tVal2 instanceof Number ? tVal2 : 0)
         def roomName = vent.currentValue('room-name') ?: ''
         BigDecimal userWeight = 1.0
         try {
@@ -5121,7 +5135,8 @@ BigDecimal applyChangeDampening(String ventId, BigDecimal rawTargetPercent, Stri
     
     // Check if we should skip dampening
     def spRoom = vent.currentValue('room-set-point-c') ?: getGlobalSetpoint(hvacMode)
-    def roomTemp = getRoomTemp(vent)
+    def tVal = getRoomTemp(vent)
+    def roomTemp = (tVal instanceof Number ? tVal : 0)
     def isAtSetpoint = hasRoomReachedSetpoint(hvacMode, spRoom, roomTemp)
     def hasAnomalyFlag = getVentAnomalyFlag(ventId)
     
@@ -5653,8 +5668,11 @@ private void updateTileForVent(device) {
     def tile = getChildDevice(tileDniForVentId(ventId))
     if (!tile) { return }
     Integer level = (device.currentValue('percent-open') ?: device.currentValue('level') ?: 0) as int
-    def temp = device.currentValue('room-current-temperature-c')
     def name = device.currentValue('room-name') ?: device.getLabel()
+    def temp = device.currentValue('room-current-temperature-c') ?: '-'
+    if (temp == '-') {
+      logWarn "Room data unavailable for '${name}'. Check network or thermostat connectivity."
+    }
     def mode = atomicState?.manualOverrides?.containsKey(ventId) ? 'manual' : 'auto'
     def voltage = device.currentValue('voltage') ?: device.currentValue('system-voltage')
     def battery = device.currentValue('battery')
@@ -5666,14 +5684,14 @@ private void updateTileForVent(device) {
     html << "<div style='height:8px;width:${level}%;background:#3b82f6'></div>"
     html << "</div>"
     html << "<div style='margin-top:6px;font-size:12px;color:#111'>Vent: <b>${level}%</b>"
-    if (temp != null) { html << " &nbsp; Temp: <b>${roundBigDecimal(temp)}</b>&deg;C" }
+    if (temp != '-') { html << " &nbsp; Temp: <b>${roundBigDecimal(temp)}</b>&deg;C" } else { html << " &nbsp; Temp: <b>-</b>" }
     if (battery != null) { html << " &nbsp; Battery: <b>${battery}%</b>" }
     if (voltage != null) { html << " &nbsp; V: <b>${roundBigDecimal(voltage)}</b>" }
     html << " &nbsp; Mode: <b>${mode}</b></div>"
     html << "</div>"
     sendEvent(tile, [name: 'html', value: html.toString()])
     sendEvent(tile, [name: 'level', value: level])
-    if (temp != null) { sendEvent(tile, [name: 'temperature', value: temp]) }
+    if (temp != '-') { sendEvent(tile, [name: 'temperature', value: temp]) }
   } catch (e) {
     log(2,'App',"updateTileForVent error: ${e?.message}")
   }
@@ -6538,20 +6556,23 @@ def quickControlsPage() {
         Integer cur = (v.currentValue('percent-open') ?: v.currentValue('level') ?: 0) as int
         def vid = v.getDeviceNetworkId()
         def roomName = v.currentValue('room-name') ?: v.getLabel()
-        def tempC = v.currentValue('room-current-temperature-c')
-        def setpC = v.currentValue('room-set-point-c')
-        def active = v.currentValue('room-active')
+        def tempC = v.currentValue('room-current-temperature-c') ?: '-'
+        def setpC = v.currentValue('room-set-point-c') ?: '-'
+        def active = v.currentValue('room-active') ?: 'false'
         def upd = v.currentValue('updated-at') ?: ''
         def batt = v.currentValue('battery') ?: ''
-        def toF = { c -> c != null ? (((c as BigDecimal) * 9/5) + 32) : null }
+        def toF = { c -> c != '-' && c != null ? (((c as BigDecimal) * 9/5) + 32) : null }
         def fmt1 = { x -> x != null ? (((x as BigDecimal) * 10).round() / 10) : '-' }
-        def tempF = fmt1(toF(tempC))
-        def setpF = fmt1(toF(setpC))
+        def tempF = tempC != '-' ? fmt1(toF(tempC)) : '-'
+        def setpF = setpC != '-' ? fmt1(toF(setpC)) : '-'
         def vidKey = vid.replaceAll('[^A-Za-z0-9_]', '_')
         def roomKey = roomIdStr.replaceAll('[^A-Za-z0-9_]', '_')
         atomicState.qcDeviceMap[vidKey] = vid
         atomicState.qcRoomMap[roomKey] = roomIdStr
-        paragraph "<b>${roomName}</b> - Vent: ${cur}% | Temp: ${tempF} °F | Setpoint: ${setpF} °F | Active: ${active ?: 'false'}" + (batt ? " | Battery: ${batt}%" : "") + (upd ? " | Updated: ${upd}" : "")
+        if (tempC == '-' || setpC == '-') {
+          logWarn "Room data unavailable for '${roomName}'. Check network or thermostat connectivity."
+        }
+        paragraph "<b>${roomName}</b> - Vent: ${cur}% | Temp: ${tempF} °F | Setpoint: ${setpF} °F | Active: ${active}" + (batt ? " | Battery: ${batt}%" : "") + (upd ? " | Updated: ${upd}" : "")
         input name: "qc_${vidKey}_percent", type: 'number', title: 'Set vent percent', required: false, submitOnChange: false
         input name: "qc_room_${roomKey}_setpoint", type: 'number', title: 'Set room setpoint (°F)', required: false, submitOnChange: false
         input name: "qc_room_${roomKey}_active", type: 'enum', title: 'Set room active', options: ['true','false'], required: false, submitOnChange: false
@@ -6683,12 +6704,16 @@ private void openAllSelected(Integer pct) {
 private String buildDiagnosticsJson() {
   def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
   def ventSummaries = vents.collect { v ->
+    def tempC = v.currentValue('room-current-temperature-c') ?: '-'
+    if (tempC == '-') {
+      logWarn "Room data unavailable for '${v.currentValue('room-name') ?: v.getLabel()}'. Check network or thermostat connectivity."
+    }
     [
       id: v.getDeviceNetworkId(),
       roomId: v.currentValue('room-id'),
       room: v.currentValue('room-name'),
       percent: v.currentValue('percent-open') ?: v.currentValue('level'),
-      tempC: v.currentValue('room-current-temperature-c'),
+      tempC: tempC,
       battery: v.currentValue('battery'),
       voltage: (v.currentValue('voltage') ?: v.currentValue('system-voltage'))
     ]
@@ -6755,6 +6780,7 @@ private void buildDabSnapshot() {
     def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
     vents.each { vent ->
       try {
+        def tVal = getRoomTemp(vent)
         def ventData = [
           id: vent.getDeviceNetworkId(),
           roomName: vent.currentValue('room-name'),
@@ -6766,8 +6792,8 @@ private void buildDabSnapshot() {
           dabHourlyRate: vent.currentValue('dab-hourly-rate') ?: 0,
           dabAnomalyFactor: vent.currentValue('dab-anomaly-factor') ?: 1.0,
           dabCarryForward: vent.currentValue('dab-carry-forward') ?: false,
-          roomTemp: getRoomTemp(vent),
-          roomActive: vent.currentValue('room-active') == 'true'
+          roomTemp: (tVal instanceof Number ? tVal : '-'),
+          roomActive: (vent.currentValue('room-active') ?: 'false') == 'true'
         ]
         snapshot.vents << ventData
       } catch (Exception e) {
