@@ -51,6 +51,7 @@ The test suite is organized into focused test files:
 - **`room-change-rate-tests.groovy`** - Temperature change rate learning
 - **`airflow-adjustment-tests.groovy`** - Minimum airflow safety calculations
 - **`hubitat-flair-vents-app-tests.groovy`** - Legacy comprehensive tests
+- **`flair-system-emulation-tests.groovy`** - Full-system simulation with multiple vents
 
 ### **Coverage Areas**
 
@@ -84,6 +85,7 @@ The test suite is organized into focused test files:
 # Run specific test class
 gradle test --tests "bot.flair.MathCalculationsTest"
 gradle test --tests "bot.flair.VentOpeningCalculationsTest"
+gradle test --tests "bot.flair.FlairSystemEmulationTest"
 
 # Run tests matching pattern
 gradle test --tests "*Temperature*"
