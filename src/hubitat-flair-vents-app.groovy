@@ -6521,7 +6521,8 @@ def quickControlsPage() {
   dynamicPage(name: 'quickControlsPage', title: '\u26A1 Quick Controls', install: false, uninstall: false) {
     section('Per-Room Status & Controls') {
       // Identify vent devices by driver type to avoid missing vents when attributes are absent
-      def vents = getChildDevices()?.findAll { (it.typeName ?: '') == 'Flair vents' } ?: []
+      // Use getTypeName() for reliable driver type detection
+      def vents = getChildDevices()?.findAll { (it.getTypeName() ?: '') == 'Flair vents' } ?: []
       // Build 1 row per room
       def byRoom = [:]
       atomicState.qcDeviceMap = [:]
@@ -6559,7 +6560,8 @@ def quickControlsPage() {
       input name: 'applyQuickControlsNow', type: 'button', title: 'Apply All Changes', submitOnChange: true
     }
     section('Active Rooms Now') {
-      def vents = getChildDevices()?.findAll { (it.typeName ?: '') == 'Flair vents' } ?: []
+      // Use getTypeName() for reliable driver type detection
+      def vents = getChildDevices()?.findAll { (it.getTypeName() ?: '') == 'Flair vents' } ?: []
       def actives = vents.findAll { (it.currentValue('room-active') ?: 'false') == 'true' }
       if (actives) {
         actives.each { v -> paragraph("* ${v.getLabel()}") }
