@@ -49,6 +49,25 @@ class HvacDetectionImprovementsSpec extends Specification {
     (script.atomicState?.thermostat1State?.mode ?: script.atomicState?.hvacCurrentMode) == 'heating'
   }
 
+  def "triggers cooling cycle when any vent indicates cooling"() {
+    setup:
+    AppExecutor api = Mock { _ * getState() >> [:] }
+    def sandbox = new HubitatAppSandbox(APP_FILE)
+    def script = sandbox.run('api': api, 'validationFlags': VALIDATION_FLAGS)
+    def coolingVent = [currentValue: { attr ->
+      attr == 'duct-temperature-c' ? 18 : (attr == 'room-current-temperature-c' ? 22 : null)
+    }] as Expando
+    def neutralVent = [currentValue: { attr ->
+      attr == 'duct-temperature-c' ? 22 : (attr == 'room-current-temperature-c' ? 22 : null)
+    }] as Expando
+    script.metaClass.getChildDevices = { -> [coolingVent, neutralVent] }
+
+    when:
+    script.updateHvacStateFromDuctTemps()
+    then:
+    (script.atomicState?.thermostat1State?.mode ?: script.atomicState?.hvacCurrentMode) == 'cooling'
+  }
+
   def "gracefully handles vents with null temps"() {
     setup:
     AppExecutor api = Mock { _ * getState() >> [:] }
