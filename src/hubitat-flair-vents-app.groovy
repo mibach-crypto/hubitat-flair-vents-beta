@@ -6522,6 +6522,12 @@ def quickControlsPage() {
     section('Per-Room Status & Controls') {
       // Identify vent devices by driver type to avoid missing vents when attributes are absent
       def vents = getChildDevices()?.findAll { (it.typeName ?: '') == 'Flair vents' } ?: []
+      // Append vents that expose percent-open but lack type information
+      vents += getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+      // De-duplicate vents by device ID before building the room map
+      def uniqueVents = [:]
+      vents.each { v -> uniqueVents[v.getId()] = v }
+      vents = uniqueVents.values() as List
       // Build 1 row per room
       def byRoom = [:]
       atomicState.qcDeviceMap = [:]
@@ -6560,7 +6566,10 @@ def quickControlsPage() {
     }
     section('Active Rooms Now') {
       def vents = getChildDevices()?.findAll { (it.typeName ?: '') == 'Flair vents' } ?: []
-      def actives = vents.findAll { (it.currentValue('room-active') ?: 'false') == 'true' }
+      vents += getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+      def uniqueVents = [:]
+      vents.each { v -> uniqueVents[v.getId()] = v }
+      def actives = uniqueVents.values().findAll { (it.currentValue('room-active') ?: 'false') == 'true' }
       if (actives) {
         actives.each { v -> paragraph("* ${v.getLabel()}") }
       } else {
