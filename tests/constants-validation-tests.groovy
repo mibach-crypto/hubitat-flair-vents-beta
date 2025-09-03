@@ -27,6 +27,7 @@ class ConstantsValidationTest extends Specification {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
@@ -40,6 +41,7 @@ class ConstantsValidationTest extends Specification {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
@@ -55,6 +57,7 @@ class ConstantsValidationTest extends Specification {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
@@ -70,6 +73,7 @@ class ConstantsValidationTest extends Specification {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
@@ -85,6 +89,7 @@ class ConstantsValidationTest extends Specification {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
@@ -101,6 +106,7 @@ class ConstantsValidationTest extends Specification {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
@@ -117,6 +123,7 @@ class ConstantsValidationTest extends Specification {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
@@ -132,6 +139,7 @@ class ConstantsValidationTest extends Specification {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)

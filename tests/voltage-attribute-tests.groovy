@@ -164,6 +164,7 @@ class VoltageAttributeSpec extends Specification {
     private loadApp(String path) {
         AppExecutor executorApi = Mock {
             _ * getState() >> [activeRequests: 0, lastRequestTime: 0, requestCounts: [:], stuckRequestCounter: 0]
+            _ * getAtomicState() >> [:]
         }
         def sandbox = new HubitatAppSandbox(APP_FILE)
         def app = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)

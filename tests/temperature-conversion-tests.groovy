@@ -27,6 +27,7 @@ class TemperatureConversionTest extends Specification {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
@@ -45,6 +46,7 @@ class TemperatureConversionTest extends Specification {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
@@ -62,6 +64,7 @@ class TemperatureConversionTest extends Specification {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
@@ -79,16 +82,16 @@ class TemperatureConversionTest extends Specification {
     when:
     script.metaClass.getChildDevices = { -> [heatVent] }
     then:
-    script.calculateHvacMode() == 'heating'
+    script.calculateHvacModeRobust() == 'heating'
 
     when:
     script.metaClass.getChildDevices = { -> [coolVent] }
     then:
-    script.calculateHvacMode() == 'cooling'
+    script.calculateHvacModeRobust() == 'cooling'
 
     when:
     script.metaClass.getChildDevices = { -> [idleVent] }
     then:
-    script.calculateHvacMode() == null
+    script.calculateHvacModeRobust() == 'idle'
   }
 }

@@ -32,6 +32,7 @@ class Test extends Specification {
     setup:
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
@@ -42,26 +43,17 @@ class Test extends Specification {
       attr == 'duct-temperature-c' ? 5 : (attr == 'room-current-temperature-c' ? 20 : null)
     }] as Expando
 
-    when:
-    script.metaClass.getChildDevices = { -> [heatingVent] }
-    then:
-    script.calculateHvacMode() == 'heating'
-
-    when:
-    script.metaClass.getChildDevices = { -> [coolingVent] }
-    then:
-    script.calculateHvacMode() == 'cooling'
-
-    when:
-    script.metaClass.getChildDevices = { -> [] }
-    then:
-    script.calculateHvacMode() == null
+    expect:
+    script.calculateHvacModeRobust([heatingVent]) == 'heating'
+    script.calculateHvacModeRobust([coolingVent]) == 'cooling'
+    script.calculateHvacModeRobust([]) == 'idle'
   }
 
   def "hvac mode detection filters closed vents and uses fallback temps"() {
     setup:
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
@@ -90,21 +82,11 @@ class Test extends Specification {
       }
     }] as Expando
 
-    when:
-    script.metaClass.getChildDevices = { -> [closedCoolingVent, openHeatingVent] }
-    then:
-    script.calculateHvacMode() == 'heating'
-
-    when:
-    script.metaClass.getChildDevices = { -> [fallbackCoolingVent] }
-    then:
-    script.calculateHvacMode() == 'cooling'
-
-    when:
-    script.metaClass.getChildDevices = { -> [closedCoolingVent] }
-    then:
+    expect:
+    script.calculateHvacModeRobust([closedCoolingVent, openHeatingVent]) == 'heating'
+    script.calculateHvacModeRobust([fallbackCoolingVent]) == 'cooling'
     // Closed vents still contribute to detection now
-    script.calculateHvacMode() == 'cooling'
+    script.calculateHvacModeRobust([closedCoolingVent]) == 'cooling'
   }
 
 
@@ -112,6 +94,7 @@ class Test extends Specification {
     setup:
     AppExecutor executorApi = Mock {
       _   * getState() >> [:]
+      _   * getAtomicState() >> [:]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
@@ -132,6 +115,7 @@ class Test extends Specification {
     setup:
     AppExecutor executorApi = Mock {
       _   * getState() >> [:]
+      _   * getAtomicState() >> [:]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def testSettings = USER_SETTINGS + [ventGranularity: '5']
@@ -149,6 +133,7 @@ class Test extends Specification {
     setup:
     AppExecutor executorApi = Mock {
       _   * getState() >> [:]
+      _   * getAtomicState() >> [:]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
@@ -170,6 +155,7 @@ class Test extends Specification {
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
       _ * getLog() >> log
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
@@ -205,6 +191,7 @@ class Test extends Specification {
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
       _ * getLog() >> log
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
@@ -233,6 +220,7 @@ class Test extends Specification {
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
       _ * getLog() >> log
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
@@ -261,6 +249,7 @@ class Test extends Specification {
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
       _ * getLog() >> log
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
@@ -280,6 +269,7 @@ class Test extends Specification {
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
       _ * getLog() >> log
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
@@ -294,6 +284,7 @@ class Test extends Specification {
     setup:
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi,
@@ -316,6 +307,7 @@ class Test extends Specification {
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
       _ * getLog() >> log
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
@@ -342,6 +334,7 @@ class Test extends Specification {
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
       _ * getLog() >> log
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
@@ -390,6 +383,7 @@ class Test extends Specification {
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
       _ * getLog() >> log
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
@@ -435,6 +429,7 @@ class Test extends Specification {
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
       _ * getLog() >> log
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)

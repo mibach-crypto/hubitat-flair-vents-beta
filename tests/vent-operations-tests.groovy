@@ -27,6 +27,7 @@ class VentOperationsTest extends Specification {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [flairAccessToken: 'test-token']
+      _ * getAtomicState() >> [:]
       _ * sendEvent(_ as Object, _ as Map) >> null
     }
     def mockDevice = [
@@ -54,6 +55,7 @@ class VentOperationsTest extends Specification {
     final log = new CapturingLog()
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [flairAccessToken: 'test-token']
+      _ * getAtomicState() >> [:]
       _ * getLog() >> log
       _ * sendEvent(_ as Object, _ as Map) >> null
     }
@@ -82,6 +84,7 @@ class VentOperationsTest extends Specification {
     final log = new CapturingLog()
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [flairAccessToken: 'test-token']
+      _ * getAtomicState() >> [:]
       _ * getLog() >> log
       _ * sendEvent(_ as Object, _ as Map) >> null
     }
@@ -109,6 +112,7 @@ class VentOperationsTest extends Specification {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [flairAccessToken: 'test-token']
+      _ * getAtomicState() >> [:]
     }
     def mockDevice = [
       currentValue: { prop -> prop == 'percent-open' ? 75 : null },
@@ -134,6 +138,7 @@ class VentOperationsTest extends Specification {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [flairAccessToken: 'test-token']
+      _ * getAtomicState() >> [:]
     }
     def mockDevice = [
       currentValue: { prop -> 
@@ -165,6 +170,7 @@ class VentOperationsTest extends Specification {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [flairAccessToken: 'test-token']
+      _ * getAtomicState() >> [:]
     }
     def mockDevice = [
       currentValue: { prop -> 
@@ -196,6 +202,7 @@ class VentOperationsTest extends Specification {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [flairAccessToken: 'test-token']
+      _ * getAtomicState() >> [:]
     }
     def mockDevice = [
       currentValue: { prop -> 

@@ -27,6 +27,7 @@ class ThermostatSetpointTest extends Specification {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
     }
     def mockThermostat = [
       currentValue: { String property ->
@@ -54,6 +55,7 @@ class ThermostatSetpointTest extends Specification {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
     }
     def mockThermostat = [
       currentValue: { String property ->
@@ -80,6 +82,7 @@ class ThermostatSetpointTest extends Specification {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
     }
     def mockThermostat = [
       currentValue: { String property ->
@@ -108,6 +111,7 @@ class ThermostatSetpointTest extends Specification {
     final log = new CapturingLog()
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
       _ * getLog() >> log
     }
     def mockThermostat = [
@@ -129,6 +133,7 @@ class ThermostatSetpointTest extends Specification {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
     }
     def mockThermostat = [
       currentValue: { String property ->

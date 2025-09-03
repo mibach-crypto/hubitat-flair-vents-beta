@@ -18,21 +18,29 @@ class TimeCalculationsTest extends Specification {
             Flags.DontValidatePreferences,
             Flags.DontValidateDefinition,
             Flags.DontRestrictGroovy,
-            Flags.DontRequireParseMethodInDevice
+            Flags.DontRequireParseMethodInDevice,
+            Flags.AllowReadingNonInputSettings,
+            Flags.AllowWritingToSettings
           ]
   private static final AbstractMap USER_SETTINGS = ['debugLevel': 1, 'thermostat1CloseInactiveRooms': true]
+  private static final Closure BEFORE_RUN_SCRIPT = { script ->
+    // Bypass preferences validation that reads non-input settings in CI
+    script.metaClass.preferences = { -> }
+  }
 
   def "calculateLongestMinutesToTargetTest - Standard Scenario"() {
     setup:
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
       _ * getLog() >> log
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi,
       'validationFlags': VALIDATION_FLAGS,
-      'userSettingValues': USER_SETTINGS)
+      'userSettingValues': USER_SETTINGS,
+      'customizeScriptBeforeRun': BEFORE_RUN_SCRIPT)
     def rateAndTempPerVentId = [
       '1222bc5e': [rate:0.123, temp:26.444, active:true, name: '1'],
       '00f65b12':[rate:0.070, temp:25.784, active:true, name: '2'],
@@ -55,12 +63,14 @@ class TimeCalculationsTest extends Specification {
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
       _ * getLog() >> log
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi,
       'validationFlags': VALIDATION_FLAGS,
-      'userSettingValues': USER_SETTINGS)
+      'userSettingValues': USER_SETTINGS,
+      'customizeScriptBeforeRun': BEFORE_RUN_SCRIPT)
     
     expect:
     // All rooms inactive
@@ -76,12 +86,14 @@ class TimeCalculationsTest extends Specification {
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
       _ * getLog() >> log
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi,
       'validationFlags': VALIDATION_FLAGS,
-      'userSettingValues': USER_SETTINGS)
+      'userSettingValues': USER_SETTINGS,
+      'customizeScriptBeforeRun': BEFORE_RUN_SCRIPT)
     
     expect:
     // All rooms already reached setpoint
@@ -97,12 +109,14 @@ class TimeCalculationsTest extends Specification {
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
       _ * getLog() >> log
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi,
       'validationFlags': VALIDATION_FLAGS,
-      'userSettingValues': USER_SETTINGS)
+      'userSettingValues': USER_SETTINGS,
+      'customizeScriptBeforeRun': BEFORE_RUN_SCRIPT)
     
     expect:
     // Zero rate (should return maxRunningTime)
@@ -117,12 +131,14 @@ class TimeCalculationsTest extends Specification {
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
       _ * getLog() >> log
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi,
       'validationFlags': VALIDATION_FLAGS,
-      'userSettingValues': USER_SETTINGS)
+      'userSettingValues': USER_SETTINGS,
+      'customizeScriptBeforeRun': BEFORE_RUN_SCRIPT)
     
     expect:
     // Very slow rate (should be clamped to maxRunningTime)
@@ -143,7 +159,8 @@ class TimeCalculationsTest extends Specification {
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi,
       'validationFlags': VALIDATION_FLAGS,
-      'userSettingValues': USER_SETTINGS)
+      'userSettingValues': USER_SETTINGS,
+      'customizeScriptBeforeRun': BEFORE_RUN_SCRIPT)
     
     expect:
     // Mix of active/inactive rooms with closeInactiveRooms = false
@@ -167,7 +184,8 @@ class TimeCalculationsTest extends Specification {
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi,
       'validationFlags': VALIDATION_FLAGS,
-      'userSettingValues': USER_SETTINGS)
+      'userSettingValues': USER_SETTINGS,
+      'customizeScriptBeforeRun': BEFORE_RUN_SCRIPT)
     
     expect:
     def rateAndTempPerVentId = [
@@ -188,13 +206,15 @@ class TimeCalculationsTest extends Specification {
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
       _ * getLog() >> log
       _ * getSetting('debugLevel') >> 1
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi,
       'validationFlags': VALIDATION_FLAGS,
-      'userSettingValues': USER_SETTINGS)
+      'userSettingValues': USER_SETTINGS,
+      'customizeScriptBeforeRun': BEFORE_RUN_SCRIPT)
     
     when:
     // Room that would take longer than max running time
@@ -219,6 +239,7 @@ class TimeCalculationsTest extends Specification {
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
       _ * getLog() >> log
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)

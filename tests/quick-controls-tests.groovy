@@ -13,12 +13,13 @@ class QuickControlsTests extends Specification {
     Flags.DontValidateDefinition,
     Flags.DontRestrictGroovy,
     Flags.DontRequireParseMethodInDevice,
-    Flags.AllowReadingNonInputSettings
+    Flags.AllowReadingNonInputSettings,
+    Flags.AllowWritingToSettings
   ]
 
   def "quick controls include vents with and without getTypeName"() {
     setup:
-    AppExecutor executorApi = Mock { _ * getState() >> [:] }
+    AppExecutor executorApi = Mock { _ * getState() >> [:]; _ * getAtomicState() >> [:] }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
     script.atomicState = [:]

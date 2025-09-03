@@ -29,6 +29,7 @@ class InstanceBasedCachingTest extends Specification {
     def log = new CapturingLog()
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [flairAccessToken: 'test-token']
+      _ * getAtomicState() >> [:]
       _ * getLog() >> log
       _ * getSetting(_) >> { String key -> settings[key] }
     }

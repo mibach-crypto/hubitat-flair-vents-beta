@@ -14,7 +14,9 @@ class HourlyDabTests extends Specification {
     Flags.DontValidatePreferences,
     Flags.DontValidateDefinition,
     Flags.DontRestrictGroovy,
-    Flags.DontRequireParseMethodInDevice
+    Flags.DontRequireParseMethodInDevice,
+    Flags.AllowReadingNonInputSettings,
+    Flags.AllowWritingToSettings
   ]
 
   def "timestamped rate history purges entries older than retention"() {
@@ -22,6 +24,7 @@ class HourlyDabTests extends Specification {
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
       _ * getLog() >> log
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)

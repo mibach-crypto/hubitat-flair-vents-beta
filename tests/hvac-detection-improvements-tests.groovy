@@ -16,7 +16,7 @@ class HvacDetectionImprovementsSpec extends Specification {
 
   def "returns idle when inconclusive with no thermostat fallback"() {
     setup:
-    AppExecutor api = Mock { _ * getState() >> [:] }
+    AppExecutor api = Mock { _ * getState() >> [:]; _ * getAtomicState() >> [:] }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': api, 'validationFlags': VALIDATION_FLAGS)
     def smallDiffVent = [currentValue: { attr ->
@@ -27,21 +27,20 @@ class HvacDetectionImprovementsSpec extends Specification {
       }
     }] as Expando
 
-    when:
-    script.metaClass.getChildDevices = { -> [smallDiffVent] }
-    then:
-    script.calculateHvacMode() == 'idle'
+    expect:
+    script.calculateHvacModeRobust([smallDiffVent]) == 'idle'
   }
 
   def "updateHvacStateFromDuctTemps runs even when dabEnabled is false"() {
     setup:
-    AppExecutor api = Mock { _ * getState() >> [:] }
+    AppExecutor api = Mock { _ * getState() >> [:]; _ * getAtomicState() >> [:] }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': api, 'validationFlags': VALIDATION_FLAGS, 'userSettingValues': [dabEnabled: false])
     def heatingVent = [currentValue: { attr ->
       attr == 'duct-temperature-c' ? 40 : (attr == 'room-current-temperature-c' ? 20 : null)
     }] as Expando
-    script.metaClass.getChildDevices = { -> [heatingVent] }
+    // Ensure robust detector sees the test vent
+    script.metaClass.calculateHvacModeRobust = { -> script.calculateHvacModeRobust([heatingVent]) }
 
     when:
     script.updateHvacStateFromDuctTemps()
@@ -51,7 +50,7 @@ class HvacDetectionImprovementsSpec extends Specification {
 
   def "triggers cooling cycle when any vent indicates cooling"() {
     setup:
-    AppExecutor api = Mock { _ * getState() >> [:] }
+    AppExecutor api = Mock { _ * getState() >> [:]; _ * getAtomicState() >> [:] }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': api, 'validationFlags': VALIDATION_FLAGS)
     def coolingVent = [currentValue: { attr ->
@@ -60,7 +59,7 @@ class HvacDetectionImprovementsSpec extends Specification {
     def neutralVent = [currentValue: { attr ->
       attr == 'duct-temperature-c' ? 22 : (attr == 'room-current-temperature-c' ? 22 : null)
     }] as Expando
-    script.metaClass.getChildDevices = { -> [coolingVent, neutralVent] }
+    script.metaClass.calculateHvacModeRobust = { -> script.calculateHvacModeRobust([coolingVent, neutralVent]) }
 
     when:
     script.updateHvacStateFromDuctTemps()
@@ -70,15 +69,13 @@ class HvacDetectionImprovementsSpec extends Specification {
 
   def "gracefully handles vents with null temps"() {
     setup:
-    AppExecutor api = Mock { _ * getState() >> [:] }
+    AppExecutor api = Mock { _ * getState() >> [:]; _ * getAtomicState() >> [:] }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': api, 'validationFlags': VALIDATION_FLAGS)
     def offlineVent = [currentValue: { attr -> null }] as Expando
 
-    when:
-    script.metaClass.getChildDevices = { -> [offlineVent] }
-    then:
-    script.calculateHvacMode() == 'idle'
+    expect:
+    script.calculateHvacModeRobust([offlineVent]) == 'idle'
   }
 }
 

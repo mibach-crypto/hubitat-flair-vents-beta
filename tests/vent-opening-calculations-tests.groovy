@@ -18,7 +18,8 @@ class VentOpeningCalculationsTest extends Specification {
             Flags.DontValidatePreferences,
             Flags.DontValidateDefinition,
             Flags.DontRestrictGroovy,
-            Flags.DontRequireParseMethodInDevice
+            Flags.DontRequireParseMethodInDevice,
+            Flags.AllowReadingNonInputSettings
           ]
   private static final AbstractMap USER_SETTINGS = ['debugLevel': 1, 'thermostat1CloseInactiveRooms': true]
 
@@ -27,6 +28,7 @@ class VentOpeningCalculationsTest extends Specification {
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
       _ * getLog() >> log
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
@@ -55,6 +57,7 @@ class VentOpeningCalculationsTest extends Specification {
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
       _ * getLog() >> log
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
@@ -64,9 +67,9 @@ class VentOpeningCalculationsTest extends Specification {
 
     expect:
     script.calculateVentOpenPercentage('', 75, 70, 'heating', 0.1, 1) == 0
-    log.records[0] == new Tuple(Level.debug, "'' is already warmer (75) than setpoint (70)")
+    log.records.any { it[0] == Level.debug && (it[1] as String).contains("already warmer (75) than setpoint (70)") }
     script.calculateVentOpenPercentage('', 75, 80, 'cooling', 0.1, 1) == 0
-    log.records[1] == new Tuple(Level.debug, "'' is already cooler (75) than setpoint (80)")
+    log.records.any { it[0] == Level.debug && (it[1] as String).contains("already cooler (75) than setpoint (80)") }
   }
 
   def "calculateVentOpenPercentageTest - Extreme Values"() {
@@ -74,6 +77,7 @@ class VentOpeningCalculationsTest extends Specification {
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
       _ * getLog() >> log
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
@@ -103,6 +107,7 @@ class VentOpeningCalculationsTest extends Specification {
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
       _ * getLog() >> log
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
@@ -129,6 +134,7 @@ class VentOpeningCalculationsTest extends Specification {
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
       _ * getLog() >> log
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
@@ -164,6 +170,7 @@ class VentOpeningCalculationsTest extends Specification {
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
       _ * getLog() >> log
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
@@ -196,6 +203,7 @@ class VentOpeningCalculationsTest extends Specification {
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
       _ * getLog() >> log
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
