@@ -6544,10 +6544,17 @@ def asyncHttpGetWrapper(response, Map data) {
 def quickControlsPage() {
   dynamicPage(name: 'quickControlsPage', title: '\u26A1 Quick Controls', install: false, uninstall: false) {
     section('Per-Room Status & Controls') {
-      // Identify vent devices by driver type to avoid missing vents when attributes are absent
-      def vents = getChildDevices()?.findAll { (it.typeName ?: '') == 'Flair vents' } ?: []
-      // Append vents that expose percent-open but lack type information
-      vents += getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+      def children = getChildDevices() ?: []
+      children.each { d ->
+        String driverName = d.typeName ?: 'Unknown'
+        log(4, 'QuickControl', "Child device id=${d.getId()}, label='${d.getLabel()}', driver=${driverName}")
+      }
+      def vents = children.findAll { (it.typeName ?: '') == 'Flair vents' || it.hasAttribute('percent-open') }
+      def skipped = children.findAll { !((it.typeName ?: '') == 'Flair vents' || it.hasAttribute('percent-open')) }
+      def skippedDesc = skipped.collect { d ->
+        String drv = d.typeName ?: 'Unknown'
+        "${d.getId()} (${d.getLabel()}): driver '${drv}' without 'percent-open'"
+      }
       // De-duplicate vents by device ID before building the room map
       def uniqueVents = [:]
       vents.each { v -> uniqueVents[v.getId()] = v }
@@ -6561,6 +6568,8 @@ def quickControlsPage() {
         if (!byRoom.containsKey(rid)) { byRoom[rid] = v }
       }
       if (byRoom.isEmpty()) {
+        String skippedMsg = skippedDesc ? skippedDesc.join(', ') : 'none'
+        logWarn("No vents with manual control are available. Skipped devices: ${skippedMsg}", 'QuickControl')
         paragraph 'No vents with manual control are available.'
       }
       byRoom.each { roomId, v ->
