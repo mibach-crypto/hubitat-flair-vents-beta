@@ -6520,16 +6520,21 @@ def asyncHttpGetWrapper(response, Map data) {
 def quickControlsPage() {
   dynamicPage(name: 'quickControlsPage', title: '\u26A1 Quick Controls', install: false, uninstall: false) {
     section('Per-Room Status & Controls') {
-      def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+      // Identify vent devices by driver type to avoid missing vents when attributes are absent
+      def vents = getChildDevices()?.findAll { (it.typeName ?: '') == 'Flair vents' } ?: []
       // Build 1 row per room
       def byRoom = [:]
       atomicState.qcDeviceMap = [:]
       atomicState.qcRoomMap = [:]
       vents.each { v ->
-        def rid = v.currentValue('room-id') ?: v.getDeviceNetworkId()
+        def rid = (v.currentValue('room-id') ?: v.getDeviceNetworkId())?.toString()
         if (!byRoom.containsKey(rid)) { byRoom[rid] = v }
       }
+      if (byRoom.isEmpty()) {
+        paragraph 'No vents with manual control are available.'
+      }
       byRoom.each { roomId, v ->
+        String roomIdStr = roomId?.toString()
         Integer cur = (v.currentValue('percent-open') ?: v.currentValue('level') ?: 0) as int
         def vid = v.getDeviceNetworkId()
         def roomName = v.currentValue('room-name') ?: v.getLabel()
@@ -6543,9 +6548,9 @@ def quickControlsPage() {
         def tempF = fmt1(toF(tempC))
         def setpF = fmt1(toF(setpC))
         def vidKey = vid.replaceAll('[^A-Za-z0-9_]', '_')
-        def roomKey = roomId.replaceAll('[^A-Za-z0-9_]', '_')
+        def roomKey = roomIdStr.replaceAll('[^A-Za-z0-9_]', '_')
         atomicState.qcDeviceMap[vidKey] = vid
-        atomicState.qcRoomMap[roomKey] = roomId
+        atomicState.qcRoomMap[roomKey] = roomIdStr
         paragraph "<b>${roomName}</b> - Vent: ${cur}% | Temp: ${tempF} °F | Setpoint: ${setpF} °F | Active: ${active ?: 'false'}" + (batt ? " | Battery: ${batt}%" : "") + (upd ? " | Updated: ${upd}" : "")
         input name: "qc_${vidKey}_percent", type: 'number', title: 'Set vent percent', required: false, submitOnChange: false
         input name: "qc_room_${roomKey}_setpoint", type: 'number', title: 'Set room setpoint (°F)', required: false, submitOnChange: false
@@ -6554,7 +6559,7 @@ def quickControlsPage() {
       input name: 'applyQuickControlsNow', type: 'button', title: 'Apply All Changes', submitOnChange: true
     }
     section('Active Rooms Now') {
-      def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+      def vents = getChildDevices()?.findAll { (it.typeName ?: '') == 'Flair vents' } ?: []
       def actives = vents.findAll { (it.currentValue('room-active') ?: 'false') == 'true' }
       if (actives) {
         actives.each { v -> paragraph("* ${v.getLabel()}") }
