@@ -3,7 +3,7 @@
 This app provides comprehensive control of [Flair Smart Vents](https://flair.co/) through [Hubitat](https://hubitat.com/), introducing intelligent and adaptive air management for your home's HVAC system.
 
 ## Whatâ€™s New (This Fork)
-- Ductâ€‘temperature HVAC detection (works without thermostat integration or when APIâ€‘limited)
+- Ductâ€‘temperature HVAC detection (works without thermostat integration or when APIâ€‘limited, triggers DAB when any vent detects cooling)
 - Data model reliability with nonâ€‘destructive Reindex + daily stats generation
 - Optional smoothing (EWMA) and robust outlier handling (MAD)
 - Quick Controls page, global vent floor/allowâ€‘fullâ€‘close, and perâ€‘vent Dashboard tiles

@@ -1289,11 +1289,15 @@ def calculateHvacModeRobust() {
     } catch (ignore) { }
   }
   if (!diffs) { return (fallbackFromThermostat() ?: 'idle') }
+
+  // Treat any significant duct temp delta as an active cycle
+  if (diffs.any { it < -DUCT_TEMP_DIFF_THRESHOLD }) { return COOLING }
+  if (diffs.any { it > DUCT_TEMP_DIFF_THRESHOLD }) { return HEATING }
+
+  // Fall back to thermostat or idle when no vent shows activity
   def sorted = diffs.sort()
   BigDecimal median = sorted[sorted.size().intdiv(2)] as BigDecimal
   log(4, 'DAB', "Median duct-room temp diff=${median}C")
-  if (median > DUCT_TEMP_DIFF_THRESHOLD) { return HEATING }
-  if (median < -DUCT_TEMP_DIFF_THRESHOLD) { return COOLING }
   return (fallbackFromThermostat() ?: 'idle')
 }
 

@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.240] - 2025-08-28
+
+### Changed
+- HVAC mode detection now triggers cooling when any vent's duct temperature drops below room temperature, allowing DAB to operate without a thermostat
+
 ## [0.239] - 2025-08-27
 
 ### Added
