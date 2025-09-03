@@ -6545,7 +6545,7 @@ def quickControlsPage() {
   dynamicPage(name: 'quickControlsPage', title: '\u26A1 Quick Controls', install: false, uninstall: false) {
     section('Per-Room Status & Controls') {
       // Identify vent devices by driver type to avoid missing vents when attributes are absent
-      def vents = getChildDevices()?.findAll { (it.typeName ?: '') == 'Flair vents' } ?: []
+      def vents = getChildDevices()?.findAll { (it.getTypeName() ?: '') == 'Flair vents' } ?: []
       // Append vents that expose percent-open but lack type information
       vents += getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
       // De-duplicate vents by device ID before building the room map
@@ -6592,7 +6592,7 @@ def quickControlsPage() {
       input name: 'applyQuickControlsNow', type: 'button', title: 'Apply All Changes', submitOnChange: true
     }
     section('Active Rooms Now') {
-      def vents = getChildDevices()?.findAll { (it.typeName ?: '') == 'Flair vents' } ?: []
+      def vents = getChildDevices()?.findAll { (it.getTypeName() ?: '') == 'Flair vents' } ?: []
       vents += getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
       def uniqueVents = [:]
       vents.each { v -> uniqueVents[v.getId()] = v }

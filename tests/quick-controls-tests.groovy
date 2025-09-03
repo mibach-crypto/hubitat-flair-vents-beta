@@ -16,14 +16,16 @@ class QuickControlsTests extends Specification {
     Flags.AllowReadingNonInputSettings
   ]
 
-  def "quick controls include vents with and without getTypeName"() {
+  def "quick controls include vents matched by driver or attribute"() {
     setup:
     AppExecutor executorApi = Mock { _ * getState() >> [:] }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
     script.atomicState = [:]
+    script.metaClass.getAtomicState = { -> script.@atomicState }
+    script.metaClass.setAtomicState = { val -> script.@atomicState = val }
 
-    def ventWithMethod = new Expando(
+    def ventMatchedByDriver = new Expando(
       getTypeName: { 'Flair vents' },
       getDeviceNetworkId: { 'vent1' },
       getLabel: { 'Vent 1' },
@@ -37,8 +39,8 @@ class QuickControlsTests extends Specification {
       }
     )
 
-    def ventWithoutMethod = new Expando(
-      typeName: 'Flair vents',
+    def ventMatchedByAttribute = new Expando(
+      getTypeName: { 'Generic Vent' },
       getDeviceNetworkId: { 'vent2' },
       getLabel: { 'Vent 2' },
       currentValue: { attr ->
@@ -51,7 +53,7 @@ class QuickControlsTests extends Specification {
       }
     )
 
-    script.metaClass.getChildDevices = { -> [ventWithMethod, ventWithoutMethod] }
+    script.metaClass.getChildDevices = { -> [ventMatchedByDriver, ventMatchedByAttribute] }
 
     when:
     def page = script.quickControlsPage()
