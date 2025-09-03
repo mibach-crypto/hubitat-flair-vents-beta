@@ -230,19 +230,25 @@ def landingPage() {
       }
     }
     section('Rooms') {
-      def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+      // Identify vent devices by driver type to avoid missing vents when attributes are absent
+      def vents = getChildDevices()?.findAll { (it.typeName ?: '') == 'Flair vents' }
+      // Fallback to attribute-based detection if no vents were matched by driver type
+      if (!vents) { vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } }
+      vents = vents ?: []
       vents.each { vent ->
+        String key = "refresh_${vent.getId()}"
+        boolean didRefresh = false
+        if (settings?."${key}") {
+          try { vent.refresh() } catch (ignore) { }
+          app.updateSetting(key, null)
+          didRefresh = true
+        }
         def roomName = vent.currentValue('room-name') ?: vent.getLabel()
         def temp = vent.currentValue('temperature') ?: '-'
         def pct = vent.currentValue('percent-open') ?: '-'
         paragraph "<b>${roomName}</b>: ${temp}&deg; | ${pct}% open"
-        String key = "refresh_${vent.getId()}"
         input name: key, type: 'button', title: 'Refresh', submitOnChange: true
-        if (settings?."${key}") {
-          try { vent.refresh() } catch (ignore) { }
-          app.updateSetting(key, null)
-          paragraph "<span style='color: green;'>&#10003; Refreshed</span>"
-        }
+        if (didRefresh) { paragraph "<span style='color: green;'>&#10003; Refreshed</span>" }
       }
     }
     section('Navigation') {
