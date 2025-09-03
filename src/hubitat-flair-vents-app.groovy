@@ -1505,16 +1505,13 @@ private getInstanceId() {
   return "test-${now()}"
 }
 
-// Initialize instance-level cache variables
-private initializeInstanceCaches() {
-  // Ensure throttling counters/maps exist for CI/tests and runtime
-  try { if (atomicState.activeRequests == null) { atomicState.activeRequests = 0 } } catch (ignore) { }
-  try { if (state.circuitOpenUntil == null) { state.circuitOpenUntil = [:] } } catch (ignore) { }
-// Ensure throttling counters/maps exist for CI/tests and runtime
-  try { if (atomicState.activeRequests == null) { atomicState.activeRequests = 0 } } catch (ignore) { }
-  try { if (state.circuitOpenUntil == null) { state.circuitOpenUntil = [:] } } catch (ignore) { }
-  def instanceId = getInstanceId()
-  def cacheKey = "instanceCache_${instanceId}"
+  // Initialize instance-level cache variables
+  private initializeInstanceCaches() {
+    // Ensure throttling counters/maps exist for CI/tests and runtime
+    try { if (atomicState.activeRequests == null) { atomicState.activeRequests = 0 } } catch (ignore) { }
+    try { if (state.circuitOpenUntil == null) { state.circuitOpenUntil = [:] } } catch (ignore) { }
+    def instanceId = getInstanceId()
+    def cacheKey = "instanceCache_${instanceId}"
   
   if (!state."${cacheKey}_initialized") {
     state."${cacheKey}_roomCache" = [:]
