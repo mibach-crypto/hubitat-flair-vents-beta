@@ -5303,7 +5303,7 @@ def calculateOpenPercentageForAllVents(rateAndTempPerVentId, String hvacMode, Bi
     try {
       def percentageOpen = MIN_PERCENTAGE_OPEN
       def vdev = getChildDevice(ventId)
-      BigDecimal __ovr = (atomicState?.roomTargetOverridesC ?.get(vdev?.getDeviceNetworkId())) as BigDecimal; BigDecimal spForVent = ((__ovr ?: (vdev?.currentValue('room-set-point-c') ?: setpoint)) as BigDecimal)
+      BigDecimal absOvr = (atomicState?.roomTargetOverridesC?.get(vdev?.getDeviceNetworkId())) as BigDecimal; BigDecimal biasC = (atomicState?.roomTargetBiasC?.get(vdev?.getDeviceNetworkId())) as BigDecimal; BigDecimal baseSp = (vdev?.currentValue('room-set-point-c') ?: setpoint) as BigDecimal; BigDecimal spForVent = (absOvr != null ? absOvr : (biasC != null ? (baseSp + biasC) : baseSp))
       boolean atSetpoint = hasRoomReachedSetpoint(hvacMode, spForVent, stateVal.temp, REBALANCING_TOLERANCE)
 
       if (closeInactive && !stateVal.active) {
