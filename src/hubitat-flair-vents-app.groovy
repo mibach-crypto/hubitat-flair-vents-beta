@@ -454,7 +454,7 @@ def setupPage() {
       }
 
           // Raw Data Cache (for diagnostics and optional DAB calculations)
-          section('Raw Data Cache') {
+          \n    section('Tools') {\n      href name: 'deviceSyncLink', title: 'Device Link Checker', description: 'Sync/create missing vents/pucks', page: 'deviceSyncPage'\n      href name: 'trendDebugLink', title: 'Trend Debug', description: 'Room-temp trend inference details', page: 'trendDebugPage'\n    }\n\n    section('Raw Data Cache') {
             input name: 'enableRawCache', type: 'bool', title: 'Enable raw data cache (24h)', defaultValue: true, submitOnChange: true
             input name: 'rawDataRetentionHours', type: 'number', title: 'Raw data retention (hours)', defaultValue: RAW_CACHE_DEFAULT_HOURS, submitOnChange: true
             input name: 'useCachedRawForDab', type: 'bool', title: 'Calculate DAB using cached raw data', defaultValue: false, submitOnChange: true
@@ -685,7 +685,7 @@ def diagnosticsPage() {
       }
       paragraph 'Copy JSON from app logs (next release will render textarea safely).'
     }
-    section('Raw Data Cache') {
+    \n    section('Tools') {\n      href name: 'deviceSyncLink', title: 'Device Link Checker', description: 'Sync/create missing vents/pucks', page: 'deviceSyncPage'\n      href name: 'trendDebugLink', title: 'Trend Debug', description: 'Room-temp trend inference details', page: 'trendDebugPage'\n    }\n\n    section('Raw Data Cache') {
       def entries = (atomicState?.rawDabSamplesEntries ?: [])
       paragraph "Raw cache enabled: ${settings?.enableRawCache == true}"
       paragraph "Entries: ${entries.size()} | Retention (h): ${settings?.rawDataRetentionHours ?: RAW_CACHE_DEFAULT_HOURS}"
@@ -6972,3 +6972,49 @@ def dabHealthMonitor() {
 
 
 
+
+
+def deviceSyncPage() {
+  dynamicPage(name: 'deviceSyncPage', title: 'Device Link Checker') {
+    section('Children vs Cloud') {
+      paragraph 'Creates any missing child vents/pucks discovered from Flair.'
+      input name: 'syncChildrenNow', type: 'button', title: 'Run Sync', submitOnChange: true
+      if (settings?.syncChildrenNow) {
+        try {
+          app.updateSetting('syncChildrenNow','')
+          getStructureDataAsync(0)
+          paragraph "\u2713 Sync started. Check logs; children will be created if missing."
+        } catch (e) {
+          paragraph "\u2717 Sync failed: "
+        }
+      }
+      def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+      def pucks = getChildDevices()?.findAll { (it.typeName ?: '').contains('puck') || !it.hasAttribute('percent-open') } ?: []
+      paragraph "Vents:  | Pucks: "
+    }
+  }
+}
+
+def trendDebugPage() {
+  dynamicPage(name: 'trendDebugPage', title: 'Trend Debug') {
+    section('Recent Room Temperature Trends') {
+      def trend = atomicState?.hvacTrend ?: [:]
+      if (!trend) { paragraph 'No trend samples collected yet.' }
+      trend.keySet().take(25).each { key ->
+        def recs = (trend[key] ?: []) as List
+        if (recs && recs.size() >= 1) {
+          def last = recs[-1]
+          def ref = recs.find { (last.ts - it.ts) >= (HVAC_TREND_WINDOW_MIN * 60 * 1000) }
+          BigDecimal delta = (ref && last?.t != null && ref?.t != null) ? ((last.t as BigDecimal) - (ref.t as BigDecimal)) : 0G
+          paragraph ": now=°C delta(m)=°C samples="
+        }
+      }
+      input name: 'clearTrendNow', type: 'button', title: 'Clear Trend Samples', submitOnChange: true
+      if (settings?.clearTrendNow) {
+        app.updateSetting('clearTrendNow','')
+        atomicState.remove('hvacTrend')
+        paragraph '\u2713 Cleared trend samples.'
+      }
+    }
+  }
+}
