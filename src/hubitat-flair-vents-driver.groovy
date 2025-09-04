@@ -22,7 +22,11 @@
 metadata {
     definition(name: 'Flair vents', namespace: 'bot.flair', author:  'Jaime Botero') {
         capability 'Refresh'
+        capability 'Actuator'
+        capability 'Sensor'
         capability 'SwitchLevel'
+        capability 'Switch'
+        capability 'Battery'
         capability 'VoltageMeasurement'
 
         attribute 'rssi', 'number'
@@ -77,6 +81,8 @@ metadata {
 
         command 'setRoomActive', [[name: 'active*', type: 'ENUM', description: 'Set room active/away', constraints: ['true', 'false']]]
         command 'setRoomSetPoint', [[name: 'temperature*', type: 'NUMBER', description: 'Set room temperature setpoint']]
+        command 'open'
+        command 'close'
     }
 
     preferences {
@@ -108,7 +114,14 @@ def setRefreshSchedule() {
     device.updateSetting('devicePoll', 3)
   }
   unschedule(settingsRefresh)
-  schedule("0 0/${devicePoll} * 1/1 * ? *", settingsRefresh)
+  try {
+    Integer minutes = (devicePoll as Integer)
+    if (minutes != null && minutes > 0) {
+      schedule("0 0/${minutes} * 1/1 * ? *", settingsRefresh)
+    } else {
+      log(1, 'Driver', 'Polling disabled (devicePoll <= 0)', device.id)
+    }
+  } catch (ignored) { }
 }
 
 def installed() {
@@ -145,6 +158,23 @@ def settingsRefresh() {
 void setLevel(level, duration=null) {
   log(1, 'Driver', "setLevel to ${level}", device.id)
   parent.patchVent(device, level)
+}
+
+def on() {
+  setLevel(100)
+}
+
+def off() {
+  // respect floor in parent/app; request 0 here
+  setLevel(0)
+}
+
+def open() {
+  setLevel(100)
+}
+
+def close() {
+  setLevel(0)
 }
 
 def getLastEventTime() {
