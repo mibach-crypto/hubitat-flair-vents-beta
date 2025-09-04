@@ -80,7 +80,7 @@ metadata {
         attribute 'room-heating-rate', 'number'
 
         command 'setRoomActive', [[name: 'active*', type: 'ENUM', description: 'Set room active/away', constraints: ['true', 'false']]]
-        command 'setRoomSetPoint', [[name: 'temperature*', type: 'NUMBER', description: 'Set room temperature setpoint']]
+        \n        // Precision control (allows fractional percent beyond SwitchLevel integer granularity)\n        command 'setOpenPercent', [[name: 'percent*', type: 'NUMBER', description: 'Set opening percent (0..100, decimal allowed)']]]
         command 'open'
         command 'close'
     }
@@ -156,7 +156,14 @@ def settingsRefresh() {
 }
 
 void setLevel(level, duration=null) {
-  log(1, 'Driver', "setLevel to ${level}", device.id)
+  // SwitchLevel typically expects integer 0..100. Normalize gently and forward.
+  BigDecimal pct
+  try { pct = (level as BigDecimal) } catch (ignored) { pct = 0G }
+  if (pct < 0) pct = 0G
+  if (pct > 100) pct = 100G
+  log(1, 'Driver', "setLevel to ${pct}", device.id)
+  parent.patchVent(device, pct)
+}", device.id)
   parent.patchVent(device, level)
 }
 
@@ -211,4 +218,15 @@ def updateParentPollingInterval(Integer intervalMinutes) {
   
   // Reschedule with new interval
   setRefreshSchedule()
+}
+
+
+
+def setOpenPercent(percent) {
+  BigDecimal pct
+  try { pct = (percent as BigDecimal) } catch (ignored) { pct = 0G }
+  if (pct < 0) pct = 0G
+  if (pct > 100) pct = 100G
+  log(1, 'Driver', "setOpenPercent to ${pct}", device.id)
+  parent.patchVent(device, pct)
 }
