@@ -126,6 +126,10 @@ import java.net.URLEncoder
 // Simple API throttling delay to prevent overwhelming the Flair API (in milliseconds).
 @Field static final Integer API_CALL_DELAY_MS = 1000 * 3
 
+// HVAC inference from room temperature trends (fallback when duct temps/thermostat are unavailable)
+@Field static final Integer HVAC_TREND_WINDOW_MIN = 3      // minutes
+@Field static final BigDecimal HVAC_TREND_THRESHOLD_C = 0.15 // C change within window to infer heat/cool
+
 // Maximum concurrent HTTP requests to prevent API overload.
 @Field static final Integer MAX_CONCURRENT_REQUESTS = 8
 
@@ -388,7 +392,8 @@ def setupPage() {
           input name: 'thermostat1', type: 'capability.thermostat', title: 'Optional: Thermostat for global setpoint', multiple: false, required: false
           input name: 'thermostat1TempUnit', type: 'enum', title: 'Units used by Thermostat', defaultValue: 2,
                 options: [1: 'Celsius (°C)', 2: 'Fahrenheit (°F)']
-          input name: 'thermostat1AdditionalStandardVents', type: 'number', title: 'Count of conventional Vents', defaultValue: 0, submitOnChange: true
+          
+          input name: 'manualHvacMode', type: 'enum', title: 'Manual HVAC mode override (no thermostat)', defaultValue: 'auto', options: ['auto', HEATING, COOLING, 'idle'], submitOnChange: trueinput name: 'thermostat1AdditionalStandardVents', type: 'number', title: 'Count of conventional Vents', defaultValue: 0, submitOnChange: true
           paragraph '<small>Enter the total number of standard (non-Flair) adjustable vents in the home associated ' +
                     'with the chosen thermostat, excluding Flair vents. This ensures the combined airflow does not drop ' +
                     'below a specified percent to prevent HVAC issues.</small>'
@@ -1268,6 +1273,8 @@ def calculateHvacMode(BigDecimal temp, BigDecimal coolingSetpoint, BigDecimal he
 // Robust HVAC mode detection using median duct-room temperature difference
 // with thermostat operating state as a fallback.
 def calculateHvacModeRobust(List ventsOverride = null) {
+  try { def override = settings?.manualHvacMode; if (override && override != 'auto') { return override } } catch (ignore) { }
+
   def vents = ventsOverride ?: getChildDevices()?.findAll {
     it.currentValue('duct-temperature-c') != null &&
     (it.currentValue('room-current-temperature-c') != null ||
@@ -1284,7 +1291,7 @@ def calculateHvacModeRobust(List ventsOverride = null) {
     return null
   }
 
-  if (!vents || vents.isEmpty()) { return (fallbackFromThermostat() ?: 'idle') }
+  if (!vents || vents.isEmpty()) { def __tm = inferHvacFromRoomTrends(ventsOverride); return (__tm ?: (fallbackFromThermostat() ?: 'idle')) }
 
   def diffs = []
   vents.each { v ->
@@ -1298,7 +1305,7 @@ def calculateHvacModeRobust(List ventsOverride = null) {
       log(4, 'DAB', "Vent ${v?.displayName ?: v?.id}: duct=${duct}C room=${room}C diff=${diff}C", v?.id)
     } catch (ignore) { }
   }
-  if (!diffs) { return (fallbackFromThermostat() ?: 'idle') }
+  if (!diffs) { def __tm = inferHvacFromRoomTrends(ventsOverride); return (__tm ?: (fallbackFromThermostat() ?: 'idle')) }
 
   // Treat any significant duct temp delta as an active cycle
   if (diffs.any { it < -DUCT_TEMP_DIFF_THRESHOLD }) { return COOLING }
@@ -1309,6 +1316,50 @@ def calculateHvacModeRobust(List ventsOverride = null) {
   BigDecimal median = sorted[sorted.size().intdiv(2)] as BigDecimal
   log(4, 'DAB', "Median duct-room temp diff=${median}C")
   return (fallbackFromThermostat() ?: 'idle')
+}
+
+// Infer HVAC mode from room temperature trends within a short window when duct temps are unavailable.
+private String inferHvacFromRoomTrends(List ventsOverride = null) {
+  try {
+    def nowMs = now()
+    def trend = atomicState?.hvacTrend ?: [:]
+    def candidates = ventsOverride ?: getChildDevices()
+    if (!candidates) { return null }
+
+    candidates.each { v ->
+      try {
+        def room = (v.currentValue('room-current-temperature-c') ?: v.currentValue('current-temperature-c') ?: v.currentValue('temperature'))
+        if (room != null) {
+          String key = (v.respondsTo('getId') ? (v.getId()?.toString()) : (v.getDeviceNetworkId()?.toString() ?: v.getLabel()?.toString() ?: UUID.randomUUID().toString()))
+          def recs = (trend[key] ?: []) as List
+          recs << [ts: nowMs, t: (room as BigDecimal)]
+          // keep last 10 minutes of samples
+          def cutoff = nowMs - (10 * 60 * 1000)
+          recs = recs.findAll { it.ts >= cutoff }
+          trend[key] = recs
+        }
+      } catch (ignore) { }
+    }
+    atomicState.hvacTrend = trend
+
+    long windowMs = (HVAC_TREND_WINDOW_MIN * 60 * 1000) as long
+    def cooling = false
+    def heating = false
+    trend.values().each { recs ->
+      try {
+        if (recs.size() < 2) { return }
+        def nowRec = recs[-1]
+        def ref = recs.find { (nowRec.ts - it.ts) >= windowMs }
+        if (!ref) { return }
+        BigDecimal delta = (nowRec.t as BigDecimal) - (ref.t as BigDecimal)
+        if (delta <= -HVAC_TREND_THRESHOLD_C) { cooling = true }
+        if (delta >= HVAC_TREND_THRESHOLD_C) { heating = true }
+      } catch (ignore) { }
+    }
+    if (cooling && !heating) { return COOLING }
+    if (heating && !cooling) { return HEATING }
+  } catch (ignoreOuter) { }
+  return null
 }
 
 void removeChildren() {
@@ -1913,6 +1964,23 @@ private List<String> getDataIssues() {
   def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') }
   if (!vents) {
     issues << 'No vents detected. Ensure devices are paired and online.'
+  } else {
+    def missingDuct = []
+    def missingRoom = []
+    def missingIds = []
+    vents.each { v ->
+      try {
+        if (v.currentValue('duct-temperature-c') == null) { missingDuct << (v.getLabel() ?: v.getDeviceNetworkId() ?: v.getId()) }
+        def roomT = (v.currentValue('room-current-temperature-c') ?: v.currentValue('current-temperature-c') ?: v.currentValue('temperature'))
+        if (roomT == null) { missingRoom << (v.getLabel() ?: v.getDeviceNetworkId() ?: v.getId()) }
+        if (!v.currentValue('room-id')) { missingIds << (v.getLabel() ?: v.getDeviceNetworkId() ?: v.getId()) }
+      } catch (ignore) { }
+    }
+    if (missingDuct) { issues << "Vents missing duct-temperature-c: ${missingDuct.join(', ')}" }
+    if (missingRoom) { issues << "Vents missing room temperature: ${missingRoom.join(', ')}" }
+    if (missingIds) { issues << "Vents missing room-id: ${missingIds.join(', ')}" }
+    def countWithBoth = vents.count { it.currentValue('duct-temperature-c') != null && ((it.currentValue('room-current-temperature-c') ?: it.currentValue('current-temperature-c') ?: it.currentValue('temperature')) != null) }
+    if (countWithBoth == 0) { issues << 'No vents provide both duct and room temperatures; HVAC inference may be limited.' }
   }
   if (!(atomicState?.roomCache)) {
     issues << 'Room data unavailable. Check network connectivity and sensors.'
@@ -6875,6 +6943,10 @@ def dabHealthMonitor() {
     try { logWarn("Health monitor error: ${e?.message}", 'DAB') } catch (ignore) { }
   }
 }
+
+
+
+
 
 
 
