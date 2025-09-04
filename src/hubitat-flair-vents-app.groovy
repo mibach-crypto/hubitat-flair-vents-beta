@@ -3060,9 +3060,27 @@ def processVentTraits(device, details) {
    }
    
    // Map system-voltage to voltage attribute for Rule Machine compatibility
-   if (details?.data?.attributes?.'system-voltage' != null) {
+   
+   // Keep switch state in sync with opening percentage for dashboards and rules
+   try {
+     def pRaw = details?.data?.attributes?.get('percent-open'); if (pRaw != null) {
+       BigDecimal p = (pRaw as BigDecimal)
+       def sw = (p > 0G) ? 'on' : 'off'
+       sendEvent(device, [name: 'switch', value: sw])
+     }
+   } catch (ignore) { }
+if (details?.data?.attributes?.'system-voltage' != null) {
      def voltage = details.data.attributes['system-voltage']
      sendEvent(device, [name: 'voltage', value: voltage, unit: 'V'])
+      // Estimate battery percentage from voltage (2.4V=0%, 3.2V=100%)
+      try {
+        BigDecimal v = (voltage as BigDecimal)
+        BigDecimal pct = ((v - 2.4G) / 0.8G) * 100G
+        if (pct < 0G) { pct = 0G }
+        if (pct > 100G) { pct = 100G }
+        sendEvent(device, [name: 'battery', value: pct.setScale(0, BigDecimal.ROUND_HALF_UP) as Integer, unit: '%'])
+      } catch (ignore) { }
+
    }
 }
 
@@ -6943,6 +6961,8 @@ def dabHealthMonitor() {
     try { logWarn("Health monitor error: ${e?.message}", 'DAB') } catch (ignore) { }
   }
 }
+
+
 
 
 
