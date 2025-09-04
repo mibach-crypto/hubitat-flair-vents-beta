@@ -454,7 +454,7 @@ def setupPage() {
       }
 
           // Raw Data Cache (for diagnostics and optional DAB calculations)
-          \n    section('Tools') {\n      href name: 'deviceSyncLink', title: 'Device Link Checker', description: 'Sync/create missing vents/pucks', page: 'deviceSyncPage'\n      href name: 'trendDebugLink', title: 'Trend Debug', description: 'Room-temp trend inference details', page: 'trendDebugPage'\n    }\n\n    section('Raw Data Cache') {
+          \n    section('Tools') {\n      href name: 'deviceSyncLink', title: 'Device Link Checker', description: 'Sync/create missing vents/pucks', page: 'deviceSyncPage'\n      href name: 'trendDebugLink', title: 'Trend Debug', description: 'Room-temp trend inference details', page: 'trendDebugPage'\n    \n      href name: 'roomTargetsLink', title: 'Room Targets', description: 'Set per-room target temps (DAB-only)', page: 'roomTargetsPage'}\n\n    section('Raw Data Cache') {
             input name: 'enableRawCache', type: 'bool', title: 'Enable raw data cache (24h)', defaultValue: true, submitOnChange: true
             input name: 'rawDataRetentionHours', type: 'number', title: 'Raw data retention (hours)', defaultValue: RAW_CACHE_DEFAULT_HOURS, submitOnChange: true
             input name: 'useCachedRawForDab', type: 'bool', title: 'Calculate DAB using cached raw data', defaultValue: false, submitOnChange: true
@@ -5303,7 +5303,7 @@ def calculateOpenPercentageForAllVents(rateAndTempPerVentId, String hvacMode, Bi
     try {
       def percentageOpen = MIN_PERCENTAGE_OPEN
       def vdev = getChildDevice(ventId)
-      BigDecimal spForVent = (vdev?.currentValue('room-set-point-c') ?: setpoint) as BigDecimal
+      BigDecimal __ovr = (atomicState?.roomTargetOverridesC ?.get(vdev?.getDeviceNetworkId())) as BigDecimal; BigDecimal spForVent = ((__ovr ?: (vdev?.currentValue('room-set-point-c') ?: setpoint)) as BigDecimal)
       boolean atSetpoint = hasRoomReachedSetpoint(hvacMode, spForVent, stateVal.temp, REBALANCING_TOLERANCE)
 
       if (closeInactive && !stateVal.active) {
@@ -7018,3 +7018,43 @@ def trendDebugPage() {
     }
   }
 }
+
+
+def roomTargetsPage() {
+  dynamicPage(name: 'roomTargetsPage', title: 'Room Targets (DAB-only)') {
+    section('Targets per Room') {
+      def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+      if (!vents) { paragraph 'No vents found.' }
+      vents.each { v ->
+        def roomId = (v.currentValue('room-id') ?: v.getDeviceNetworkId())?.toString()
+        def roomName = v.currentValue('room-name') ?: v.getLabel()
+        String key = "targetF_"
+        BigDecimal currentC = (v.currentValue('room-set-point-c') ?: 0) as BigDecimal
+        BigDecimal currentF = currentC ? ((currentC * 9/5) + 32) : null
+        input name: key, type: 'number', title: " target (°F)", required: false, defaultValue: (currentF ? currentF.setScale(1, BigDecimal.ROUND_HALF_UP) : ''), submitOnChange: false
+      }
+      input name: 'applyRoomTargetsNow', type: 'button', title: 'Apply Targets', submitOnChange: true
+      if (settings?.applyRoomTargetsNow) {
+        app.updateSetting('applyRoomTargetsNow','')
+        def overrides = [:]
+        vents.each { v ->
+          def roomId = (v.currentValue('room-id') ?: v.getDeviceNetworkId())?.toString()
+          String key = "targetF_"
+          def valF = settings?""
+          if (valF != null && valF != '') {
+            try {
+              BigDecimal f = (valF as BigDecimal)
+              BigDecimal c = (f - 32) * 5/9
+              overrides[v.getDeviceNetworkId()] = c
+              // Update device attribute so DAB picks it up immediately
+              sendEvent(v, [name: 'room-set-point-c', value: c, unit: '°C'])
+            } catch (ignore) { }
+          }
+        }
+        atomicState.roomTargetOverridesC = overrides
+        paragraph "? Applied targets for  room(s)."
+      }
+    }
+  }
+}
+
