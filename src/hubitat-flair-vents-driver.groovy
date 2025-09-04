@@ -80,7 +80,8 @@ metadata {
         attribute 'room-heating-rate', 'number'
 
         command 'setRoomActive', [[name: 'active*', type: 'ENUM', description: 'Set room active/away', constraints: ['true', 'false']]]
-        \n        // Precision control (allows fractional percent beyond SwitchLevel integer granularity)\n        command 'setOpenPercent', [[name: 'percent*', type: 'NUMBER', description: 'Set opening percent (0..100, decimal allowed)']]]
+        // Precision control (allows fractional percent beyond SwitchLevel integer granularity)
+        command 'setOpenPercent', [[name: 'percent*', type: 'NUMBER', description: 'Set opening percent (0..100, decimal allowed)']]
         command 'open'
         command 'close'
     }
@@ -163,8 +164,6 @@ void setLevel(level, duration=null) {
   if (pct > 100) pct = 100G
   log(1, 'Driver', "setLevel to ${pct}", device.id)
   parent.patchVent(device, pct)
-}", device.id)
-  parent.patchVent(device, level)
 }
 
 def on() {
