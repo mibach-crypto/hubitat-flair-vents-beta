@@ -35,7 +35,7 @@ import java.net.URLEncoder
 @Field static final Long DEVICE_CACHE_DURATION_MS = 30000 // 30 second cache duration for device readings
 @Field static final Integer MAX_CACHE_SIZE = 50 // Maximum cache entries per instance
 @Field static final Integer DEFAULT_HISTORY_RETENTION_DAYS = 10 // Default days to retain DAB history
-@Field static final Integer DAILY_SUMMARY_PAGE_SIZE = 30 // Entries per page for daily summar
+@Field static final Integer DAILY_SUMMARY_PAGE_SIZE = 30 // Entries per page for daily summary
 
 @Field static final Long LOG_RATE_LIMIT_MS = 5000 // Min ms between identical log entries
 
@@ -201,8 +201,13 @@ preferences {
   page(name: 'dabActivityLogPage')
   page(name: 'dabHistoryPage')
   page(name: 'dabProgressPage')
+  page(name: 'dabDailySummaryPage')
   page(name: 'quickControlsPage')
   page(name: 'diagnosticsPage')
+  page(name: 'exportLogsPage')
+  page(name: 'deviceSyncPage')
+  page(name: 'trendDebugPage')
+  page(name: 'roomTargetsPage')
 }
 
 def landingPage() {
@@ -454,7 +459,13 @@ def setupPage() {
       }
 
           // Raw Data Cache (for diagnostics and optional DAB calculations)
-          \n    section('Tools') {\n      href name: 'deviceSyncLink', title: 'Device Link Checker', description: 'Sync/create missing vents/pucks', page: 'deviceSyncPage'\n      href name: 'trendDebugLink', title: 'Trend Debug', description: 'Room-temp trend inference details', page: 'trendDebugPage'\n    \n      href name: 'roomTargetsLink', title: 'Room Targets', description: 'Set per-room target temps (DAB-only)', page: 'roomTargetsPage'}\n\n    section('Raw Data Cache') {
+          section('Tools') {
+            href name: 'deviceSyncLink', title: 'Device Link Checker', description: 'Sync/create missing vents/pucks', page: 'deviceSyncPage'
+            href name: 'trendDebugLink', title: 'Trend Debug', description: 'Room-temp trend inference details', page: 'trendDebugPage'
+            href name: 'roomTargetsLink', title: 'Room Targets', description: 'Set per-room target temps (DAB-only)', page: 'roomTargetsPage'
+          }
+
+          section('Raw Data Cache') {
             input name: 'enableRawCache', type: 'bool', title: 'Enable raw data cache (24h)', defaultValue: true, submitOnChange: true
             input name: 'rawDataRetentionHours', type: 'number', title: 'Raw data retention (hours)', defaultValue: RAW_CACHE_DEFAULT_HOURS, submitOnChange: true
             input name: 'useCachedRawForDab', type: 'bool', title: 'Calculate DAB using cached raw data', defaultValue: false, submitOnChange: true
@@ -685,7 +696,12 @@ def diagnosticsPage() {
       }
       paragraph 'Copy JSON from app logs (next release will render textarea safely).'
     }
-    \n    section('Tools') {\n      href name: 'deviceSyncLink', title: 'Device Link Checker', description: 'Sync/create missing vents/pucks', page: 'deviceSyncPage'\n      href name: 'trendDebugLink', title: 'Trend Debug', description: 'Room-temp trend inference details', page: 'trendDebugPage'\n    }\n\n    section('Raw Data Cache') {
+    section('Tools') {
+      href name: 'deviceSyncLink', title: 'Device Link Checker', description: 'Sync/create missing vents/pucks', page: 'deviceSyncPage'
+      href name: 'trendDebugLink', title: 'Trend Debug', description: 'Room-temp trend inference details', page: 'trendDebugPage'
+    }
+
+    section('Raw Data Cache') {
       def entries = (atomicState?.rawDabSamplesEntries ?: [])
       paragraph "Raw cache enabled: ${settings?.enableRawCache == true}"
       paragraph "Entries: ${entries.size()} | Retention (h): ${settings?.rawDataRetentionHours ?: RAW_CACHE_DEFAULT_HOURS}"
@@ -6615,9 +6631,7 @@ String buildDabDailySummaryTable() {
   }
   html << '</table>'
   html.toString()
-}
-
-// ------------------------------
+}// ------------------------------
 // End of Core Functions
 // ------------------------------
 
@@ -7006,7 +7020,7 @@ def trendDebugPage() {
           def last = recs[-1]
           def ref = recs.find { (last.ts - it.ts) >= (HVAC_TREND_WINDOW_MIN * 60 * 1000) }
           BigDecimal delta = (ref && last?.t != null && ref?.t != null) ? ((last.t as BigDecimal) - (ref.t as BigDecimal)) : 0G
-          paragraph ": now=°C delta(m)=°C samples="
+          paragraph "${key}: now=${last?.t}Â°C delta(${HVAC_TREND_WINDOW_MIN}m)=${delta}Â°C samples=${recs.size()}"
         }
       }
       input name: 'clearTrendNow', type: 'button', title: 'Clear Trend Samples', submitOnChange: true
@@ -7031,7 +7045,7 @@ def roomTargetsPage() {
         String key = "targetF_"
         BigDecimal currentC = (v.currentValue('room-set-point-c') ?: 0) as BigDecimal
         BigDecimal currentF = currentC ? ((currentC * 9/5) + 32) : null
-        input name: key, type: 'number', title: " target (°F)", required: false, defaultValue: (currentF ? currentF.setScale(1, BigDecimal.ROUND_HALF_UP) : ''), submitOnChange: false
+        input name: key, type: 'number', title: " target (ï¿½F)", required: false, defaultValue: (currentF ? currentF.setScale(1, BigDecimal.ROUND_HALF_UP) : ''), submitOnChange: false
       }
       input name: 'applyRoomTargetsNow', type: 'button', title: 'Apply Targets', submitOnChange: true
       if (settings?.applyRoomTargetsNow) {
@@ -7047,7 +7061,7 @@ def roomTargetsPage() {
               BigDecimal c = (f - 32) * 5/9
               overrides[v.getDeviceNetworkId()] = c
               // Update device attribute so DAB picks it up immediately
-              sendEvent(v, [name: 'room-set-point-c', value: c, unit: '°C'])
+              sendEvent(v, [name: 'room-set-point-c', value: c, unit: 'ï¿½C'])
             } catch (ignore) { }
           }
         }
