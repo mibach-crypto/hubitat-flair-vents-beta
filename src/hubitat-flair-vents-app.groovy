@@ -3922,10 +3922,10 @@ private Map assessOutlierForHourly(String roomId, String hvacMode, Integer hour,
     if (mad == 0) {
       // Fallback: standard deviation
       BigDecimal mean = (sorted.sum() as BigDecimal) / sorted.size()
-      BigDecimal var = 0.0
-      sorted.each { var += (it - mean) * (it - mean) }
-      var = var / Math.max(1, sorted.size() - 1)
-      BigDecimal sd = Math.sqrt(var as double)
+      BigDecimal variance = 0.0
+      sorted.each { variance += (it - mean) * (it - mean) }
+      variance = variance / Math.max(1, sorted.size() - 1)
+      BigDecimal sd = Math.sqrt(variance as double)
       if (sd == 0) { return decision }
       if ((candidate - mean).abs() > (k * sd)) {
         if ((atomicState?.outlierMode ?: 'clip') == 'reject') return [action:'reject']
@@ -6737,7 +6737,7 @@ def asyncHttpGetWrapper(resp, meta) {
 }
 
 def quickControlsPage() {
-  dynamicPage(name: 'quickControlsPage', title: '\u26A1 Quick Controls', install: false, uninstall: false) {
+  return dynamicPage(name: 'quickControlsPage', title: '\u26A1 Quick Controls', install: false, uninstall: false) {
     section('Per-Room Status & Controls') {
       def children = getChildDevices() ?: []
       children.each { d ->
