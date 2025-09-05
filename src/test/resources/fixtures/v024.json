@@ -1,0 +1,49 @@
+{
+  "exportMetadata": {
+    "version": "0.24", 
+    "exportDate": "2024-08-30T09:15:00Z",
+    "structureId": "struct-003",
+    "futureField": "forward compatibility test"
+  },
+  "efficiencyData": {
+    "globalRates": {
+      "maxCoolingRate": 2.0,
+      "maxHeatingRate": 1.8
+    },
+    "roomEfficiencies": [
+      {
+        "roomId": "room-004",
+        "roomName": "Office",
+        "ventId": "vent-004",
+        "coolingRate": 1.3,
+        "heatingRate": 1.1
+      },
+      {
+        "roomId": "room-005",
+        "roomName": "Guest Room", 
+        "ventId": "vent-005",
+        "coolingRate": 0.6,
+        "heatingRate": 0.5,
+        "newField": "should be ignored"
+      }
+    ],
+    "dabHistory": {
+      "room-004": {
+        "cooling": [
+          {"date": "2024-08-01", "hour": 8, "rate": 0.9},
+          {"date": "2024-08-01", "hour": 9, "rate": 1.1}
+        ],
+        "heating": [
+          {"date": "2024-08-01", "hour": 20, "rate": 0.8}
+        ]
+      }
+    },
+    "dabActivityLog": ["Import from v0.24", "Multiple entries", "Latest entry"],
+    "experimentalFeature": {
+      "data": "should be ignored"
+    }
+  },
+  "metadata": {
+    "extraInfo": "should be ignored"
+  }
+}

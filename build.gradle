@@ -32,6 +32,9 @@ sourceSets {
             srcDirs = ['src/test/groovy']
             // srcDirs = ['tests', 'src/test/groovy'] // Temporarily exclude old tests that need hubitat_ci
         }
+        resources {
+            srcDirs = ['src/test/resources']
+        }
     }
 }
 
