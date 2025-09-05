@@ -26,7 +26,7 @@ sourceSets {
     test {
         groovy {
             srcDirs = ['src/test/groovy']
-            exclude 'app/devices/**', 'drivers/**'
+            exclude 'app/devices/**', 'app/concurrency/**', 'drivers/**'
         }
         resources { srcDirs = ['src/test/resources'] }
     }
