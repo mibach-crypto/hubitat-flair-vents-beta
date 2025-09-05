@@ -36,9 +36,7 @@ sourceSets {
             srcDirs = ['src/test/resources']
         }
     }
-}
-
-// Skip compiling main app sources; tests load app Groovy via Hubitat CI sandbox
+}// Skip compiling main app sources; tests load app Groovy via Hubitat CI sandbox
 tasks.named('compileGroovy') {
     enabled = false
 }
@@ -199,3 +197,4 @@ dependencies {
     testImplementation 'junit:junit:4.13.2' // for @Category annotation support
     // Commented out due to network issues: testImplementation "me.biocomp.hubitat_ci:hubitat_ci:0.17" // hubitat_ci
 }
+
