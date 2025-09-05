@@ -29,7 +29,7 @@ sourceSets {
     }
     test {
         groovy {
-            srcDirs = ['tests']
+            srcDirs = ['tests', 'src/test/groovy']
         }
     }
 }
@@ -113,6 +113,35 @@ test {
     include '**/*Test.class'
     include '**/*Tests.class'
     include '**/*Spec.class'
+    
+    // Exclude slow tests from regular test runs
+    exclude '**/perf/**/*Spec.class'
+}
+
+// Task for running slow tests (including performance tests)
+task slowTest(type: Test) {
+    description = 'Runs slow tests including performance tests'
+    group = 'verification'
+    
+    ignoreFailures = true
+    finalizedBy jacocoTestReport
+    
+    // Configure JaCoCo for slow tests
+    systemProperty 'jacoco.destfile', "$buildDir/jacoco/slowTest.exec"
+    systemProperty 'jacoco.append', 'false'
+    
+    // Enable test logging for slow tests
+    testLogging {
+        events "passed", "skipped", "failed"
+        exceptionFormat "full"
+        showStandardStreams = true  // Show output for performance tests
+    }
+    
+    // Include slow tests specifically
+    include '**/perf/**/*Spec.class'
+    
+    // Ensure test discovery works properly
+    scanForTestClasses = true
 }
 
 // Allow coverage verification to be optional
@@ -153,7 +182,8 @@ dependencies {
 
     testImplementation 'org.codehaus.groovy:groovy-all:2.5.4' // groovy itself
     testImplementation "org.spockframework:spock-core:1.2-groovy-2.5" // spock framework
-    testImplementation "me.biocomp.hubitat_ci:hubitat_ci:0.17" // hubitat_ci
     testImplementation 'org.codehaus.groovy.modules.http-builder:http-builder:0.7.1' // http builder for testing
     testImplementation 'net.bytebuddy:byte-buddy:1.12.18' // for mocking
+    testImplementation 'junit:junit:4.13.2' // for @Category annotation support
+    // Commented out due to network issues: testImplementation "me.biocomp.hubitat_ci:hubitat_ci:0.17" // hubitat_ci
 }
