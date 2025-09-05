@@ -2038,8 +2038,18 @@ private logDetails(String msg, details = null, int level = 3) {
   def settingsLevel = (settings?.debugLevel as Integer) ?: 0
   if (settingsLevel == 0) { return }
   if (level >= settingsLevel) {
-    if (details) {
-      log?.debug "${msg
+    if (details != null) {
+      try {
+        log?.debug("${msg}\n${details}")
+      } catch (ignored) {
+        log?.debug("${msg} | ${details}")
+      }
+    } else {
+      log?.debug(msg)
+    }
+  }
+}
+
 // Safe device helpers for UI pages
 def getTypeNameSafe(device) {
   try { return device?.typeName } catch (ignored) {
@@ -2051,9 +2061,7 @@ def hasAttrSafe(device, String attr) {
   try { return device?.hasAttribute(attr) } catch (ignored) {
     try { return device?.currentValue(attr) != null } catch (ignored2) { return false }
   }
-}}\n${details}"
-    } else {
-      log?.debug msg
+}
     }
   }
 }
