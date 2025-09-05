@@ -26,7 +26,6 @@ sourceSets {
         }
     }
     test {
-    useJUnitPlatform()
         groovy {
             srcDirs = ['src/test/groovy/app/lifecycle', 'src/test/groovy/app/imports']
         }
