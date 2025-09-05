@@ -156,10 +156,11 @@ dependencies {
     implementation 'org.codehaus.groovy.modules.http-builder:http-builder:0.7.1'
 
     testImplementation 'org.codehaus.groovy:groovy-all:3.0.9'
-    testImplementation "org.spockframework:spock-core:2.0-groovy-3.0"`r`n    testImplementation 'org.codehaus.groovy.modules.http-builder:http-builder:0.7.1'
+    testImplementation "org.spockframework:spock-core:2.0-groovy-3.0"rn    testImplementation 'org.codehaus.groovy.modules.http-builder:http-builder:0.7.1'
     testImplementation 'net.bytebuddy:byte-buddy:1.12.18'
     testImplementation 'junit:junit:4.13.2'
 }
+
 
 
 
