@@ -27,7 +27,7 @@ sourceSets {
     }
     test {
         groovy {
-            srcDirs = ['src/test/groovy', 'tests']
+            srcDirs = ['src/test/groovy/app/lifecycle', 'src/test/groovy/app/imports']
         }
         resources {
             srcDirs = ['src/test/resources']
@@ -162,4 +162,5 @@ dependencies {
     testImplementation 'net.bytebuddy:byte-buddy:1.12.18'
     testImplementation 'junit:junit:4.13.2'
 }
+
 
