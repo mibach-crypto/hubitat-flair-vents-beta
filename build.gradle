@@ -188,7 +188,5 @@ dependencies {
 tasks.matching { it.name.toLowerCase().contains('hubitatcitest') }.configureEach { onlyIf { hasLocalHubitatCiJar } }
 
 // Compile app Groovy sources to catch syntax errors (keeps main compile disabled)
- param($m) $m.Value -replace "}\n$", "    onlyIf { (project.findProperty('syntax') == 'true') || System.getenv('SYNTAX_CHECK') == '1' }\n}\n" 
 // Make 'check' include syntaxCheck
-
 
