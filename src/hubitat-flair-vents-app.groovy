@@ -403,7 +403,8 @@ def setupPage() {
           input name: 'thermostat1TempUnit', type: 'enum', title: 'Units used by Thermostat', defaultValue: 2,
                 options: [1: 'Celsius (°C)', 2: 'Fahrenheit (°F)']
           
-          input name: 'manualHvacMode', type: 'enum', title: 'Manual HVAC mode override (no thermostat)', defaultValue: 'auto', options: ['auto', HEATING, COOLING, 'idle'], submitOnChange: trueinput name: 'thermostat1AdditionalStandardVents', type: 'number', title: 'Count of conventional Vents', defaultValue: 0, submitOnChange: true
+          input name: 'manualHvacMode', type: 'enum', title: 'Manual HVAC mode override (no thermostat)', defaultValue: 'auto', options: ['auto', HEATING, COOLING, 'idle'], submitOnChange: true
+          input name: 'thermostat1AdditionalStandardVents', type: 'number', title: 'Count of conventional Vents', defaultValue: 0, submitOnChange: true
           paragraph '<small>Enter the total number of standard (non-Flair) adjustable vents in the home associated ' +
                     'with the chosen thermostat, excluding Flair vents. This ensures the combined airflow does not drop ' +
                     'below a specified percent to prevent HVAC issues.</small>'
@@ -7131,4 +7132,5 @@ def roomTargetsPage() {
     }
   }
 }
+
 
