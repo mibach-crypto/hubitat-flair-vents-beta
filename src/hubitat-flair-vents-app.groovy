@@ -1,4 +1,12 @@
-/**
+    try {
+      def getTypeNameSafe = { d ->
+        try { return d?.typeName } catch (ignore) { try { return d?.getTypeName() } catch (ignore2) { return null } }
+      }
+      def hasAttrSafe = { d, String attr ->
+        try { return d?.hasAttribute(attr) } catch (ignore) {
+          try { return d?.currentValue(attr) != null } catch (ignore2) { return false }
+        }
+      }/**
  *  Hubitat Flair Vents Integration
  *  Version 0.239
  *
@@ -6243,10 +6251,6 @@ def efficiencyDataPage() {
     
     section {
       href name: 'backToMain', title: 'Back to Main Settings', description: 'Return to the main app configuration', page: 'landingPage'
-    } catch (Throwable e) {
-      logWarn('Failed to build Quick Controls page', 'QuickControl')
-      section('Quick Controls') { paragraph 'Unable to load Quick Controls. Please check logs.' }
-    }
     }
   }
 }
@@ -6731,7 +6735,7 @@ def quickControlsPage() {
         String driverName = d.typeName ?: 'Unknown'
         log(4, 'QuickControl', "Child device id=${d.getId()}, label='${d.getLabel()}', driver=${driverName}")
       }
-      def vents = children.findAll { (it.typeName ?: '') == 'Flair vents' || it.hasAttribute('percent-open') }
+      def vents = children.findAll { (getTypeNameSafe(it) ?: '') == 'Flair vents' || hasAttrSafe(it, 'percent-open') || hasAttrSafe(it, 'level') }
       def skipped = children.findAll { !((it.typeName ?: '') == 'Flair vents' || it.hasAttribute('percent-open')) }
       def skippedDesc = skipped.collect { d ->
         String drv = d.typeName ?: 'Unknown'
@@ -7107,3 +7111,4 @@ def roomTargetsPage() {
     }
   }
 }
+
