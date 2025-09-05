@@ -40,8 +40,6 @@ sourceSets {
             srcDirs = ['tests', 'src/test/groovy/app/devices', 'src/test/groovy/drivers']
         }
         resources { srcDirs = ['src/test/resources'] }
-        compileClasspath += sourceSets.main.output + configurations.testImplementation
-        runtimeClasspath  += output + compileClasspath + configurations.testRuntimeOnly
     }
 }
 
