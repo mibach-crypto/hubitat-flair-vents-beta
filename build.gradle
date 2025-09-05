@@ -1,3 +1,8 @@
+plugins {
+    id 'groovy'
+    id 'jacoco'
+}
+
 
 
 // Local Hubitat CI jar detection
