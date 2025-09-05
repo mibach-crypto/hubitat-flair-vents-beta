@@ -1,8 +1,3 @@
-@Grab('org.spockframework:spock-core:2.3-groovy-3.0')
-@Grab('org.objenesis:objenesis:3.3')
-@Grab('net.bytebuddy:byte-buddy:1.14.5')
-@Grab('me.biocomp:hubitat_ci:1.2.1')
-
 import spock.lang.Specification
 
 /**
