@@ -2062,9 +2062,6 @@ def hasAttrSafe(device, String attr) {
     try { return device?.currentValue(attr) != null } catch (ignored2) { return false }
   }
 }
-    }
-  }
-}
 
 def isValidResponse(resp) {
   if (!resp) {
