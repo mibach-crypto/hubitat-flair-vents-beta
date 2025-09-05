@@ -1,9 +1,8 @@
 plugins {
-    id '"'"'groovy'"'"'
-    id '"'"'jacoco'"'"'
+    id 'groovy'
+    id 'jacoco'
 }
 
-// Set Java compatibility
 java {
     toolchain {
         languageVersion = JavaLanguageVersion.of(17)
@@ -20,7 +19,6 @@ compileTestGroovy {
     targetCompatibility = JavaVersion.VERSION_17
 }
 
-// Not using standard layout, need to specify folders.
 sourceSets {
     main {
         groovy {
@@ -29,25 +27,23 @@ sourceSets {
     }
     test {
         groovy {
-            srcDirs = ['src/test/groovy']
-            // srcDirs = ['tests', 'src/test/groovy'] // Temporarily exclude old tests that need hubitat_ci
+            srcDirs = ['src/test/groovy', 'tests']
         }
         resources {
             srcDirs = ['src/test/resources']
         }
     }
-}// Skip compiling main app sources; tests load app Groovy via Hubitat CI sandbox
+}
+
 tasks.named('compileGroovy') {
     enabled = false
 }
 
-// Increase Groovy compiler verbosity to surface errors
 tasks.withType(GroovyCompile).configureEach {
     groovyOptions.verbose = true
     groovyOptions.fork = true
 }
 
-// JaCoCo configuration for code coverage with dynamic loading support
 jacoco {
     toolVersion = "0.8.8"
     reportsDirectory = file("$buildDir/reports/jacoco")
@@ -61,16 +57,13 @@ jacocoTestReport {
         csv.required = false
     }
     finalizedBy jacocoTestCoverageVerification
-    
-    // Configure for dynamic class loading
+
     sourceDirectories.from = sourceSets.main.allSource.srcDirs
     classDirectories.from = sourceSets.main.output
-    
-    // Try to collect execution data from all possible locations
+
     executionData.from = fileTree(dir: "$buildDir/jacoco", includes: ['**/*.exec'])
-    
+
     doFirst {
-        // Log debug information
         println "JaCoCo execution data files found:"
         executionData.files.each { file ->
             if (file.exists()) {
@@ -79,91 +72,70 @@ jacocoTestReport {
                 println "  - ${file.absolutePath} (NOT FOUND)"
             }
         }
-        
         println "Source directories:"
-        sourceDirectories.files.each { dir ->
-            println "  - ${dir.absolutePath}"
-        }
-        
+        sourceDirectories.files.each { dir -> println "  - ${dir.absolutePath}" }
         println "Class directories:"
-        classDirectories.files.each { dir ->
-            println "  - ${dir.absolutePath}"
-        }
+        classDirectories.files.each { dir -> println "  - ${dir.absolutePath}" }
     }
 }
 
-// Run coverage report after tests regardless of test results
 test {
-    ignoreFailures = true  // Continue build even if tests fail
+    ignoreFailures = true
     finalizedBy jacocoTestReport
-    
-    // Configure JaCoCo for better coverage tracking
+
     systemProperty 'jacoco.destfile', "$buildDir/jacoco/test.exec"
     systemProperty 'jacoco.append', 'false'
     systemProperty 'jacoco.includes', '**'
     systemProperty 'jacoco.excludes', ''
-    
-    // Enable test logging
+
     testLogging {
         events "passed", "skipped", "failed"
         exceptionFormat "full"
         showStandardStreams = false
     }
-    
-    // Ensure test discovery works properly for Spock 2.0
+
     scanForTestClasses = true
     include '**/*Test.class'
     include '**/*Tests.class'
     include '**/*Spec.class'
 
-    // Exclude slow tests from regular test runs
     exclude '**/perf/**/*Spec.class'
-    // Don't fail if no tests are discovered
     failOnNoDiscoveredTests = false
 }
 
-// Task for running slow tests (including performance tests)
 task slowTest(type: Test) {
     description = 'Runs slow tests including performance tests'
     group = 'verification'
-    
+
     ignoreFailures = true
     finalizedBy jacocoTestReport
-    
-    // Configure JaCoCo for slow tests
+
     systemProperty 'jacoco.destfile', "$buildDir/jacoco/slowTest.exec"
     systemProperty 'jacoco.append', 'false'
-    
-    // Enable test logging for slow tests
+
     testLogging {
         events "passed", "skipped", "failed"
         exceptionFormat "full"
-        showStandardStreams = true  // Show output for performance tests
+        showStandardStreams = true
     }
-    
-    // Include slow tests specifically
+
     include '**/perf/**/*Spec.class'
-    
-    // Ensure test discovery works properly
     scanForTestClasses = true
 }
 
-// Allow coverage verification to be optional
 jacocoTestCoverageVerification {
     dependsOn jacocoTestReport
     violationRules {
-        failOnViolation = false  // Don't fail build on coverage violations
+        failOnViolation = false
         rule {
-            limit {
-                minimum = 0.60  // 60% minimum coverage (warning only)
-            }
+            limit { minimum = 0.60 }
         }
         rule {
             element = 'CLASS'
             limit {
                 counter = 'LINE'
                 value = 'COVEREDRATIO'
-                minimum = 0.50  // 50% line coverage per class (warning only)
+                minimum = 0.50
             }
         }
     }
@@ -171,13 +143,8 @@ jacocoTestCoverageVerification {
 
 repositories {
     mavenCentral()
-    
-    // Try the public mavenCentral first
-    maven {
-        url 'https://repo1.maven.org/maven2/'
-    }
-
-    // hubitat_ci repository
+    maven { url 'https://repo1.maven.org/maven2/' }
+    // Optional: Azure DevOps feed for alternate hubitat_ci hosting
     maven {
         url 'https://biocomp.pkgs.visualstudio.com/HubitatCiRelease/_packaging/hubitat_ci_feed@Release/maven/v1'
     }
@@ -189,12 +156,10 @@ dependencies {
     implementation 'org.codehaus.groovy:groovy-dateutil:3.0.9'
     implementation 'org.codehaus.groovy.modules.http-builder:http-builder:0.7.1'
 
-    testImplementation 'org.codehaus.groovy:groovy-all:3.0.9' // groovy itself
-    testImplementation "org.spockframework:spock-core:2.0-groovy-3.0" // spock framework
-    // testImplementation "me.biocomp:hubitat_ci:1.2.1" // hubitat_ci - temporarily commented out
-    testImplementation 'org.codehaus.groovy.modules.http-builder:http-builder:0.7.1' // http builder for testing
-    testImplementation 'net.bytebuddy:byte-buddy:1.12.18' // for mocking
-    testImplementation 'junit:junit:4.13.2' // for @Category annotation support
-    // Commented out due to network issues: testImplementation "me.biocomp.hubitat_ci:hubitat_ci:0.17" // hubitat_ci
+    testImplementation 'org.codehaus.groovy:groovy-all:3.0.9'
+    testImplementation "org.spockframework:spock-core:2.0-groovy-3.0"
+    testImplementation "me.biocomp:hubitat_ci:1.2.1"
+    testImplementation 'org.codehaus.groovy.modules.http-builder:http-builder:0.7.1'
+    testImplementation 'net.bytebuddy:byte-buddy:1.12.18'
+    testImplementation 'junit:junit:4.13.2'
 }
-
