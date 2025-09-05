@@ -6243,6 +6243,10 @@ def efficiencyDataPage() {
     
     section {
       href name: 'backToMain', title: 'Back to Main Settings', description: 'Return to the main app configuration', page: 'landingPage'
+    } catch (Throwable e) {
+      logWarn('Failed to build Quick Controls page', 'QuickControl')
+      section('Quick Controls') { paragraph 'Unable to load Quick Controls. Please check logs.' }
+    }
     }
   }
 }
