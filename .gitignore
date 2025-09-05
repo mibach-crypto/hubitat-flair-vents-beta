@@ -18,3 +18,4 @@ node_modules/
 Thumbs.db
 # Backup files
 *.bak
+libs/*.jar
