@@ -183,3 +183,7 @@ dependencies {
     hubitatCiTestImplementation 'org.codehaus.groovy:groovy-all:3.0.21'
 }
 
+
+// Disable hubitatCiTest compile/resources tasks when local jar is absent
+tasks.matching { it.name.toLowerCase().contains('hubitatcitest') }.configureEach { onlyIf { hasLocalHubitatCiJar } }
+
