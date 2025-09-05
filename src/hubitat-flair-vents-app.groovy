@@ -820,7 +820,7 @@ def listDiscoveredDevices() {
   final String acBoosterLink = 'https://amzn.to/3QwVGbs'
   def children = getChildDevices()
   // Filter only vents by checking for percent-open attribute which pucks don't have
-  def vents = children.findAll { it.hasAttribute('percent-open') }
+  def vents = children.findAll { (getTypeNameSafe(it) ?: '') == 'Flair vents' || hasAttrSafe(it, 'percent-open') || hasAttrSafe(it, 'level') }
   BigDecimal maxCoolEfficiency = 0
   BigDecimal maxHeatEfficiency = 0
 
@@ -2039,7 +2039,19 @@ private logDetails(String msg, details = null, int level = 3) {
   if (settingsLevel == 0) { return }
   if (level >= settingsLevel) {
     if (details) {
-      log?.debug "${msg}\n${details}"
+      log?.debug "${msg
+// Safe device helpers for UI pages
+def getTypeNameSafe(device) {
+  try { return device?.typeName } catch (ignored) {
+    try { return device?.getTypeName() } catch (ignored2) { return null }
+  }
+}
+
+def hasAttrSafe(device, String attr) {
+  try { return device?.hasAttribute(attr) } catch (ignored) {
+    try { return device?.currentValue(attr) != null } catch (ignored2) { return false }
+  }
+}}\n${details}"
     } else {
       log?.debug msg
     }
@@ -7103,5 +7115,6 @@ def roomTargetsPage() {
     }
   }
 }
+
 
 
