@@ -181,5 +181,5 @@ dependencies {
     hubitatCiTestImplementation platform('org.spockframework:spock-bom:2.3-groovy-3.0')
     hubitatCiTestImplementation 'org.spockframework:spock-core'
     hubitatCiTestImplementation 'org.codehaus.groovy:groovy-all:3.0.21'
-    hubitatCiTestImplementation "me.biocomp:hubitat_ci:${findProperty('hubitatCiVersion') ?: 'LATEST'}"
 }
+
