@@ -36,6 +36,8 @@ import java.net.URLEncoder
 @Field static final Integer MAX_CACHE_SIZE = 50 // Maximum cache entries per instance
 @Field static final Integer DEFAULT_HISTORY_RETENTION_DAYS = 10 // Default days to retain DAB history
 @Field static final Integer DAILY_SUMMARY_PAGE_SIZE = 30 // Entries per page for daily summary
+@Field static final Integer ACTIVITY_LOG_PAGE_SIZE = 20
+@Field static final Integer HISTORY_PAGE_SIZE      = 50
 
 @Field static final Long LOG_RATE_LIMIT_MS = 5000 // Min ms between identical log entries
 
@@ -1023,7 +1025,7 @@ private BigDecimal getRoomTemp(def vent) {
       }
       return roomTemp
     }
-    if (settings.thermostat1TempUnit == '2') {
+    if (getTemperatureScale() == 'F') {
       temp = convertFahrenheitToCentigrade(temp)
     }
     log(2, 'App', "Got temp from ${tempDevice?.getLabel() ?: 'Unknown'} for '${roomName}': ${temp}°C")
@@ -1998,7 +2000,9 @@ private List<String> getDataIssues() {
     def countWithBoth = vents.count { it.currentValue('duct-temperature-c') != null && ((it.currentValue('room-current-temperature-c') ?: it.currentValue('current-temperature-c') ?: it.currentValue('temperature')) != null) }
     if (countWithBoth == 0) { issues << 'No vents provide both duct and room temperatures; HVAC inference may be limited.' }
   }
-  if (!(atomicState?.roomCache)) {
+  def __instId  = getInstanceId()
+  def __roomMap = state."instanceCache_${__instId}_roomCache" ?: [:]
+  if (!__roomMap || __roomMap.isEmpty()) {
     issues << 'Room data unavailable. Check network connectivity and sensors.'
   }
   return issues
@@ -2062,7 +2066,7 @@ def getDataAsync(String uri, String callback, data = null, int retryCount = 0) {
     def httpParams = [ uri: uri, headers: headers, contentType: CONTENT_TYPE, timeout: HTTP_TIMEOUT_SECS ]
 
     try {
-      asynchttpGet('asyncHttpGetWrapper', httpParams, [uri: uri, callback: callback, data: data, retryCount: retryCount, authRetry: authRetry])
+      asynchttpGet('asyncHttpGetWrapper', httpParams, [uri: uri, callback: callback, data: data, retryCount: retryCount])
     } catch (Exception e) {
       log(2, 'App', "HTTP GET exception: ${e.message}")
       // Decrement on exception since the request didn't actually happen
@@ -2130,7 +2134,7 @@ def retryGetDataAsyncWrapper(data) {
     getRoomDataWithCache(device, deviceId, isPuck)
   } else {
     // Normal retry for non-room requests
-    getDataAsync(data.uri, data.callback, data.data, data.retryCount, data.authRetry)
+    getDataAsync(data.uri, data.callback, data.data, data.retryCount)
   }
 }
 
@@ -2447,13 +2451,14 @@ def handleAllPucks(resp, data) {
 
 def handleRoomsWithPucks(resp, data) {
   decrementActiveRequests()  // Always decrement when response comes back
+  def respJson = null
   try {
     log(2, 'App', "handleRoomsWithPucks called")
-    if (!isValidResponse(resp)) { 
+    if (!isValidResponse(resp)) {
       log(2, 'App', "handleRoomsWithPucks: Invalid response status: ${resp?.getStatus()}")
-      return 
+      return
     }
-    def respJson = resp.getJson()
+    respJson = resp.getJson()
     
     // Log the structure to debug
     log(2, 'App', "handleRoomsWithPucks response: has included=${respJson?.included != null}, included count=${respJson?.included?.size() ?: 0}, has data=${respJson?.data != null}, data count=${respJson?.data?.size() ?: 0}")
@@ -3272,11 +3277,11 @@ def getStructureData(int retryCount = 0) {
   try {
     httpGet(httpParams) { resp ->
       decrementActiveRequests()
-      
-      if (!resp.success) { 
+
+      if (resp.status < 200 || resp.status >= 300) {
         throw new Exception("HTTP request failed with status: ${resp.status}")
       }
-      def response = resp.getData()
+      def response = resp.data
       if (!response) {
         logError 'getStructureData: no data'
         return
@@ -4697,7 +4702,7 @@ def finalizeRoomStates(data) {
   atomicState.maxHvacRunningTime = roundBigDecimal(
       rollingAverage(atomicState.maxHvacRunningTime ?: totalRunningMinutes, totalRunningMinutes), 6)
 
-  if (totalCycleMinutes >= MIN_MINUTES_TO_SETPOINT) {
+  if (totalCycleMinutes >= Math.max(MIN_MINUTES_TO_SETPOINT, MIN_RUNTIME_FOR_RATE_CALC)) {
     // Track room rates that have been calculated
     Map<String, BigDecimal> roomRates = [:]
     Integer hour = new Date(data.startedCycle).format('H', location?.timeZone ?: TimeZone.getTimeZone('UTC')) as Integer
@@ -5269,26 +5274,26 @@ BigDecimal applyChangeDampening(String ventId, BigDecimal rawTargetPercent, Stri
   }
 }
 
-// Helper to check if vent has anomaly flag
+// Helper to check if vent has an anomaly factor below 1.0
 def getVentAnomalyFlag(String ventId) {
   try {
     def vent = getChildDevice(ventId)
-    return vent?.currentValue('dab-anomaly-factor') ? true : false
+    def f = vent?.currentValue('dab-anomaly-factor')
+    if (f == null) return false
+    try { return (f as BigDecimal) < 1.0G } catch (ignore) { return false }
   } catch (ignore) {
     return false
   }
 }
 
-// Get anomaly factor for a specific vent
+// Get anomaly factor for a specific vent using room ID
 def getAnomalyFactorForVent(String ventId, String hvacMode) {
   try {
     def vent = getChildDevice(ventId)
     if (!vent) return 1.0
-    
-    def roomName = vent.currentValue('room-name') ?: 'Unknown'
-    Integer currentHour = new Date().format('H', location?.timeZone ?: TimeZone.getTimeZone('UTC')) as Integer
-    
-    return getAnomalyFactor(roomName, currentHour)
+    def roomId = vent.currentValue('room-id')?.toString()
+    Integer hr = new Date().format('H', location?.timeZone ?: TimeZone.getTimeZone('UTC')) as Integer
+    return roomId ? getAnomalyFactor(roomId, hr) : 1.0
   } catch (Exception e) {
     log(2, 'DAB', "Error getting anomaly factor for vent: ${e.message}")
     return 1.0
@@ -6640,21 +6645,19 @@ String buildDabDailySummaryTable() {
 // HTTP Async Callback Shims
 // ------------------------------
 
-// Some async HTTP calls are configured to use 'asyncHttpGetWrapper' as callback.
-// Provide a safe generic handler to avoid MissingMethodException and to centralize logging.
-// Hubitat passes (hubitat.scheduling.AsyncResponse response, data) where 'data' is the map
-// provided in the original asynchttpGet options.
-def asyncHttpGetWrapper(response, Map data) {
+// Wrapper for async HTTP GET responses that dispatches to the original callback
+// specified in getDataAsync. The actual callbacks handle request accounting.
+def asyncHttpGetWrapper(resp, meta) {
   try {
-    // Minimal defensive logging without assuming specific response API
-    def code = null
-    try { code = response?.status } catch (ignore) { }
-    log(3, 'HTTP', "Async GET callback for ${data?.uri ?: ''}${data?.path ?: ''} status=${code}")
-    if (code && code >= 400) {
-      recordCommandError("GET ${data?.uri ?: ''}${data?.path ?: ''}", "HTTP ${code}", 'Check network or credentials')
+    if (!meta?.callback) { return }
+    def cb = meta.callback as String
+    if (this.respondsTo(cb)) {
+      this."${cb}"(resp, meta.data)
+    } else {
+      log(1, 'App', "Missing callback '${cb}' for async response")
     }
-  } catch (Exception e) {
-    try { log(1, 'HTTP', "Async GET callback error: ${e?.message}") } catch (ignore) { }
+  } catch (e) {
+    log(1, 'App', "asyncHttpGetWrapper error: ${e.message}")
   }
 }
 
