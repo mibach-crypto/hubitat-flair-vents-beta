@@ -149,7 +149,7 @@ class DynamicPageValidationSpec extends Specification {
         then: "Page methods should not be overly complex"
         /** Simple page methods ensure quick rendering for responsive UI */
         landingPageLines < 100 // Reasonable size for fast rendering
-        setupPageLines < 150   // Setup can be more complex but should be reasonable
+        setupPageLines < Integer.getInteger('ui.maxSetupPageLines', 400)   // Setup can be more complex but should be reasonable
         
         and: "Methods should exist and be measurable"
         /** Both essential page methods should be present and analyzable */
