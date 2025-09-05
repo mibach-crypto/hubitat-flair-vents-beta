@@ -128,8 +128,14 @@ Running `gradle test` without JDKâ€¯11 results in:
 This project includes a comprehensive test suite covering all critical algorithms:
 
 ```bash
-# Run all tests
+# Run all tests (excludes slow performance tests)
 gradle test
+
+# Run slow tests including performance tests
+gradle slowTest
+
+# Run all tests including performance tests
+gradle test slowTest
 
 # Run tests with coverage report
 gradle clean test jacocoTestReport
@@ -138,6 +144,15 @@ gradle clean test jacocoTestReport
 open build/reports/tests/test/index.html
 open build/reports/jacoco/test/html/index.html
 ```
+
+### Test Categories
+
+- **Regular Tests**: Fast unit tests run by default with `gradle test`
+- **Slow Tests**: Performance tests in `src/test/groovy/perf/` marked with `@Category(SlowTest)`
+  - **VentTargetPerformanceSpec**: Tests `calculateVentTargets()` performance with 5-200 vents
+  - **PropertyBasedInputFuzzSpec**: Property-based testing of `cleanDecimalForJson()` with random inputs
+
+Use `gradle slowTest` to run performance tests that validate DAB loop timing requirements.
 
 ### Test Coverage
 
