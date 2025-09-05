@@ -100,7 +100,6 @@ test {
     include '**/*Spec.class'
 
     exclude '**/perf/**/*Spec.class'
-    failOnNoDiscoveredTests = false
 }
 
 task slowTest(type: Test) {
