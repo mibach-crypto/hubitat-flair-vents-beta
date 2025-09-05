@@ -190,3 +190,15 @@ tasks.matching { it.name.toLowerCase().contains('hubitatcitest') }.configureEach
 // Compile app Groovy sources to catch syntax errors (keeps main compile disabled)
 // Make 'check' include syntaxCheck
 
+// Compile app Groovy sources to catch syntax errors (manual)
+tasks.register("syntaxCheck", org.gradle.api.tasks.compile.GroovyCompile) {
+    description = 'Compiles Groovy sources under src/ to fail fast on syntax errors'
+    group = 'verification'
+    source = fileTree('src')
+    classpath = sourceSets.main.compileClasspath
+    destinationDir = file("$buildDir/syntaxCheck")
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+    groovyOptions.fork = true
+    onlyIf { (project.findProperty('syntax') == 'true') || System.getenv('SYNTAX_CHECK') == '1' }
+}
