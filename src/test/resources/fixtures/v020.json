@@ -1,0 +1,40 @@
+{
+  "exportMetadata": {
+    "version": "0.20",
+    "exportDate": "2024-01-15T10:30:00Z",
+    "structureId": "struct-001",
+    "oldField": "should be ignored"
+  },
+  "efficiencyData": {
+    "globalRates": {
+      "maxCoolingRate": 1.2,
+      "maxHeatingRate": 1.0
+    },
+    "roomEfficiencies": [
+      {
+        "roomId": "room-001",
+        "roomName": "Living Room",
+        "ventId": "vent-001",
+        "coolingRate": 0.8,
+        "heatingRate": 0.7,
+        "obsoleteField": "should be ignored"
+      },
+      {
+        "roomId": "room-002", 
+        "roomName": "Kitchen",
+        "ventId": "vent-002",
+        "coolingRate": 0.9,
+        "heatingRate": 0.8
+      }
+    ],
+    "dabHistory": {
+      "room-001": {
+        "cooling": [
+          {"date": "2024-01-01", "hour": 1, "rate": 0.5}
+        ]
+      }
+    },
+    "dabActivityLog": ["Import from v0.20"]
+  },
+  "unknownTopLevelField": "should be ignored"
+}

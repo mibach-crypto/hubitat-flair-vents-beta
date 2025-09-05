@@ -1,0 +1,36 @@
+{
+  "exportMetadata": {
+    "version": "0.22",
+    "exportDate": "2024-06-01T14:20:00Z",
+    "structureId": "struct-002",
+    "deprecatedSetting": "to be ignored"
+  },
+  "efficiencyData": {
+    "globalRates": {
+      "maxCoolingRate": 1.5,
+      "maxHeatingRate": 1.3,
+      "extraRate": "unknown field"
+    },
+    "roomEfficiencies": [
+      {
+        "roomId": "room-003",
+        "roomName": "Bedroom",
+        "ventId": "vent-003", 
+        "coolingRate": 1.1,
+        "heatingRate": 0.9,
+        "unknownAttribute": "should be ignored"
+      }
+    ],
+    "dabHistory": {
+      "room-003": {
+        "heating": [
+          {"date": "2024-05-15", "hour": 12, "rate": 0.7}
+        ]
+      }
+    },
+    "dabActivityLog": ["Import from v0.22", "Additional entry"],
+    "legacyData": {
+      "oldFormat": "should be ignored"
+    }
+  }
+}

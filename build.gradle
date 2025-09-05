@@ -29,7 +29,10 @@ sourceSets {
     }
     test {
         groovy {
-            srcDirs = ['tests']
+            srcDirs = ['tests', 'src/test/groovy']
+        }
+        resources {
+            srcDirs = ['src/test/resources']
         }
     }
 }
@@ -153,7 +156,7 @@ dependencies {
 
     testImplementation 'org.codehaus.groovy:groovy-all:2.5.4' // groovy itself
     testImplementation "org.spockframework:spock-core:1.2-groovy-2.5" // spock framework
-    testImplementation "me.biocomp.hubitat_ci:hubitat_ci:0.17" // hubitat_ci
+    // testImplementation "me.biocomp.hubitat_ci:hubitat_ci:0.17" // hubitat_ci - not accessible
     testImplementation 'org.codehaus.groovy.modules.http-builder:http-builder:0.7.1' // http builder for testing
     testImplementation 'net.bytebuddy:byte-buddy:1.12.18' // for mocking
 }
