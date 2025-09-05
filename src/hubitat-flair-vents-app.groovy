@@ -7095,42 +7095,11 @@ def trendDebugPage() {
 }
 
 
+
 def roomTargetsPage() {
-  dynamicPage(name: 'roomTargetsPage', title: 'Room Targets (DAB-only)') {
+  return dynamicPage(name: 'roomTargetsPage', title: 'Room Targets (DAB-only)') {
     section('Targets per Room') {
-      def vents = getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
-      if (!vents) { paragraph 'No vents found.' }
-      vents.each { v ->
-        def roomId = (v.currentValue('room-id') ?: v.getDeviceNetworkId())?.toString()
-        def roomName = v.currentValue('room-name') ?: v.getLabel()
-        String key = "targetF_"
-        BigDecimal currentC = (v.currentValue('room-set-point-c') ?: 0) as BigDecimal
-        BigDecimal currentF = currentC ? ((currentC * 9/5) + 32) : null
-        input name: key, type: 'number', title: " target (�F)", required: false, defaultValue: (currentF ? currentF.setScale(1, BigDecimal.ROUND_HALF_UP) : ''), submitOnChange: false
-      }
-      input name: 'applyRoomTargetsNow', type: 'button', title: 'Apply Targets', submitOnChange: true
-      if (settings?.applyRoomTargetsNow) {
-        app.updateSetting('applyRoomTargetsNow','')
-        def overrides = [:]
-        vents.each { v ->
-          def roomId = (v.currentValue('room-id') ?: v.getDeviceNetworkId())?.toString()
-          String key = "targetF_"
-          def valF = settings?""
-          if (valF != null && valF != '') {
-            try {
-              BigDecimal f = (valF as BigDecimal)
-              BigDecimal c = (f - 32) * 5/9
-              overrides[v.getDeviceNetworkId()] = c
-              // Update device attribute so DAB picks it up immediately
-              sendEvent(v, [name: 'room-set-point-c', value: c, unit: '�C'])
-            } catch (ignore) { }
-          }
-        }
-        atomicState.roomTargetOverridesC = overrides
-        paragraph "? Applied targets for  room(s)."
-      }
+      paragraph 'Room targets configuration is currently unavailable.'
     }
   }
 }
-
-
