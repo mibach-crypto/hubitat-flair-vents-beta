@@ -141,6 +141,9 @@ import java.net.URLEncoder
 // Consecutive failures per URI before resetting API connection.
 @Field static final Integer API_FAILURE_THRESHOLD = 3
 
+// Circuit breaker reset time (in milliseconds).
+@Field static final Integer CIRCUIT_RESET_MS = 5 * 60 * 1000  // 5 minutes
+
 // ------------------------------
 // Enhanced DAB Constants
 // ------------------------------
@@ -1898,7 +1901,7 @@ private initRequestTracking() {
   }
 }
 
-// Check if we can make a request (under concurrent limit)
+// Check if we can make a request (under concurrent limit and circuit breaker state)
 def canMakeRequest() {
   initRequestTracking()
   def currentActiveRequests = atomicState.activeRequests ?: 0
@@ -1912,6 +1915,28 @@ def canMakeRequest() {
   }
   
   return currentActiveRequests < MAX_CONCURRENT_REQUESTS
+}
+
+// Check if circuit breaker is closed (allows requests)
+def isCircuitBreakerClosed(String uri = null) {
+  try {
+    if (!state.circuitOpenUntil) return true
+    if (uri && state.circuitOpenUntil[uri]) {
+      def currentTime = now()
+      if (currentTime > state.circuitOpenUntil[uri]) {
+        // Circuit breaker timeout expired, reset it
+        state.circuitOpenUntil.remove(uri)
+        atomicState.failureCounts?.remove(uri)
+        log(2, 'App', "Circuit breaker reset for ${uri}")
+        return true
+      }
+      return false
+    }
+    return true
+  } catch (Exception e) {
+    log(4, 'Request', "Error checking circuit breaker state: ${e.message}")
+    return true
+  }
 }
 
 // Increment active request counter
@@ -2059,6 +2084,24 @@ def isValidResponse(resp) {
 // Updated getDataAsync to accept a String callback name with simple throttling.
 def getDataAsync(String uri, String callback, data = null, int retryCount = 0) {
   atomicState.failureCounts = atomicState.failureCounts ?: [:]
+  
+  // Check circuit breaker state before making request
+  if (!isCircuitBreakerClosed(uri)) {
+    if (retryCount < MAX_API_RETRY_ATTEMPTS) {
+      log(2, 'App', "Circuit breaker open for ${uri}, scheduling retry ${retryCount + 1}")
+      def retryData = [uri: uri, callback: callback, retryCount: retryCount + 1]
+      if (data?.device && uri.contains('/room')) {
+        retryData.data = [deviceId: data.device.getDeviceNetworkId()]
+      } else {
+        retryData.data = data
+      }
+      runInMillis(API_CALL_DELAY_MS, 'retryGetDataAsyncWrapper', [data: retryData])
+    } else {
+      logError "getDataAsync failed after ${MAX_API_RETRY_ATTEMPTS} retries for URI: ${uri} (circuit breaker open)"
+    }
+    return
+  }
+  
   if (canMakeRequest()) {
     atomicState.failureCounts.remove(uri)
     incrementActiveRequests()
@@ -2085,7 +2128,7 @@ def getDataAsync(String uri, String callback, data = null, int retryCount = 0) {
       runInMillis(delay, 'retryGetDataAsyncWrapper', [data: retryData])
     } else {
       logError "getDataAsync failed after ${MAX_API_RETRY_ATTEMPTS} retries for URI: ${uri}"
-      incrementFailureCount(uri)
+      recordHttpFailure(uri)
     }
   }
 }
@@ -2174,7 +2217,7 @@ def patchDataAsync(String uri, String callback, body, data = null, int retryCoun
     } else {
       logError "patchDataAsync failed after ${MAX_API_RETRY_ATTEMPTS} retries for URI: ${uri}"
       recordCommandError("PATCH ${uri}", 'Request failed after retries', 'Verify network or Flair service')
-      incrementFailureCount(uri)
+      recordHttpFailure(uri)
     }
   }
 }
@@ -2189,7 +2232,7 @@ def retryPatchDataAsyncWrapper(data) {
   patchDataAsync(data.uri, data.callback, data.body, data.data, data.retryCount)
 }
 
-private incrementFailureCount(String uri) {
+private recordHttpFailure(String uri) {
   try { if (state.circuitOpenUntil == null) { state.circuitOpenUntil = [:] } } catch (ignore) { }
 
   atomicState.failureCounts = atomicState.failureCounts ?: [:]
@@ -2197,8 +2240,8 @@ private incrementFailureCount(String uri) {
   atomicState.failureCounts[uri] = count
   if (count >= API_FAILURE_THRESHOLD) {
     def msg = "API circuit breaker activated for ${uri} after ${count} failures"
-    
-  try { state.circuitOpenUntil[uri] = now() + (5 * 60 * 1000) } catch (ignore2) { }
+    log(1, 'App', msg)
+  try { state.circuitOpenUntil[uri] = now() + CIRCUIT_RESET_MS } catch (ignore2) { }
 }
 }
 
@@ -6649,6 +6692,18 @@ String buildDabDailySummaryTable() {
 // specified in getDataAsync. The actual callbacks handle request accounting.
 def asyncHttpGetWrapper(resp, meta) {
   try {
+    // Always decrement active requests first
+    decrementActiveRequests()
+    
+    // Check for HTTP errors and record failures
+    if (resp?.hasError() || (resp?.getStatus() as int) >= 400) {
+      def uri = meta?.uri
+      if (uri) {
+        recordHttpFailure(uri)
+        log(2, 'App', "HTTP error for ${uri}: ${resp?.getStatus()} - ${resp?.getErrorMessage()}")
+      }
+    }
+    
     if (!meta?.callback) { return }
     def cb = meta.callback as String
     if (this.respondsTo(cb)) {
@@ -6658,6 +6713,8 @@ def asyncHttpGetWrapper(resp, meta) {
     }
   } catch (e) {
     log(1, 'App', "asyncHttpGetWrapper error: ${e.message}")
+    // Make sure we always decrement on error
+    decrementActiveRequests()
   }
 }
 
