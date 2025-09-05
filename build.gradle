@@ -25,7 +25,7 @@ sourceSets {
             srcDirs = ['src']
         }
     }
-    test {
+    test {`r`n    useJUnitPlatform()
         groovy {
             srcDirs = ['src/test/groovy/app/lifecycle', 'src/test/groovy/app/imports']
         }
@@ -79,7 +79,7 @@ jacocoTestReport {
     }
 }
 
-test {
+test {`r`n    useJUnitPlatform()
     ignoreFailures = true
     finalizedBy jacocoTestReport
 
