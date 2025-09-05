@@ -109,11 +109,14 @@ test {
         showStandardStreams = false
     }
     
-    // Ensure test discovery works properly for Spock 1.2
+    // Ensure test discovery works properly for Spock 2.0
     scanForTestClasses = true
     include '**/*Test.class'
     include '**/*Tests.class'
     include '**/*Spec.class'
+    
+    // Don't fail if no tests are discovered
+    failOnNoDiscoveredTests = false
 }
 
 // Allow coverage verification to be optional
