@@ -7105,5 +7105,3 @@ def roomTargetsPage() {
 
 }
 
-}
-
