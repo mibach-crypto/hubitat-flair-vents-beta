@@ -1,12 +1,3 @@
-    try {
-      def getTypeNameSafe = { d ->
-        try { return d?.typeName } catch (ignore) { try { return d?.getTypeName() } catch (ignore2) { return null } }
-      }
-      def hasAttrSafe = { d, String attr ->
-        try { return d?.hasAttribute(attr) } catch (ignore) {
-          try { return d?.currentValue(attr) != null } catch (ignore2) { return false }
-        }
-      }/**
  *  Hubitat Flair Vents Integration
  *  Version 0.239
  *
