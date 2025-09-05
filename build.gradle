@@ -1,7 +1,7 @@
-plugins {
-    id 'groovy'
-    id 'jacoco'
-}
+
+
+// Local Hubitat CI jar detection
+def hasLocalHubitatCiJar = file('libs').exists() && file('libs').listFiles()?.any { it.name.toLowerCase().startsWith('hubitat_ci') && it.name.endsWith('.jar') }
 
 java {
     toolchain {
@@ -119,7 +119,7 @@ tasks.register('hubitatCiTest', Test) {
     testClassesDirs = sourceSets.hubitatCiTest.output.classesDirs
     classpath       = sourceSets.hubitatCiTest.runtimeClasspath
     useJUnitPlatform()
-    onlyIf { (findProperty('azurePAT') ?: System.getenv('AZURE_PAT')) }
+    onlyIf { hasLocalHubitatCiJar }
 }
 
 // Optional slow tests
@@ -157,6 +157,10 @@ repositories {
 }
 
 dependencies {
+    if (hasLocalHubitatCiJar) {
+        def localJar = file('libs').listFiles().find { it.name.toLowerCase().startsWith('hubitat_ci') && it.name.endsWith('.jar') }
+        hubitatCiTestImplementation files(localJar)
+    }
     implementation 'org.apache.commons:commons-io:1.3.2'
     implementation 'org.codehaus.groovy:groovy-all:3.0.9'
     implementation 'org.codehaus.groovy:groovy-dateutil:3.0.9'
