@@ -1,17 +1,15 @@
 /*
  *  Library: DabUIManager (UI layer)
- *  Namespace: yourns.dab
+ *  Namespace: bot.flair
  */
 library(
-  author: "Your Name",
+  author: "Jaime Botero",
   category: "utilities",
   description: "Dynamic Airflow Balancing UI helpers",
   name: "DabUIManager",
-  namespace: "yourns.dab",
+  namespace: "bot.flair",
   documentationLink: ""
 )
-
-// No classes here—just functions that use `app` and call the DabManager functions.
 
 // =================================================================================
 // UI Page Definitions
@@ -19,7 +17,7 @@ library(
 
 /** Renders the DAB Activity Log page. */
 def dabActivityLogPage() {
-    return app.dynamicPage(name: 'dabActivityLogPage', title: 'DAB Activity Log', install: false, uninstall: false) {
+    app.dynamicPage(name: 'dabActivityLogPage', title: 'DAB Activity Log', install: false, uninstall: false) {
         section {
             def entries = app.atomicState?.dabActivityLog ?: []
             if (entries) {
@@ -28,25 +26,20 @@ def dabActivityLogPage() {
                 paragraph 'No activity yet.'
             }
         }
-        section {
-            href name: 'backToMain', title: 'Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
-        }
     }
 }
 
 /** Renders the DAB Rates Table page with async loading. */
 def dabRatesTablePage() {
-    return app.dynamicPage(name: 'dabRatesTablePage', title: 'Hourly DAB Rates Table', install: false, uninstall: false) {
+    app.dynamicPage(name: 'dabRatesTablePage', title: 'Hourly DAB Rates Table', install: false, uninstall: false) {
         section {
             input name: 'tableHvacMode', type: 'enum', title: 'HVAC Mode', required: false, submitOnChange: true,
                     options: [ 'cooling': 'Cooling', 'heating': 'Heating', 'both': 'Both' ]
 
             try {
-                def prevMode = app.atomicState?.prev_tableHvacMode
-                def nowMode = app.settings?.tableHvacMode
-                if (prevMode != nowMode) {
+                if (app.atomicState?.prev_tableHvacMode != app.settings?.tableHvacMode) {
                     app.state.remove('dabRatesTableHtml')
-                    app.atomicState.prev_tableHvacMode = nowMode
+                    app.atomicState.prev_tableHvacMode = app.settings?.tableHvacMode
                 }
             } catch (ignore) { }
 
@@ -57,38 +50,28 @@ def dabRatesTablePage() {
                 paragraph app.state.dabRatesTableHtml
             }
         }
-        section {
-            href name: 'backToMain', title: 'Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
-        }
     }
 }
 
 /** Renders the DAB Chart page. */
 def dabChartPage() {
-    return app.dynamicPage(name: 'dabChartPage', title: 'Hourly DAB Rates', install: false, uninstall: false) {
+    app.dynamicPage(name: 'dabChartPage', title: 'Hourly DAB Rates', install: false, uninstall: false) {
         section {
             input name: 'chartHvacMode', type: 'enum', title: 'HVAC Mode', required: false, submitOnChange: true,
-                    options: [ 'cooling': 'Cooling', 'heating': 'Heating', 'both': 'Both' ]
+                    options: [ 'cooling': 'Cooling', 'heating': 'Heating' ]
             paragraph buildDabChart()
-        }
-        section {
-            href name: 'backToMain', title: 'Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
         }
     }
 }
 
 /** Renders the DAB Progress page. */
 def dabProgressPage() {
-    return app.dynamicPage(name: 'dabProgressPage', title: 'DAB Progress', install: false, uninstall: false) {
+    app.dynamicPage(name: 'dabProgressPage', title: 'DAB Progress', install: false, uninstall: false) {
         section {
             def vents = app.getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
-            boolean hasVents = vents && vents.size() > 0
-            
-            if (hasVents) {
+            if (vents) {
                 Map roomOptions = vents.collectEntries { v -> [(v.currentValue('room-id') ?: v.getId()): (v.currentValue('room-name') ?: v.getLabel())] }
                 input name: 'progressRoom', type: 'enum', title: 'Room', required: false, submitOnChange: true, options: roomOptions
-            } else {
-                paragraph '<p>No vents available. Add vents to use DAB Progress.</p>'
             }
 
             input name: 'progressHvacMode', type: 'enum', title: 'HVAC Mode', required: false, submitOnChange: true,
@@ -97,45 +80,35 @@ def dabProgressPage() {
             input name: 'progressEnd', type: 'date', title: 'End Date', required: false, submitOnChange: true
 
             try {
-                def prevRoom = app.atomicState?.prev_progressRoom
-                def nowRoom = app.settings?.progressRoom
-                if (prevRoom != nowRoom) {
+                if (app.atomicState?.prev_progressRoom != app.settings?.progressRoom) {
                     app.state.remove('dabProgressTableHtml')
-                    app.atomicState.prev_progressRoom = nowRoom
+                    app.atomicState.prev_progressRoom = app.settings?.progressRoom
                 }
             } catch (ignore) { }
 
-            if (hasVents) {
-                if (!app.state.dabProgressTableHtml) {
-                    paragraph 'Loading...'
-                    app.runInMillis(100, 'buildDabProgressTableWrapper', [data: [overwrite: true]])
-                } else {
-                    paragraph app.state.dabProgressTableHtml
-                }
+            if (!app.state.dabProgressTableHtml) {
+                paragraph 'Loading...'
+                app.runInMillis(100, 'buildDabProgressTableWrapper', [data: [overwrite: true]])
+            } else {
+                paragraph app.state.dabProgressTableHtml
             }
-        }
-        section {
-            href name: 'backToMain', title: 'Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
         }
     }
 }
 
 /** Renders the DAB Daily Summary page. */
 def dabDailySummaryPage() {
-    return app.dynamicPage(name: 'dabDailySummaryPage', title: 'Daily DAB Summary', install: false, uninstall: false) {
+    app.dynamicPage(name: 'dabDailySummaryPage', title: 'Daily DAB Summary', install: false, uninstall: false) {
         section {
             input name: 'dailySummaryPage', type: 'number', title: 'Page', required: false, defaultValue: 1, submitOnChange: true
             paragraph buildDabDailySummaryTable()
-        }
-        section {
-            href name: 'backToMain', title: 'Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
         }
     }
 }
 
 /** Renders the DAB Live Diagnostics page. */
 def dabLiveDiagnosticsPage() {
-    return app.dynamicPage(name: 'dabLiveDiagnosticsPage', title: 'DAB Live Diagnostics', install: false, uninstall: false) {
+    app.dynamicPage(name: 'dabLiveDiagnosticsPage', title: 'DAB Live Diagnostics', install: false, uninstall: false) {
         section('Controls') {
             input name: 'runDabDiagnostic', type: 'button', title: 'Run DAB Calculation Now', submitOnChange: true
             if (app.settings?.runDabDiagnostic) {
@@ -153,41 +126,23 @@ def dabLiveDiagnosticsPage() {
 
 /** Backup & Restore page. */
 def efficiencyDataPage() {
-    def vents = app.getChildDevices().findAll { it.hasAttribute('percent-open') }
-    def roomsWithData = vents.findAll { (it.currentValue('room-cooling-rate') ?: 0) > 0 || (it.currentValue('room-heating-rate') ?: 0) > 0 }
-    
-    def exportJsonData = ""
-    if (roomsWithData.size() > 0) {
-        try {
-            def efficiencyData = exportEfficiencyData()
-            exportJsonData = generateEfficiencyJSON(efficiencyData)
-        } catch (Exception e) {
-            app.log(2, 'App', "Error generating export data: ${e.message}")
+    app.dynamicPage(name: 'efficiencyDataPage', title: 'Backup & Restore Efficiency Data', install: false, uninstall: false) {
+        section("Export") {
+            input name: 'exportEfficiencyData', type: 'button', title: 'Generate Backup', submitOnChange: true
+            if (app.settings.exportEfficiencyData) {
+                app.handleExportEfficiencyData()
+                app.updateSetting('exportEfficiencyData', false)
+            }
+            if (app.state.exportJsonData) {
+                input name: 'efficiencyJson', type: 'textarea', title: 'Backup Data (copy this)', value: app.state.exportJsonData, required: false
+            }
         }
-    }
-
-    return app.dynamicPage(name: 'efficiencyDataPage', title: 'Backup & Restore Efficiency Data', install: false, uninstall: false) {
-        section {
-            paragraph '<div style="background-color: #f0f8ff; padding: 15px; border-left: 4px solid #007bff; margin-bottom: 20px;"><h3 style="margin-top: 0; color: #0056b3;">What is this?</h3><p style="margin-bottom: 0;">Your Flair vents learn how efficiently each room heats and cools over time. This data helps the system optimize energy usage. Use this page to backup your data before app updates or restore it after system resets.</p></div>'
-        }
-
-        section("Step 2: Restore Your Data (Import)") {
-            input name: 'importJsonData', type: 'textarea', title: 'Paste JSON Backup Data', required: false, submitOnChange: false
-            input name: 'importEfficiencyData', type: 'button', title: 'Restore My Data', submitOnChange: true
-            if (app.settings?.importEfficiencyData) { 
-                handleImportEfficiencyData()
+        section("Import") {
+            input name: 'importJsonData', type: 'textarea', title: 'Paste Backup Data', required: false
+            input name: 'importEfficiencyData', type: 'button', title: 'Restore Data', submitOnChange: true
+            if (app.settings.importEfficiencyData) {
+                app.handleImportEfficiencyData()
                 app.updateSetting('importEfficiencyData', false)
-            }
-            if (app.state?.importStatus) { 
-                paragraph app.state.importStatus 
-            }
-        }
-
-        section("Maintenance") {
-            input name: 'clearDabDataNow', type: 'button', title: 'Clear All DAB Data', submitOnChange: true
-            if (app.settings?.clearDabDataNow) { 
-                handleClearDabData()
-                app.updateSetting('clearDabDataNow', false)
             }
         }
     }
@@ -198,145 +153,177 @@ def efficiencyDataPage() {
 // =================================================================================
 
 def buildDabChart() {
-    try {
-        def vents = app.getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
-        if (!vents) { return '<p>No vents available. Add vents to view charts.</p>' }
-        return '<p>No chart data yet. Let the system run a few cycles to collect DAB rates.</p>'
-    } catch (ignore) {
-        return '<p>Unable to render chart at the moment.</p>'
+    def hvacMode = app.settings?.chartHvacMode ?: 'cooling'
+    def vents = app.getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+    if (!vents) { return '<p>No vents available.</p>' }
+
+    def data = [:]
+    vents.each { vent ->
+        def roomId = vent.currentValue('room-id')
+        def roomName = vent.currentValue('room-name') ?: vent.getLabel()
+        if (roomId && !data[roomName]) {
+            data[roomName] = [:]
+            (0..23).each { hour ->
+                def rate = getAverageHourlyRate(roomId, hvacMode, hour)
+                data[roomName][hour] = app.roundBigDecimal(rate, 4)
+            }
+        }
     }
+
+    if (data.isEmpty()) { return '<p>No data to display.</p>' }
+
+    def series = data.collect { roomName, hourlyData ->
+        def rates = hourlyData.sort { it.key }.collect { it.value }
+        "{ name: '${roomName}', data: ${rates} }"
+    }.join(',')
+
+    return """
+        <div id="dab-chart" style="width:100%; height:400px;"></div>
+        <script src="https://code.highcharts.com/highcharts.js"></script>
+        <script>
+            Highcharts.chart('dab-chart', {
+                title: { text: 'Hourly DAB Rates (${hvacMode})' },
+                xAxis: { categories: ${(0..23).collect { "'${it}'" }} },
+                yAxis: { title: { text: 'Rate (°C/min)' } },
+                series: [${series}]
+            });
+        </script>
+    """
 }
 
 def buildDabRatesTable(Map data) {
-    try {
-        def mode = app.settings?.tableHvacMode ?: 'both'
-        def html = new StringBuilder()
-        html << "<p><b>HVAC Mode:</b> ${mode}</p>"
-        html << "<p>No hourly rates available yet. After a few HVAC cycles, rates will appear here.</p>"
-        app.state.dabRatesTableHtml = html.toString()
-        return app.state.dabRatesTableHtml
-    } catch (ignore) {
-        app.state.dabRatesTableHtml = '<p>Error building rates table.</p>'
+    app.initializeDabHistory()
+    def hist = app.atomicState?.dabHistory
+    def vents = app.getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+    Map roomNames = vents.collectEntries { v -> [(v.currentValue('room-id') ?: v.getId()): (v.currentValue('room-name') ?: v.getLabel())] }
+    String hvacMode = app.settings?.tableHvacMode ?: 'both'
+    def modes = hvacMode == 'both' ? ['cooling', 'heating'] : [hvacMode]
+
+    def hourlyRates = hist?.hourlyRates ?: [:]
+    if (hourlyRates.isEmpty()) {
+        app.state.dabRatesTableHtml = '<p>No hourly rates available yet.</p>'
         return app.state.dabRatesTableHtml
     }
+
+    def html = new StringBuilder()
+    html << "<table class='standard-table'>"
+    html << "<tr><th>Room</th><th>Mode</th>"
+    (0..23).each { hr -> html << "<th class='right-align'>${hr}</th>" }
+    html << "</tr>"
+
+    hourlyRates.each { roomId, modeMap ->
+        modes.each { mode ->
+            if (modeMap[mode]) {
+                html << "<tr><td>${roomNames[roomId] ?: roomId}</td><td>${mode}</td>"
+                (0..23).each { hour ->
+                    def rates = modeMap[mode][hour.toString()] ?: []
+                    def avg = rates ? (rates.sum() / rates.size()) : 0
+                    html << "<td class='right-align'>${app.roundBigDecimal(avg, 4)}</td>"
+                }
+                html << "</tr>"
+            }
+        }
+    }
+    html << "</table>"
+    app.state.dabRatesTableHtml = html.toString()
+    return app.state.dabRatesTableHtml
 }
 
 def buildDabProgressTable(Map data) {
-    try {
-        def roomOpt = app.settings?.progressRoom ?: '(none)'
-        def mode = app.settings?.progressHvacMode ?: 'both'
-        def html = new StringBuilder()
-        html << "<p><b>Room:</b> ${roomOpt} | <b>HVAC Mode:</b> ${mode}</p>"
-        html << "<p>No progress data yet. Run a few heating/cooling cycles to populate this view.</p>"
-        app.state.dabProgressTableHtml = html.toString()
-        return app.state.dabProgressTableHtml
-    } catch (ignore) {
-        app.state.dabProgressTableHtml = '<p>Error building progress table.</p>'
-        return app.state.dabProgressTableHtml
-    }
+    // Implementation in main app file
+    app.state.dabProgressTableHtml = app.buildDabProgressTable()
+    return app.state.dabProgressTableHtml
 }
 
 def buildDabDailySummaryTable() {
-    try {
-        return '<p>No daily statistics available yet. Data will appear after the first day of operation.</p>'
-    } catch (ignore) {
-        return '<p>Unable to render daily summary at the moment.</p>'
-    }
+    // Implementation in main app file
+    return app.buildDabDailySummaryTable()
 }
 
 def renderDabDiagnosticResults() {
-    try {
-        def results = app.state?.dabDiagnosticResult
-        if (!results) { return '<p>No diagnostic results to display.</p>' }
-        def sb = new StringBuilder()
-        sb << '<h3>DAB Diagnostic</h3>'
-        if (results instanceof Map && results.inputs) {
-            sb << '<p>Inputs captured. Final results will include calculations once available.</p>'
-        } else if (results instanceof Map && results.message) {
-            sb << "<p>${results.message}</p>"
-        } else {
-            sb << '<p>Diagnostic data present but not formatted for display.</p>'
-        }
-        return sb.toString()
-    } catch (ignore) {
-        return '<p>Error rendering diagnostic results.</p>'
+    def results = app.state?.dabDiagnosticResult
+    if (!results) { return '<p>No diagnostic results to display.</p>' }
+
+    def sb = new StringBuilder()
+    sb << '<h3>Inputs</h3>'
+    sb << "<p><b>HVAC Mode:</b> ${results.inputs.hvacMode}</p>"
+    sb << "<p><b>Global Setpoint:</b> ${app.roundBigDecimal(results.inputs.globalSetpoint, 2)} &deg;C</p>"
+    sb << '<h4>Room Data</h4>'
+    sb << "<table class='standard-table'><tr><th>Room</th><th>Temp (&deg;C)</th><th>Rate</th></tr>"
+    results.inputs.rooms.each { roomId, roomData ->
+        sb << "<tr><td>${roomData.name}</td><td>${app.roundBigDecimal(roomData.temp, 2)}</td><td>${app.roundBigDecimal(roomData.rate, 4)}</td></tr>"
     }
+    sb << '</table>'
+
+    sb << '<h3>Calculations</h3>'
+    sb << "<p><b>Longest Time to Target:</b> ${app.roundBigDecimal(results.calculations.longestTimeToTarget, 2)} minutes</p>"
+    sb << '<h4>Initial Vent Positions</h4>'
+    sb << "<table class='standard-table'><tr><th>Vent</th><th>Position</th></tr>"
+    results.calculations.initialVentPositions?.each { ventId, pos ->
+        def vent = app.getChildDevice(ventId)
+        sb << "<tr><td>${vent?.getLabel()}</td><td>${app.roundBigDecimal(pos, 1)}%</td></tr>"
+    }
+    sb << '</table>'
+
+    sb << '<h3>Adjustments</h3>'
+    sb << '<h4>Minimum Airflow Adjustments</h4>'
+    sb << "<table class='standard-table'><tr><th>Vent</th><th>Position</th></tr>"
+    results.adjustments.minimumAirflowAdjustments?.each { ventId, pos ->
+        def vent = app.getChildDevice(ventId)
+        sb << "<tr><td>${vent?.getLabel()}</td><td>${app.roundBigDecimal(pos, 1)}%</td></tr>"
+    }
+    sb << '</table>'
+
+    sb << '<h3>Final Output</h3>'
+    sb << '<h4>Final Vent Positions</h4>'
+    sb << "<table class='standard-table'><tr><th>Vent</th><th>Position</th></tr>"
+    results.finalOutput.finalVentPositions?.each { ventId, pos ->
+        def vent = app.getChildDevice(ventId)
+        sb << "<tr><td>${vent?.getLabel()}</td><td>${app.roundToNearestMultiple(pos)}%</td></tr>"
+    }
+    sb << '</table>'
+    return sb.toString()
 }
 
 def handleImportEfficiencyData() {
     try {
-        app.log(2, 'App', 'Starting efficiency data import')
-        app.state.remove('importStatus')
         def jsonData = app.settings.importJsonData
         if (!jsonData?.trim()) { 
             app.state.importStatus = 'No JSON data provided.'
             return 
         }
         
-        def result = importEfficiencyData(jsonData.trim())
-        if (result.success) {
-            app.state.importStatus = "Import successful! Updated ${result.roomsUpdated} rooms."
-            app.updateSetting('importJsonData', '')
-        } else {
-            app.state.importStatus = "Import failed: ${result.error}"
-            app.logError "Import failed: ${result.error}"
+        def data = new groovy.json.JsonSlurper().parseText(jsonData)
+        if (!data.efficiencyData) {
+            app.state.importStatus = 'Invalid data format.'
+            return
         }
+
+        data.efficiencyData.roomEfficiencies?.each { roomData ->
+            def vent = app.getChildDevices().find { it.currentValue('room-id') == roomData.roomId }
+            if (vent) {
+                app.sendEvent(vent, [name: 'room-cooling-rate', value: roomData.coolingRate])
+                app.sendEvent(vent, [name: 'room-heating-rate', value: roomData.heatingRate])
+            }
+        }
+        if (data.efficiencyData.dabHistory) {
+            app.atomicState.dabHistory = data.efficiencyData.dabHistory
+        }
+        app.state.importStatus = 'Import successful!'
     } catch (e) {
         app.state.importStatus = "Import failed: ${e.message}"
-        app.logError "Import exception: ${e.message}"
     }
 }
 
 def handleClearDabData() {
-    // Call into the logic library function (must exist there)
-    handleClearDabData()
-}
-
-private generateEfficiencyJSON(data) {
-    def exportData = [
-        exportMetadata: [
-            version: '0.239', 
-            exportDate: new Date().format("yyyy-MM-dd'T'HH:mm:ss'Z'"), 
-            structureId: app.settings.structureId ?: 'Unknown'
-        ], 
-        efficiencyData: data
-    ]
-    return groovy.json.JsonOutput.toJson(exportData)
-}
-
-private importEfficiencyData(jsonContent) {
-    try {
-        def jsonData = new groovy.json.JsonSlurper().parseText(jsonContent)
-        if (!validateImportData(jsonData)) { return [success: false, error: 'Invalid data format.'] }
-        def results = applyImportedEfficiencies(jsonData.efficiencyData)
-        return [success: true, roomsUpdated: results.roomsUpdated]
-    } catch (Exception e) {
-        return [success: false, error: e.message]
-    }
-}
-
-private applyImportedEfficiencies(efficiencyData) {
-    def results = [roomsUpdated: 0]
-    efficiencyData.roomEfficiencies?.each { roomData ->
-        def device = matchDeviceByRoomId(roomData.roomId) ?: matchDeviceByRoomName(roomData.roomName)
-        if (device) {
-            app.sendEvent(device, [name: 'room-cooling-rate', value: roomData.coolingRate])
-            app.sendEvent(device, [name: 'room-heating-rate', value: roomData.heatingRate])
-            results.roomsUpdated++
+    app.atomicState.remove('dabHistory')
+    app.atomicState.remove('dabEwma')
+    app.atomicState.remove('dabDailyStats')
+    app.atomicState.remove('dabActivityLog')
+    app.getChildDevices().each {
+        if (it.hasAttribute('room-cooling-rate')) {
+            app.sendEvent(it, [name: 'room-cooling-rate', value: 0])
+            app.sendEvent(it, [name: 'room-heating-rate', value: 0])
         }
     }
-    if (efficiencyData.dabHistory) { app.atomicState.dabHistory = efficiencyData.dabHistory }
-    return results
-}
-
-private boolean validateImportData(jsonData) {
-    return jsonData.exportMetadata && jsonData.efficiencyData && jsonData.efficiencyData.roomEfficiencies
-}
-
-private def matchDeviceByRoomId(roomId) {
-    return app.getChildDevices().find { it.hasAttribute('percent-open') && it.currentValue('room-id') == roomId }
-}
-
-private def matchDeviceByRoomName(roomName) {
-    return app.getChildDevices().find { it.hasAttribute('percent-open') && it.currentValue('room-name') == roomName }
 }

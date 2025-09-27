@@ -1,13 +1,13 @@
 /*
  *  Library: DabManager (core logic)
- *  Namespace: yourns.dab
+ *  Namespace: bot.flair
  */
 library(
-  author: "Your Name",
+  author: "Jaime Botero",
   category: "utilities",
   description: "Dynamic Airflow Balancing core logic",
   name: "DabManager",
-  namespace: "yourns.dab",
+  namespace: "bot.flair",
   documentationLink: ""
 )
 
@@ -312,16 +312,11 @@ def calculateHvacModeRobust() {
         (it.currentValue('room-current-temperature-c') != null || it.currentValue('current-temperature-c') != null)
     }
 
-    def fallbackFromThermostat = {
-        try {
-            String op = app.settings?.thermostat1?.currentValue('thermostatOperatingState')?.toString()?.toLowerCase()
-            if (op in ['heating', 'pending heat']) { return HEATING }
-            if (op in ['cooling', 'pending cool']) { return COOLING }
-        } catch (ignore) { }
-        return null
+    if (!vents || vents.isEmpty()) {
+        def fallback = _fallbackFromThermostat()
+        if (fallback != null) { return fallback }
+        return 'idle'
     }
-
-    if (!vents || vents.isEmpty()) { return (fallbackFromThermostat() ?: 'idle') }
 
     def diffs = []
     vents.each { v ->
@@ -332,25 +327,442 @@ def calculateHvacModeRobust() {
         } catch (ignore) { }
     }
 
-    if (!diffs) { return (fallbackFromThermostat() ?: 'idle') }
-    
+    if (diffs.isEmpty()) {
+        def fallback = _fallbackFromThermostat()
+        if (fallback != null) { return fallback }
+        return 'idle'
+    }
+
     def sorted = diffs.sort()
     BigDecimal median = sorted[sorted.size().intdiv(2)] as BigDecimal
-    
+
     if (median > DUCT_TEMP_DIFF_THRESHOLD) { return HEATING }
     if (median < -DUCT_TEMP_DIFF_THRESHOLD) { return COOLING }
-    return (fallbackFromThermostat() ?: 'idle')
+
+    def fallback = _fallbackFromThermostat()
+    if (fallback != null) { return fallback }
+    return 'idle'
 }
 
-// --- Diagnostics placeholder ---
-def runDabDiagnostic() {
+private def _fallbackFromThermostat() {
     try {
-        app.state.dabDiagnosticResult = [
-            timestamp: new Date().format('yyyy-MM-dd HH:mm:ss', app.location?.timeZone ?: TimeZone.getTimeZone('UTC')),
-            message: 'No diagnostic data available yet. Let the system run a few cycles.'
-        ]
+        String op = app.settings?.thermostat1?.currentValue('thermostatOperatingState')?.toString()?.toLowerCase()
+        if (op in ['heating', 'pending heat']) { return HEATING }
+        if (op in ['cooling', 'pending cool']) { return COOLING }
     } catch (ignore) { }
+    return null
 }
 
-// NOTE: other helpers referenced above (e.g., getAverageHourlyRate, appendHourlyRate, etc.)
-// must exist somewhere in your app/libraries. Missing ones will fail at runtime.
+def runDabDiagnostic() {
+    def results = [:]
+    String hvacMode = calculateHvacModeRobust() ?: 'idle'
+    BigDecimal globalSp = getGlobalSetpoint(hvacMode)
+    results.inputs = [ hvacMode: hvacMode, globalSetpoint: globalSp, rooms: [:] ]
+    def vents = app.getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+    vents.each { vent ->
+        try {
+            def roomId = vent.currentValue('room-id')?.toString()
+            if (roomId && !results.inputs.rooms[roomId]) {
+                results.inputs.rooms[roomId] = [
+                    name: vent.currentValue('room-name') ?: roomId,
+                    temp: vent.currentValue('room-current-temperature-c'),
+                    rate: getAverageHourlyRate(roomId, hvacMode, (new Date().format('H', app.location?.timeZone ?: TimeZone.getTimeZone('UTC')) as Integer))
+                ]
+            }
+        } catch (ignore) { }
+    }
+    def ventsByRoomId = [:]
+    vents.each { v ->
+        try {
+            def rid = v.currentValue('room-id')?.toString()
+            if (!rid) { return }
+            def list = ventsByRoomId[rid] ?: []
+            list << v.getDeviceNetworkId()
+            ventsByRoomId[rid] = list
+        } catch (ignore) { }
+    }
+    def rateAndTempPerVentId = getAttribsPerVentIdWeighted(ventsByRoomId, hvacMode)
+    def longestTimeToTarget = calculateLongestMinutesToTarget(rateAndTempPerVentId, hvacMode, globalSp, (app.atomicState.maxHvacRunningTime ?: MAX_MINUTES_TO_SETPOINT), app.settings.thermostat1CloseInactiveRooms)
+    def initialPositions = calculateOpenPercentageForAllVents(rateAndTempPerVentId, hvacMode, globalSp, longestTimeToTarget, app.settings.thermostat1CloseInactiveRooms)
+    def minAirflowAdjusted = adjustVentOpeningsToEnsureMinimumAirflowTarget(rateAndTempPerVentId, hvacMode, initialPositions, app.settings.thermostat1AdditionalStandardVents)
+    def finalPositions = applyOverridesAndFloors(minAirflowAdjusted)
+    results.calculations = [ longestTimeToTarget: longestTimeToTarget, initialVentPositions: initialPositions ]
+    results.adjustments = [ minimumAirflowAdjustments: minAirflowAdjusted ]
+    results.finalOutput = [ finalVentPositions: finalPositions ]
+    app.state.dabDiagnosticResult = results
+}
+
+// =================================================================================
+// Helper Methods
+// =================================================================================
+
+/** Records the starting temperature for all rooms. */
+def recordStartingTemperatures() {
+    if (!app.atomicState.ventsByRoomId) { return }
+    app.atomicState.ventsByRoomId.each { roomId, ventIds ->
+        ventIds.each { ventId ->
+            def vent = app.getChildDevice(ventId)
+            if (vent) {
+                def temp = getRoomTemp(vent)
+                app.sendEvent(vent, [name: 'room-starting-temperature-c', value: temp])
+            }
+        }
+    }
+}
+
+/** Calculates the rate of temperature change for a room. */
+def calculateRoomChangeRate(BigDecimal startingTemp, BigDecimal currentTemp, BigDecimal minutes, int percentOpen, BigDecimal currentRate) {
+    if (minutes < MIN_RUNTIME_FOR_RATE_CALC) {
+        return currentRate
+    }
+    if (percentOpen == 0) {
+        return 0
+    }
+    def tempChange = (currentTemp - startingTemp).abs()
+    if (tempChange < MIN_DETECTABLE_TEMP_CHANGE) {
+        return currentRate
+    }
+
+    def rate = (tempChange / minutes) * (100 / percentOpen)
+    return Math.min(MAX_TEMP_CHANGE_RATE, Math.max(MIN_TEMP_CHANGE_RATE, rate))
+}
+
+/** Retrieves attributes for each vent, weighted by user settings. */
+def getAttribsPerVentIdWeighted(ventsByRoomId, hvacMode) {
+    def rateAndTempPerVentId = [:]
+    def rateProp = (hvacMode == COOLING) ? 'room-cooling-rate' : 'room-heating-rate'
+
+    ventsByRoomId.each { roomId, ventIds ->
+        def roomTotalWeight = 0
+        def roomVents = []
+        ventIds.each { ventId ->
+            def vent = app.getChildDevice(ventId)
+            if (vent) {
+                def weight = app.settings?."vent${ventId}Weight" ?: 1.0
+                roomVents << [vent: vent, weight: (weight as BigDecimal)]
+                roomTotalWeight += (weight as BigDecimal)
+            }
+        }
+
+        ventIds.each { ventId ->
+            def vent = app.getChildDevice(ventId)
+            if (vent) {
+                def temp = getRoomTemp(vent)
+                def rate = vent.currentValue(rateProp) ?: 0
+                def weight = app.settings?."vent${ventId}Weight" ?: 1.0
+                def weightedRate = roomTotalWeight > 0 ? (rate * (weight / roomTotalWeight)) : rate
+
+                rateAndTempPerVentId[ventId] = [
+                    temp: temp,
+                    rate: weightedRate > 0 ? weightedRate : MIN_TEMP_CHANGE_RATE,
+                    isActive: vent.currentValue('room-active') == 'true'
+                ]
+            }
+        }
+    }
+    return rateAndTempPerVentId
+}
+
+/** Calculates the longest time for any room to reach its target temperature. */
+def calculateLongestMinutesToTarget(rateAndTempPerVentId, hvacMode, setpoint, maxHvacRunningTime, closeInactiveRooms) {
+    BigDecimal longestTime = 0
+    rateAndTempPerVentId.each { ventId, attribs ->
+        if (closeInactiveRooms && !attribs.isActive) { return }
+        if (hasRoomReachedSetpoint(hvacMode, setpoint, attribs.temp)) { return }
+
+        def tempDiff = (setpoint - attribs.temp).abs()
+        def timeToTarget = (tempDiff / attribs.rate).abs()
+        if (timeToTarget > longestTime) {
+            longestTime = timeToTarget
+        }
+    }
+    return Math.min(longestTime, maxHvacRunningTime)
+}
+
+/** Calculates the ideal opening percentage for all vents. */
+def calculateOpenPercentageForAllVents(rateAndTempPerVentId, hvacMode, setpoint, longestTimeToTarget, closeInactiveRooms) {
+    def calcPercentOpen = [:]
+    rateAndTempPerVentId.each { ventId, attribs ->
+        if (closeInactiveRooms && !attribs.isActive) {
+            calcPercentOpen[ventId] = 0
+            return
+        }
+        if (hasRoomReachedSetpoint(hvacMode, setpoint, attribs.temp)) {
+            calcPercentOpen[ventId] = 0
+            return
+        }
+
+        def tempDiff = (setpoint - attribs.temp).abs()
+        def requiredRate = longestTimeToTarget > 0 ? (tempDiff / longestTimeToTarget) : 0
+        def percentOpen = attribs.rate > 0 ? (requiredRate / attribs.rate) * 100 : 0
+
+        calcPercentOpen[ventId] = Math.min(100, Math.max(0, percentOpen))
+    }
+    return calcPercentOpen
+}
+
+/** Adjusts vent openings to ensure a minimum safe airflow. */
+def adjustVentOpeningsToEnsureMinimumAirflowTarget(rateAndTempPerVentId, hvacMode, calcPercentOpen, additionalStandardVents) {
+    BigDecimal totalVentCapacity = rateAndTempPerVentId.size() + (additionalStandardVents ?: 0)
+    if (totalVentCapacity == 0) return calcPercentOpen
+
+    BigDecimal minCombinedFlow = MIN_COMBINED_VENT_FLOW
+    BigDecimal currentTotalFlow = (calcPercentOpen.values().sum() + ((additionalStandardVents ?: 0) * app.STANDARD_VENT_DEFAULT_OPEN)) / totalVentCapacity
+
+    if (currentTotalFlow >= minCombinedFlow) {
+        return calcPercentOpen
+    }
+
+    def adjustableVents = calcPercentOpen.findAll { it.value < 100 }
+    if (adjustableVents.isEmpty()) {
+        return calcPercentOpen
+    }
+
+    int iterations = 0
+    while (currentTotalFlow < minCombinedFlow && iterations < MAX_ITERATIONS) {
+        BigDecimal shortfall = minCombinedFlow - currentTotalFlow
+        BigDecimal totalProportion = 0
+        def proportions = [:]
+
+        adjustableVents.each { ventId, percentOpen ->
+            def attribs = rateAndTempPerVentId[ventId]
+            if (attribs) {
+                def tempDiff = (getGlobalSetpoint(hvacMode) - attribs.temp).abs()
+                proportions[ventId] = tempDiff
+                totalProportion += tempDiff
+            }
+        }
+
+        if (totalProportion == 0) { break }
+
+        proportions.each { ventId, proportion ->
+            def increment = (proportion / totalProportion) * shortfall * INCREMENT_PERCENTAGE
+            calcPercentOpen[ventId] += increment
+            if (calcPercentOpen[ventId] > 100) {
+                calcPercentOpen[ventId] = 100
+            }
+        }
+        currentTotalFlow = (calcPercentOpen.values().sum() + ((additionalStandardVents ?: 0) * app.STANDARD_VENT_DEFAULT_OPEN)) / totalVentCapacity
+        iterations++
+    }
+    return calcPercentOpen
+}
+
+/** Applies manual overrides and minimum opening floors. */
+def applyOverridesAndFloors(Map percentOpenings) {
+    def finalPositions = [:]
+    def overrides = app.atomicState?.manualOverrides ?: [:]
+    int floorPct = app.settings?.allowFullClose ? 0 : (app.settings?.minVentFloorPercent ?: 0)
+
+    percentOpenings.each { ventId, percent ->
+        if (overrides[ventId] != null) {
+            finalPositions[ventId] = overrides[ventId]
+        } else {
+            finalPositions[ventId] = Math.max(floorPct, percent as int)
+        }
+    }
+    return finalPositions
+}
+
+/** Gets the average hourly rate of temperature change for a room. */
+def getAverageHourlyRate(String roomId, String hvacMode, Integer hour) {
+    def rates = getHourlyRates(roomId, hvacMode, hour)
+    if (!rates || rates.isEmpty()) { return 0 }
+    return rates.sum() / rates.size()
+}
+
+/** Appends a new hourly rate measurement to the history. */
+def appendHourlyRate(String roomId, String hvacMode, Integer hour, BigDecimal newRate) {
+    if (newRate == null || newRate <= 0) { return }
+    app.initializeDabHistory()
+    def hist = app.atomicState?.dabHistory ?: [entries:[], hourlyRates:[:]]
+
+    if (app.settings?.enableOutlierRejection) {
+        def assessment = assessOutlierForHourly(roomId, hvacMode, hour, newRate)
+        if (assessment.action == 'reject') { return }
+        if (assessment.action == 'clip') { newRate = assessment.value }
+    }
+    if (app.settings?.enableEwma) {
+        newRate = updateEwmaRate(roomId, hvacMode, hour, newRate)
+    }
+
+    try {
+        def entries = (hist.entries ?: []) as List
+        entries << [app.now(), roomId, hvacMode, hour, newRate]
+        hist.entries = entries
+    } catch(ignore) {}
+
+    try {
+        def roomRates = hist.hourlyRates[roomId] ?: [:]
+        def modeRates = roomRates[hvacMode] ?: [:]
+        def hourRates = modeRates[hour.toString()] ?: []
+        hourRates << newRate
+        modeRates[hour.toString()] = hourRates
+        roomRates[hvacMode] = modeRates
+        hist.hourlyRates[roomId] = roomRates
+    } catch(ignore) {}
+
+    app.atomicState.dabHistory = hist
+}
+
+/** Retrieves all stored rates for a specific room, HVAC mode, and hour. */
+def getHourlyRates(String roomId, String hvacMode, Integer hour) {
+    app.initializeDabHistory()
+    def hist = app.atomicState?.dabHistory
+    Integer retention = app.getRetentionDays()
+    Long cutoff = app.now() - retention * 24L * 60L * 60L * 1000L
+    def entries = (hist instanceof List) ? hist : (hist?.entries ?: [])
+    def list = entries.findAll { entry ->
+        try {
+            return entry[1] == roomId && entry[2] == hvacMode && entry[3] == (hour as Integer) && (entry[0] as Long) >= cutoff
+        } catch (ignore) { return false }
+    }*.get(4).collect { it as BigDecimal }
+    if (list && list.size() > 0) { return list }
+    try {
+        def rates = hist?.hourlyRates?.get(roomId)?.get(hvacMode)?.get(hour.toString()) ?: []
+        return rates.collect { it as BigDecimal }
+    } catch (ignore) {
+        return []
+    }
+}
+
+/** Gets the temperature for a room, preferring a dedicated sensor. */
+def getRoomTemp(def vent) {
+    def ventId = vent.getId()
+    def roomName = vent.currentValue('room-name') ?: 'Unknown'
+    def tempDevice = app.settings."vent${ventId}Thermostat"
+    if (app.settings?.useCachedRawForDab) {
+        def samp = app.getLatestRawSample(vent.getDeviceNetworkId())
+        if (samp && samp.size() >= 6) {
+            def roomC = samp[5]
+            if (roomC != null) { return roomC as BigDecimal }
+        }
+    }
+    if (tempDevice) {
+        def temp = tempDevice.currentValue('temperature')
+        if (temp == null) {
+            def roomTemp = vent.currentValue('room-current-temperature-c') ?: 0
+            return roomTemp
+        }
+        if (app.settings.thermostat1TempUnit == '2') {
+            temp = convertFahrenheitToCentigrade(temp)
+        }
+        return temp
+    }
+    def roomTemp = vent.currentValue('room-current-temperature-c')
+    if (roomTemp == null) {
+        return 0
+    }
+    return roomTemp
+}
+
+/** Gets the global setpoint, falling back to room medians if no thermostat. */
+def getGlobalSetpoint(String hvacMode) {
+    try {
+        def sp = getThermostatSetpoint(hvacMode)
+        if (sp != null) { return sp }
+    } catch (ignore) { }
+    def vents = app.getChildDevices()?.findAll { it.hasAttribute('percent-open') } ?: []
+    def list = vents.collect { it.currentValue('room-set-point-c') }.findAll { it != null }.collect { it as BigDecimal }
+    if (list && list.size() > 0) {
+        def sorted = list.sort()
+        int mid = sorted.size().intdiv(2)
+        return sorted[mid] as BigDecimal
+    }
+    return (hvacMode == COOLING ? DEFAULT_COOLING_SETPOINT_C : DEFAULT_HEATING_SETPOINT_C)
+}
+
+/** Gets the setpoint from the main thermostat. */
+def getThermostatSetpoint(String hvacMode) {
+    if (!app.settings?.thermostat1) {
+        return null
+    }
+    def thermostat = app.settings.thermostat1
+    BigDecimal setpoint
+    if (hvacMode == COOLING) {
+        setpoint = thermostat?.currentValue('coolingSetpoint')
+        if (setpoint != null) { setpoint -= SETPOINT_OFFSET }
+    } else {
+        setpoint = thermostat?.currentValue('heatingSetpoint')
+        if (setpoint != null) { setpoint += SETPOINT_OFFSET }
+    }
+    if (setpoint == null) {
+        setpoint = thermostat?.currentValue('thermostatSetpoint')
+    }
+    if (setpoint == null) {
+        return null
+    }
+    if (app.settings.thermostat1TempUnit == '2') {
+        setpoint = convertFahrenheitToCentigrade(setpoint)
+    }
+    return setpoint
+}
+
+/** Checks if a room has reached its setpoint. */
+def hasRoomReachedSetpoint(String hvacMode, BigDecimal setpoint, BigDecimal currentTemp, BigDecimal offset = 0) {
+    (hvacMode == COOLING && currentTemp <= setpoint - offset) ||
+    (hvacMode == HEATING && currentTemp >= setpoint + offset)
+}
+
+/** Converts Fahrenheit to Celsius. */
+def convertFahrenheitToCentigrade(BigDecimal tempValue) {
+    (tempValue - 32) * (5 / 9)
+}
+
+private Map assessOutlierForHourly(String roomId, String hvacMode, Integer hour, BigDecimal candidate) {
+    def decision = [action: 'accept']
+    try {
+        def list = getHourlyRates(roomId, hvacMode, hour) ?: []
+        if (!list || list.size() < 4) { return decision }
+        def sorted = list.collect { it as BigDecimal }.sort()
+        BigDecimal median = sorted[sorted.size().intdiv(2)]
+        def deviations = sorted.collect { (it - median).abs() }
+        def devSorted = deviations.sort()
+        BigDecimal mad = devSorted[devSorted.size().intdiv(2)]
+        BigDecimal k = ((app.atomicState?.outlierThresholdMad ?: 3) as BigDecimal)
+        if (mad == 0) {
+            BigDecimal mean = (sorted.sum() as BigDecimal) / sorted.size()
+            BigDecimal sd = Math.sqrt(sorted.collect { (it - mean).pow(2) }.sum() / Math.max(1, sorted.size() - 1))
+            if (sd == 0) { return decision }
+            if ((candidate - mean).abs() > (k * sd)) {
+                if ((app.atomicState?.outlierMode ?: 'clip') == 'reject') return [action:'reject']
+                BigDecimal bound = mean + (candidate > mean ? k * sd : -(k * sd))
+                return [action:'clip', value: bound]
+            }
+        } else {
+            BigDecimal scale = 1.4826 * mad
+            if ((candidate - median).abs() > (k * scale)) {
+                if ((app.atomicState?.outlierMode ?: 'clip') == 'reject') return [action:'reject']
+                BigDecimal bound = median + (candidate > median ? k * scale : -(k * scale))
+                return [action:'clip', value: bound]
+            }
+        }
+    } catch (ignore) { }
+    return decision
+}
+
+private BigDecimal updateEwmaRate(String roomId, String hvacMode, Integer hour, BigDecimal newRate) {
+    try {
+        def map = app.atomicState?.dabEwma ?: [:]
+        def room = map[roomId] ?: [:]
+        def mode = room[hvacMode] ?: [:]
+        BigDecimal prev = (mode[hour as Integer]) as BigDecimal
+        BigDecimal alpha = computeEwmaAlpha()
+        BigDecimal updated = (prev == null) ? newRate : (alpha * newRate + (1 - alpha) * prev)
+        mode[hour as Integer] = app.cleanDecimalForJson(updated)
+        room[hvacMode] = mode
+        map[roomId] = room
+        app.atomicState.dabEwma = map
+        return mode[hour as Integer] as BigDecimal
+    } catch (ignore) { return newRate }
+}
+
+private BigDecimal computeEwmaAlpha() {
+    try {
+        BigDecimal hlDays = (app.atomicState?.ewmaHalfLifeDays ?: 3) as BigDecimal
+        if (hlDays <= 0) { return 1.0 }
+        BigDecimal N = hlDays
+        BigDecimal alpha = 1 - Math.pow(2.0, (-1.0 / N.toDouble()))
+        return (alpha as BigDecimal)
+    } catch (ignore) { return 0.2 }
+}
