@@ -5379,7 +5379,7 @@ private List getChildDevicesForImport() {
     if (override instanceof Closure) {
       def viaClosure = override.call()
       if (viaClosure instanceof Collection) { return viaClosure as List }
-      if (viaClosure?.getClass()?.isArray()) { return viaClosure as List }
+      if (viaClosure instanceof Object[]) { return viaClosure as List }
     }
   } catch (ignore0) { }
   try {
@@ -5388,24 +5388,24 @@ private List getChildDevicesForImport() {
       try {
         def viaMethod = mm.invoke(this, [] as Object[])
         if (viaMethod instanceof Collection && !viaMethod.isEmpty()) { return viaMethod as List }
-        if (viaMethod?.getClass()?.isArray() && viaMethod.length > 0) { return viaMethod as List }
+        if (viaMethod instanceof Object[] && viaMethod.length > 0) { return viaMethod as List }
       } catch (ignoreMethod) { }
     }
   } catch (ignoreMethods) { }
   try {
     def dynamicResult = this.metaClass?.invokeMethod(this, 'getChildDevices', [] as Object[])
     if (dynamicResult instanceof Collection) { return dynamicResult as List }
-    if (dynamicResult?.getClass()?.isArray()) { return dynamicResult as List }
+    if (dynamicResult instanceof Object[]) { return dynamicResult as List }
   } catch (ignore) { }
   try {
     def direct = getChildDevices()
     if (direct instanceof Collection) { return direct as List }
-    if (direct?.getClass()?.isArray()) { return direct as List }
+    if (direct instanceof Object[]) { return direct as List }
   } catch (ignore2) { }
   try {
     def allChildren = getAllChildDevices()
     if (allChildren instanceof Collection) { return allChildren as List }
-    if (allChildren?.getClass()?.isArray()) { return allChildren as List }
+    if (allChildren instanceof Object[]) { return allChildren as List }
   } catch (ignore3) { }
   return []
 }
@@ -5414,7 +5414,7 @@ private String normalizeImportInput(rawValue) {
   if (rawValue == null) { return null }
   if (rawValue instanceof CharSequence) { return rawValue.toString() }
   try {
-    if (rawValue.getClass()?.name == 'me.biocomp.hubitat_ci.validation.UnvalidatedInput') {
+    if (rawValue?.toString()?.contains('UnvalidatedInput')) {
       def maybeValue = null
       try { maybeValue = rawValue?.value } catch (ignore2) { }
       if (maybeValue != null) { return maybeValue.toString() }
