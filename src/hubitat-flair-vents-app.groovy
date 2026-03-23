@@ -342,11 +342,9 @@ def mainPage() {
         if (state.flairAccessToken && !state.authError) {
           paragraph "<span style='color: green;'>Authenticated successfully</span>"
         } else if (state.authError && !state.authInProgress) {
-          section {
-            paragraph "<span style='color: red;'>${state.authError}</span>"
-            input name: 'retryAuth', type: 'button', title: 'Retry Authentication', submitOnChange: true
-            paragraph "<small>If authentication continues to fail, verify your credentials are correct and try again.</small>"
-          }
+          paragraph "<span style='color: red;'>${state.authError}</span>"
+          input name: 'retryAuth', type: 'button', title: 'Retry Authentication', submitOnChange: true
+          paragraph "<small>If authentication continues to fail, verify your credentials are correct and try again.</small>"
         } else if (state.authInProgress) {
           paragraph "<span style='color: orange;'>Authenticating... Please wait.</span>"
           paragraph "<small>This may take 10-15 seconds. The page will refresh automatically when complete.</small>"
@@ -423,9 +421,9 @@ def mainPage() {
           // Mirror to atomicState for CI-safe access in methods
           try { atomicState.dabHistoryRetentionDays = (settings?.dabHistoryRetentionDays ?: DEFAULT_HISTORY_RETENTION_DAYS) as Integer } catch (ignore) { }
 
-          if (settings.thermostat1AdditionalStandardVents < 0) {
+          if (settings.thermostat1AdditionalStandardVents != null && settings.thermostat1AdditionalStandardVents < 0) {
             app.updateSetting('thermostat1AdditionalStandardVents', 0)
-          } else if (settings.thermostat1AdditionalStandardVents > MAX_STANDARD_VENTS) {
+          } else if (settings.thermostat1AdditionalStandardVents != null && settings.thermostat1AdditionalStandardVents > MAX_STANDARD_VENTS) {
             app.updateSetting('thermostat1AdditionalStandardVents', MAX_STANDARD_VENTS)
           }
 
@@ -452,12 +450,6 @@ def mainPage() {
             input name: 'clearManualOverrides', type: 'button', title: 'Clear Manual Overrides', submitOnChange: true
             if (settings?.applyNightOverrideNow) { activateNightOverride(); app.updateSetting('applyNightOverrideNow','') }
             if (settings?.clearManualOverrides) { clearAllManualOverrides(); app.updateSetting('clearManualOverrides','') }
-          }
-
-          // Polling intervals (registered so validators accept settings reads)
-          section('Polling Intervals') {
-            input name: 'pollingIntervalActive', type: 'number', title: 'Active HVAC polling interval (minutes)', defaultValue: 1, submitOnChange: true
-            input name: 'pollingIntervalIdle', type: 'number', title: 'Idle polling interval (minutes)', defaultValue: 10, submitOnChange: true
           }
 
       // Dashboard tiles
@@ -931,7 +923,7 @@ def resetCaches() {
    'pendingRoomRequests', 'pendingDeviceRequests', 'initialized'].each { suffix ->
     state.remove("${cacheKey}_${suffix}")
   }
-  log 'Instance caches cleared', 2
+  log(2, 'App', 'Instance caches cleared')
 }
 
 // ------------------------------
@@ -1271,8 +1263,8 @@ def cleanDecimalForJson(def value) {
       return 0.0d
     }
 
-    // Apply aggressive rounding to exactly 10 decimal places
-    def multiplier = 1000000000.0d  // 10^9 for 10 decimal places
+    // Apply aggressive rounding to 9 decimal places
+    def multiplier = 1000000000.0d  // 10^9 for 9 decimal places
     def rounded = Math.round(doubleValue * multiplier) / multiplier
 
     // Ensure we return a clean Double, not BigDecimal
@@ -1292,7 +1284,7 @@ int roundToNearestMultiple(BigDecimal num) {
 
 
 def convertFahrenheitToCentigrade(BigDecimal tempValue) {
-  (tempValue - 32) * (5 / 9)
+  (tempValue - 32) * (5.0 / 9.0)
 }
 
 def rollingAverage(BigDecimal currentAverage, BigDecimal newNumber, BigDecimal weight = 1, int numEntries = 10) {
@@ -1566,9 +1558,6 @@ private getInstanceId() {
 // Initialize instance-level cache variables
 private initializeInstanceCaches() {
   // Ensure throttling counters/maps exist for CI/tests and runtime
-  try { if (atomicState.activeRequests == null) { atomicState.activeRequests = 0 } } catch (ignore) { }
-  try { if (state.circuitOpenUntil == null) { state.circuitOpenUntil = [:] } } catch (ignore) { }
-// Ensure throttling counters/maps exist for CI/tests and runtime
   try { if (atomicState.activeRequests == null) { atomicState.activeRequests = 0 } } catch (ignore) { }
   try { if (state.circuitOpenUntil == null) { state.circuitOpenUntil = [:] } } catch (ignore) { }
   def instanceId = getInstanceId()
@@ -1952,17 +1941,6 @@ def decrementActiveRequests() {
 private void logError(String msg, String module = 'App', String correlationId = null) {
   int settingsLevel = (settings?.debugLevel as Integer) ?: 0
   try { log?.error "${msg}" } catch (ignore) { }
-  try {
-    if (log && !log.metaClass.respondsTo(log, 'getErrorMessages')) {
-      log.metaClass.getErrorMessages = { ->
-        try {
-          def recs = delegate.records ?: []
-          return recs.findAll { it && it.size() > 1 && it[0]?.toString()?.toLowerCase() == 'error' }
-                     .collect { it[1]?.toString() }
-        } catch (ignore2) { return [] }
-      }
-    }
-  } catch (ignore3) { }
   if (settingsLevel > 0) {
     boolean __verbose = false
     try { __verbose = (atomicState?.verboseLogging == true) } catch (ignore4) { }
@@ -2510,6 +2488,7 @@ def handleRoomsWithPucks(resp, data) {
 
   // Also check if pucks are in the room data relationships
   try {
+    def respJson = resp?.getJson()
     if (respJson?.data) {
       def roomPuckCount = 0
       respJson.data.each { room ->
@@ -2692,9 +2671,14 @@ def getDeviceDataWithCache(device, deviceId, deviceType, callback) {
   def cachedData = getCachedDeviceReading(cacheKey)
   if (cachedData) {
     log(3, 'App', "Using cached ${deviceType} data for device ${deviceId}")
-    // Process the cached data
-    if (callback == 'handlePuckGet') {
-      handlePuckGet([getJson: { cachedData }], [device: device])
+    // Process cached data directly without going through handler (avoids extra decrementActiveRequests)
+    if (callback == 'handlePuckGet' && cachedData?.data) {
+      def puckData = cachedData.data
+      if (puckData?.attributes?.'current-temperature-c' != null) {
+        def tempC = puckData.attributes['current-temperature-c']
+        def tempF = (tempC * 9.0/5.0) + 32
+        sendEvent(device, [name: 'temperature', value: tempF, unit: 'F'])
+      }
     }
     return
   }
@@ -2721,11 +2705,25 @@ def getDeviceReadingWithCache(device, deviceId, deviceType, callback) {
   def cachedData = getCachedDeviceReading(cacheKey)
   if (cachedData) {
     log(3, 'App', "Using cached ${deviceType} reading for device ${deviceId}")
-    // Process the cached data
-    if (callback == 'handlePuckReadingGet') {
-      handlePuckReadingGet([getJson: { cachedData }], [device: device])
-    } else if (callback == 'handleDeviceGet') {
-      handleDeviceGet([getJson: { cachedData }], [device: device])
+    // Process cached data directly to avoid calling handlers that would decrement active requests counter
+    try {
+      if (cachedData?.data?.attributes) {
+        def attrs = cachedData.data.attributes
+        if (callback == 'handlePuckReadingGet') {
+          if (attrs.'room-temperature-c' != null) {
+            def tempC = attrs['room-temperature-c']
+            def tempF = (tempC * 9.0/5.0) + 32
+            sendEvent(device, [name: 'temperature', value: tempF, unit: 'F'])
+          }
+          if (attrs.humidity != null) {
+            sendEvent(device, [name: 'humidity', value: attrs.humidity, unit: '%'])
+          }
+        } else if (callback == 'handleDeviceGet') {
+          processVentTraits(device, cachedData)
+        }
+      }
+    } catch (e) {
+      log(2, 'App', "Error processing cached reading for ${deviceId}: ${e?.message}")
     }
     return
   }
@@ -2752,6 +2750,7 @@ def handleRoomGet(resp, data) {
 
 // Modified handleRoomGet to include caching
 def handleRoomGetWithCache(resp, data) {
+  decrementActiveRequests()  // Always decrement when response comes back
   def roomData = null
   def roomId = null
 
@@ -2897,6 +2896,7 @@ def handleDeviceGet(resp, data) {
 
 // Modified handleDeviceGet to include caching
 def handleDeviceGetWithCache(resp, data) {
+  decrementActiveRequests()  // Always decrement when response comes back
   def deviceData = null
   def cacheKey = data?.cacheKey
 
@@ -2965,6 +2965,7 @@ def handlePuckGet(resp, data) {
 }
 
 // Modified handlePuckGet to include caching
+// NOTE: No decrementActiveRequests here - the base handlePuckGet handles it
 def handlePuckGetWithCache(resp, data) {
   def deviceData = null
   def cacheKey = data?.cacheKey
@@ -3023,6 +3024,7 @@ def handlePuckReadingGet(resp, data) {
 }
 
 // Modified handlePuckReadingGet to include caching
+// NOTE: No decrementActiveRequests here - the base handlePuckReadingGet handles it
 def handlePuckReadingGetWithCache(resp, data) {
   def deviceData = null
   def cacheKey = data?.cacheKey
@@ -3058,7 +3060,7 @@ def traitExtract(device, details, String propNameData, String propNameDriver = p
     }
     log(1, 'App', "Extracted: ${propNameData} = ${propValue}")
   } catch (err) {
-    logWarn err
+    logWarn err?.message ?: err.toString()
   }
 }
 
@@ -3072,6 +3074,10 @@ def processVentTraits(device, details) {
    'percent-open', 'duct-temperature-c', 'motor-run-time', 'system-voltage', 'motor-current',
    'has-buzzed', 'updated-at', 'inactive'].each { attr ->
       traitExtract(device, details, attr, attr == 'percent-open' ? 'level' : attr, attr == 'percent-open' ? '%' : null)
+   }
+   // Also update percent-open attribute directly (many app methods read it by name)
+   if (details?.data?.attributes?.'percent-open' != null) {
+     sendEvent(device, [name: 'percent-open', value: details.data.attributes['percent-open'], unit: '%'])
    }
 
    // Map system-voltage to voltage attribute for Rule Machine compatibility
@@ -3088,13 +3094,13 @@ def processRoomTraits(device, details) {
   [
     'name': 'room-name',
     'current-temperature-c': 'room-current-temperature-c',
-    'room-conclusion-mode': 'room-conclusion-mode',
+    'conclusion-mode': 'room-conclusion-mode',
     'humidity-away-min': 'room-humidity-away-min',
-    'room-type': 'room-type',
+    'type': 'room-type',
     'temp-away-min-c': 'room-temp-away-min-c',
     'level': 'room-level',
     'hold-until': 'room-hold-until',
-    'room-away-mode': 'room-away-mode',
+    'away-mode': 'room-away-mode',
     'heat-cool-mode': 'room-heat-cool-mode',
     'updated-at': 'room-updated-at',
     'state-updated-at': 'room-state-updated-at',
@@ -3390,7 +3396,7 @@ def handleVentVerify(resp, data) {
     if (attempt < MAX_VENT_VERIFY_ATTEMPTS) {
       def nextAttempt = attempt + 1
       def logLevel = attempt == 1 ? 2 : 1
-      log "Vent ${device.getLabel()} reported ${actual}% instead of ${target}% (attempt ${attempt}/${MAX_VENT_VERIFY_ATTEMPTS}), retrying", logLevel
+      log(logLevel, 'App', "Vent ${device.getLabel()} reported ${actual}% instead of ${target}% (attempt ${attempt}/${MAX_VENT_VERIFY_ATTEMPTS}), retrying")
       patchVentDevice(device, target, nextAttempt)
     } else {
       logError "Vent ${device.getLabel()} failed to reach ${target}% after ${MAX_VENT_VERIFY_ATTEMPTS} attempts (reported ${actual}%)"
@@ -3440,6 +3446,10 @@ def handleRoomSetPointPatch(resp, data) {
 def thermostat1ChangeTemp(evt) {
   log(2, 'App', "Thermostat changed temp to: ${evt.value}")
   def temp = settings?.thermostat1?.currentValue('temperature')
+  if (temp == null) {
+    log(2, 'App', "Thermostat temperature is null, skipping")
+    return
+  }
   def coolingSetpoint = settings?.thermostat1?.currentValue('coolingSetpoint') ?: 0
   def heatingSetpoint = settings?.thermostat1?.currentValue('heatingSetpoint') ?: 0
   String hvacMode = calculateHvacMode(temp, coolingSetpoint, heatingSetpoint)
@@ -3453,7 +3463,7 @@ def thermostat1ChangeTemp(evt) {
     atomicState.lastSignificantTemp = temp
     log(2, 'App', "Significant temperature change detected: ${tempDiff} C (threshold: ${THERMOSTAT_HYSTERESIS} C)")
 
-    if (isThermostatAboutToChangeState(hvacMode, thermostatSetpoint, temp)) {
+    if (thermostatSetpoint != null && isThermostatAboutToChangeState(hvacMode, thermostatSetpoint, temp)) {
       runInMillis(INITIALIZATION_DELAY_MS, 'initializeRoomStates', [data: hvacMode])
     }
   } else {
@@ -3517,7 +3527,7 @@ def thermostat1ChangeStateHandler(evt) {
         runInMillis(TEMP_READINGS_DELAY_MS, 'finalizeRoomStates', [data: params])
         atomicState.remove('thermostat1State')
       }
-      if (settings.fanOnlyOpenAllVents && isFanActive(evt.value) && atomicState.ventsByRoomId) {
+      if (settings?.fanOnlyOpenAllVents && isFanActive(evt.value) && atomicState.ventsByRoomId) {
         log(2, 'App', 'Fan-only mode detected - opening all vents to 100%')
         openAllVents(atomicState.ventsByRoomId, MAX_PERCENTAGE_OPEN as int)
       }
@@ -3645,7 +3655,7 @@ def evaluateRebalancingVents() {
         reBalanceVents()
         return // Exit after first rebalancing to avoid multiple adjustments per evaluation
       } catch (err) {
-        logError err
+        logError err?.message ?: err.toString()
       }
     }
   }
@@ -3678,7 +3688,7 @@ def getHourlyRates(String roomId, String hvacMode, Integer hour) {
 // EWMA + MAD helpers
 // -------------
 private BigDecimal getEwmaRate(String roomId, String hvacMode, Integer hour) {
-  try { return (atomicState?.dabEwma?.get(roomId)?.get(hvacMode)?.get(hour as Integer)) as BigDecimal } catch (ignore) { return null }
+  try { return (atomicState?.dabEwma?.get(roomId)?.get(hvacMode)?.get(hour.toString())) as BigDecimal } catch (ignore) { return null }
 }
 
 private BigDecimal updateEwmaRate(String roomId, String hvacMode, Integer hour, BigDecimal newRate) {
@@ -3686,7 +3696,9 @@ private BigDecimal updateEwmaRate(String roomId, String hvacMode, Integer hour, 
     def map = atomicState?.dabEwma ?: [:]
     def room = map[roomId] ?: [:]
     def mode = room[hvacMode] ?: [:]
-    BigDecimal prev = (mode[hour as Integer]) as BigDecimal
+    // Use String key since atomicState serializes map keys as Strings
+    String hKey = hour.toString()
+    BigDecimal prev = (mode[hKey]) as BigDecimal
     if (prev == null) {
       try {
         def hist = getHourlyRates(roomId, hvacMode, hour) ?: []
@@ -3699,11 +3711,11 @@ private BigDecimal updateEwmaRate(String roomId, String hvacMode, Integer hour, 
     }
     BigDecimal alpha = computeEwmaAlpha()
     BigDecimal updated = (prev == null) ? newRate : (alpha * newRate + (1 - alpha) * prev)
-    mode[hour as Integer] = cleanDecimalForJson(updated)
+    mode[hKey] = cleanDecimalForJson(updated)
     room[hvacMode] = mode
     map[roomId] = room
     try { atomicState.dabEwma = map } catch (ignore) { }
-    return mode[hour as Integer] as BigDecimal
+    return mode[hKey] as BigDecimal
   } catch (ignore) { return newRate }
 }
 
@@ -4397,7 +4409,7 @@ def finalizeRoomStates(data) {
         roomRates[roomName] = cleanedRate
         // Record adaptive adjustment mark vs seeded rate
         try {
-          def seeded = (atomicState?.lastSeededRate ?: [:])?.get(roomId)?.get(data.hvacMode)?.get(hour as Integer) as BigDecimal
+          def seeded = (atomicState?.lastSeededRate ?: [:])?.get(roomId)?.get(data.hvacMode)?.get(hour.toString()) as BigDecimal
           if (persistedRate != null && (persistedRate as BigDecimal) > 0) {
             BigDecimal base = (seeded != null && seeded > 0) ? seeded : (persistedRate as BigDecimal)
             BigDecimal ratio = ((persistedRate as BigDecimal) - base) / base
@@ -4405,8 +4417,9 @@ def finalizeRoomStates(data) {
           }
         } catch (ignore) { }
         if (persistedRate != null) {
+          // appendHourlyRate writes to both hourlyRates index AND flat entries list
+          // No need to also call appendDabHistory (which duplicates the flat entries write)
           appendHourlyRate(roomId, data.hvacMode, hour, persistedRate)
-          appendDabHistory(roomId, data.hvacMode, hour, persistedRate)
         }
 
         // Track maximum rates for baseline calculations
@@ -4451,7 +4464,7 @@ def recordStartingTemperatures() {
         sendEvent(vent, [name: 'room-starting-temperature-c', value: currentTemp])
         log(2, 'App', "Starting temperature for ${vent.currentValue('room-name')}: ${currentTemp} C")
       } catch (err) {
-        logError err
+        logError err?.message ?: err.toString()
       }
     }
   }
@@ -4481,7 +4494,7 @@ def initializeRoomStates(String hvacMode) {
       def seeded = atomicState?.lastSeededRate ?: [:]
       def roomMap = seeded[roomId] ?: [:]
       def modeMap = roomMap[hvacMode] ?: [:]
-      modeMap[currentHour as Integer] = (avgRate as BigDecimal)
+      modeMap[currentHour.toString()] = (avgRate as BigDecimal)
       roomMap[hvacMode] = modeMap
       seeded[roomId] = roomMap
       atomicState.lastSeededRate = seeded
@@ -4602,6 +4615,8 @@ def adjustVentOpeningsToEnsureMinimumAirflowTarget(rateAndTempPerVentId, String 
     minTemp = minTemp - TEMP_BOUNDARY_ADJUSTMENT
     maxTemp = maxTemp + TEMP_BOUNDARY_ADJUSTMENT
   }
+  // Guard against division by zero when all vents report the same temperature
+  if (maxTemp == minTemp) { maxTemp = minTemp + 1.0 }
 
   def combinedFlowPercentage = (100 * sumPercentages) / (totalDeviceCount * 100)
   if (combinedFlowPercentage >= MIN_COMBINED_VENT_FLOW) {
@@ -4661,7 +4676,7 @@ def getAttribsPerVentId(ventsByRoomId, String hvacMode) {
 
         rateAndTemp[ventId] = [ rate: rate, temp: roomTemp, active: isActive, name: roomName ]
       } catch (err) {
-        logError err
+        logError err?.message ?: err.toString()
       }
     }
   }
@@ -4697,7 +4712,7 @@ def getAttribsPerVentIdWeighted(ventsByRoomId, String hvacMode) {
         }
         rateAndTemp[ventId] = [ rate: effectiveRate, temp: roomTemp, active: isActive, name: roomName ]
       } catch (err) {
-        logError err
+        logError err?.message ?: err.toString()
       }
     }
   }
@@ -4733,7 +4748,7 @@ def calculateOpenPercentageForAllVents(rateAndTempPerVentId, String hvacMode, Bi
       ])
       percentOpenMap[ventId] = percentageOpen
     } catch (err) {
-      logError err
+      logError err?.message ?: err.toString()
     }
   }
   return percentOpenMap
@@ -4815,7 +4830,7 @@ def calculateLongestMinutesToTarget(rateAndTempPerVentId, String hvacMode, BigDe
       longestTime = Math.max(longestTime, minutesToTarget.doubleValue())
       log(3, 'App', "Room '${stateVal.name}' temp: ${stateVal.temp}")
     } catch (err) {
-      logError err
+      logError err?.message ?: err.toString()
     }
   }
   return longestTime
@@ -4962,17 +4977,17 @@ def handleExportEfficiencyData() {
 
 def handleExportDabHistory() {
   try {
-    log "Starting DAB history export", 2
+    log(2, 'App', "Starting DAB history export")
     def format = settings?.dabHistoryFormat ?: 'json'
     def data = exportDabHistory(format)
     if (data) {
       state.dabHistoryExportStatus = "\u2713 DAB history exported as ${format.toUpperCase()}. Copy the data below:"
       state.dabHistoryExportData = data
-      log "DAB history export successful", 2
+      log(2, 'App', "DAB history export successful")
     } else {
       state.dabHistoryExportStatus = '\u2717 No DAB history available.'
       state.dabHistoryExportData = null
-      log "No DAB history to export", 2
+      log(2, 'App', "No DAB history to export")
     }
   } catch (Exception e) {
     def errorMsg = "Export failed: ${e.message}"
@@ -5236,12 +5251,15 @@ def deactivateNightOverride() {
   try {
     if (!atomicState?.manualOverrides) { return }
     if (settings?.nightOverrideRooms) {
+      // Must read, modify, then reassign since atomicState uses JSON serialization
+      def overrides = atomicState.manualOverrides ?: [:]
       settings.nightOverrideRooms.each { v ->
         def vent = (v instanceof String) ? getChildDevice(v) : v
         if (!vent) { return }
         String vid = vent.getDeviceNetworkId()
-        atomicState.manualOverrides.remove(vid)
+        overrides.remove(vid)
       }
+      atomicState.manualOverrides = overrides
     } else {
       atomicState.manualOverrides = [:]
     }
@@ -5284,7 +5302,11 @@ def tileSetManualMode(String tileDni) {
 def tileSetAutoMode(String tileDni) {
   try {
     String ventId = tileDni?.replaceFirst('^tile-','')
-    if (atomicState?.manualOverrides) { atomicState.manualOverrides.remove(ventId) }
+    if (atomicState?.manualOverrides) {
+      def overrides = atomicState.manualOverrides ?: [:]
+      overrides.remove(ventId)
+      atomicState.manualOverrides = overrides
+    }
     refreshVentTiles()
   } catch (e) { log(2,'App',"tileSetAutoMode error: ${e?.message}") }
 }
@@ -5410,18 +5432,16 @@ private String normalizeImportInput(rawValue) {
 }
 
 private Map readUserSettingsMapForImport() {
+  // Try property access first (safe in Hubitat sandbox)
   try {
-    Class<?> currentClass = this.getClass()
-    while (currentClass != null) {
-      try {
-        def field = currentClass.getDeclaredField('userSettingsMap')
-        field.setAccessible(true)
-        def value = field.get(this)
-        if (value instanceof Map) { return value as Map }
-      } catch (NoSuchFieldException ignored) { }
-      currentClass = currentClass.getSuperclass()
-    }
+    def value = this.hasProperty('userSettingsMap') ? this.userSettingsMap : null
+    if (value instanceof Map) { return value as Map }
   } catch (ignore) { }
+  // Fallback: try direct Groovy property access without reflection
+  try {
+    def value = this.metaClass?.getProperty(this, 'userSettingsMap')
+    if (value instanceof Map) { return value as Map }
+  } catch (ignore2) { }
   return null
 }
 
@@ -5544,13 +5564,13 @@ def applyImportedEfficiencies(efficiencyData) {
   if (efficiencyData.dabHistory) {
     atomicState.dabHistory = efficiencyData.dabHistory
     results.historyRestored = true
-    log "Restored DAB history (${efficiencyData.dabHistory.size()} rooms)", 2
+    log(2, 'App', "Restored DAB history (${efficiencyData.dabHistory.size()} rooms)")
   }
 
   if (efficiencyData.dabActivityLog) {
     atomicState.dabActivityLog = efficiencyData.dabActivityLog
     results.activityLogRestored = true
-    log "Restored DAB activity log (${efficiencyData.dabActivityLog.size()} entries)", 2
+    log(2, 'App', "Restored DAB activity log (${efficiencyData.dabActivityLog.size()} entries)")
   }
 
   return results
@@ -6037,8 +6057,9 @@ String buildDabRatesTable() {
     hours.each { hr ->
       def value
       if (hvacMode == 'both') {
-        def cooling = atomicState?.dabHistory?.hourlyRates?.get(roomId)?.get(COOLING)?.get(hr) ?: []
-        def heating = atomicState?.dabHistory?.hourlyRates?.get(roomId)?.get(HEATING)?.get(hr) ?: []
+        // Use string key since atomicState serializes map keys as strings
+        def cooling = atomicState?.dabHistory?.hourlyRates?.get(roomId)?.get(COOLING)?.get(hr.toString()) ?: []
+        def heating = atomicState?.dabHistory?.hourlyRates?.get(roomId)?.get(HEATING)?.get(hr.toString()) ?: []
         def combined = (cooling + heating).collect { it as BigDecimal }
         value = combined ? cleanDecimalForJson(combined.sum() / combined.size()) : 0.0
       } else {
@@ -6072,8 +6093,10 @@ String buildDabProgressTable() {
   String hvacMode = settings?.progressHvacMode ?: getThermostat1Mode() ?: atomicState?.lastHvacMode
   if (!hvacMode || hvacMode in ['auto', 'manual']) { hvacMode = atomicState?.lastHvacMode }
   hvacMode = hvacMode ?: COOLING
-  Date start = (settings?.progressStart instanceof String && settings.progressStart) ? Date.parse('yyyy-MM-dd', settings.progressStart) : null
-  Date end = (settings?.progressEnd instanceof String && settings.progressEnd) ? Date.parse('yyyy-MM-dd', settings.progressEnd) : null
+  Date start = null
+  Date end = null
+  try { if (settings?.progressStart instanceof String && settings.progressStart) { start = Date.parse('yyyy-MM-dd', settings.progressStart) } } catch (ignore) { }
+  try { if (settings?.progressEnd instanceof String && settings.progressEnd) { end = Date.parse('yyyy-MM-dd', settings.progressEnd) } } catch (ignore) { }
   def modes = hvacMode == 'both' ? [COOLING, HEATING] : [hvacMode]
   def tz = location?.timeZone ?: TimeZone.getTimeZone('UTC')
 
@@ -6594,7 +6617,7 @@ def dabLiveDiagnosticsPage() {
     section('Controls') {
       input name: 'runDabDiagnostic', type: 'button', title: 'Run DAB Calculation Now', submitOnChange: true
       if (settings?.runDabDiagnostic) {
-        try { runDabDiagnostic() } catch (e) { paragraph "Error: " }
+        try { runDabDiagnostic() } catch (e) { paragraph "Error: ${e?.message}" }
         app.updateSetting('runDabDiagnostic','')
       }
     }
@@ -6662,21 +6685,21 @@ String renderDabDiagnosticResults() {
 
   def sb = new StringBuilder()
   sb << '<h3>Inputs</h3>'
-  sb << "<p><b>HVAC Mode:</b> </p>"
-  sb << "<p><b>Global Setpoint:</b>  &amp;deg;C</p>"
+  sb << "<p><b>HVAC Mode:</b> ${results.inputs.hvacMode}</p>"
+  sb << "<p><b>Global Setpoint:</b> ${results.inputs.globalSetpoint} &deg;C</p>"
   sb << '<h4>Room Data</h4>'
-  sb << "<table border='1' style='width:100%'><tr><th>Room</th><th>Temp (&amp;deg;C)</th><th>Rate</th></tr>"
+  sb << "<table border='1' style='width:100%'><tr><th>Room</th><th>Temp (&deg;C)</th><th>Rate</th></tr>"
   results.inputs.rooms.each { roomId, roomData ->
-    sb << "<tr><td></td><td></td><td></td></tr>"
+    sb << "<tr><td>${roomData.name}</td><td>${roomData.temp ?: '-'}</td><td>${roomData.rate ?: '-'}</td></tr>"
   }
   sb << '</table>'
 
   sb << '<h3>Calculations</h3>'
-  sb << "<p><b>Longest Time to Target:</b>  minutes</p>"
+  sb << "<p><b>Longest Time to Target:</b> ${results.calculations.longestTimeToTarget} minutes</p>"
   sb << '<h4>Initial Vent Positions</h4>'
   sb << "<table border='1' style='width:100%'><tr><th>Vent</th><th>Position</th></tr>"
   results.calculations.initialVentPositions?.each { ventId, pos ->
-    try { sb << "<tr><td></td><td>%</td></tr>" } catch (ignore) { }
+    try { sb << "<tr><td>${ventId}</td><td>${roundToNearestMultiple(pos as BigDecimal)}%</td></tr>" } catch (ignore) { }
   }
   sb << '</table>'
 
@@ -6684,7 +6707,7 @@ String renderDabDiagnosticResults() {
   sb << '<h4>Minimum Airflow Adjustments</h4>'
   sb << "<table border='1' style='width:100%'><tr><th>Vent</th><th>Position</th></tr>"
   results.adjustments.minimumAirflowAdjustments?.each { ventId, pos ->
-    try { sb << "<tr><td></td><td>%</td></tr>" } catch (ignore) { }
+    try { sb << "<tr><td>${ventId}</td><td>${roundToNearestMultiple(pos as BigDecimal)}%</td></tr>" } catch (ignore) { }
   }
   sb << '</table>'
 
@@ -6692,7 +6715,7 @@ String renderDabDiagnosticResults() {
   sb << '<h4>Final Vent Positions</h4>'
   sb << "<table border='1' style='width:100%'><tr><th>Vent</th><th>Position</th></tr>"
   results.finalOutput.finalVentPositions?.each { ventId, pos ->
-    try { sb << "<tr><td></td><td>%</td></tr>" } catch (ignore) { }
+    try { sb << "<tr><td>${ventId}</td><td>${roundToNearestMultiple(pos as BigDecimal)}%</td></tr>" } catch (ignore) { }
   }
   sb << '</table>'
   return sb.toString()
@@ -6706,15 +6729,22 @@ String renderDabDiagnosticResults() {
 // Centralized async HTTP callback handler
 def asyncHttpCallback(response, Map data) {
   try {
-    String originalCallback = data.originalCallback
+    String originalCallback = data?.originalCallback
+    // Unwrap the nested data so callbacks receive the original data map
+    // (e.g., [device: deviceObj]) instead of the wrapper [originalCallback: ..., data: [...]]
+    def callbackData = data?.data ?: data
     if (originalCallback && this.metaClass.respondsTo(this, originalCallback)) {
       // Dynamically call the original intended callback
-      this."$originalCallback"(response, data)
+      // NOTE: Individual callbacks handle their own decrementActiveRequests()
+      // Do NOT decrement here to avoid double-decrement
+      this."$originalCallback"(response, callbackData)
+    } else {
+      // No matching callback found - decrement here since no handler will
+      decrementActiveRequests()
     }
   } catch (Exception e) {
     logError("Error in async callback for ${data?.uri}: ${e.message}", "HTTP", data?.uri)
-  } finally {
-    // This is the crucial part: decrement the counter no matter what.
+    // Decrement on exception since the callback may not have completed
     decrementActiveRequests()
   }
 }
