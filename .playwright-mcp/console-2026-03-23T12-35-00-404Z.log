@@ -1,0 +1,7 @@
+[    1553ms] [ERROR] Blocked autofocusing on a <textarea> element in a cross-origin subframe. @ https://assets.customgpt.ai/build_embed/assets/app_embed-DyUHJE1x.js:2
+[   48237ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://192.168.92.127/device/statusJson/1:0
+[   48322ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://192.168.92.127/device/statusJson/9:0
+[   48358ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://192.168.92.127/device/statusJson/7:0
+[   48371ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://192.168.92.127/device/statusJson/4:0
+[   48403ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://192.168.92.127/device/statusJson/10:0
+[   48578ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://192.168.92.127/device/statusJson/5:0

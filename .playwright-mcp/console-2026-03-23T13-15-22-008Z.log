@@ -1,0 +1,5 @@
+[    2732ms] [ERROR] Framing 'https://www.google.com/' violates the following report-only Content Security Policy directive: "frame-ancestors 'self'". The violation has been logged, but no further action has been taken.
+ @ :0
+[    2732ms] [ERROR] Framing 'https://www.google.com/' violates the following report-only Content Security Policy directive: "frame-ancestors 'self'". The violation has been logged, but no further action has been taken.
+ @ :0
+[    2844ms] [ERROR] Blocked autofocusing on a <textarea> element in a cross-origin subframe. @ https://assets.customgpt.ai/build_embed/assets/app_embed-DyUHJE1x.js:2

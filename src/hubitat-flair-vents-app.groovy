@@ -666,8 +666,14 @@ def flairControlPanel() {
       def tempC = v.currentValue('room-current-temperature-c')
       def setpC = v.currentValue('room-set-point-c')
       def active = (v.currentValue('room-active') ?: 'false')
-      def toF = { c -> c != null ? (((c as BigDecimal) * 9.0/5.0) + 32) : null }
-      def fmt1 = { x -> x != null ? (((x as BigDecimal) * 10).round() / 10) : '-' }
+      def toF = { c ->
+        if (c == null) return null
+        try { return ((c as BigDecimal) * 9.0/5.0) + 32 } catch (ignore) { return null }
+      }
+      def fmt1 = { x ->
+        if (x == null) return '-'
+        try { return ((x as BigDecimal) * 10).round() / 10 } catch (ignore) { return '-' }
+      }
       def tempF = fmt1(toF(tempC))
       def setpF = fmt1(toF(setpC))
 
@@ -687,15 +693,19 @@ def flairControlPanel() {
         // Handle presses inline
         if (settings?."cp_room_${roomId}_sp_up" ) {
           try {
-            BigDecimal curF = setpF as BigDecimal
-            patchRoomSetPoint(v, (curF + 1) as BigDecimal)
+            if (setpF != '-') {
+              BigDecimal curF = setpF as BigDecimal
+              patchRoomSetPoint(v, (curF + 1) as BigDecimal)
+            }
           } catch (ignore) { }
           app.updateSetting("cp_room_${roomId}_sp_up", '')
         }
         if (settings?."cp_room_${roomId}_sp_down" ) {
           try {
-            BigDecimal curF = setpF as BigDecimal
-            patchRoomSetPoint(v, (curF - 1) as BigDecimal)
+            if (setpF != '-') {
+              BigDecimal curF = setpF as BigDecimal
+              patchRoomSetPoint(v, (curF - 1) as BigDecimal)
+            }
           } catch (ignore) { }
           app.updateSetting("cp_room_${roomId}_sp_down", '')
         }
@@ -823,8 +833,14 @@ def flairControlPanel2() {
       def tempC = v.currentValue('room-current-temperature-c')
       def setpC = v.currentValue('room-set-point-c')
       def active = (v.currentValue('room-active') ?: 'false')
-      def toF = { c -> c != null ? (((c as BigDecimal) * 9.0/5.0) + 32) : null }
-      def fmt1 = { x -> x != null ? (((x as BigDecimal) * 10).round() / 10) : '-' }
+      def toF = { c ->
+        if (c == null) return null
+        try { return ((c as BigDecimal) * 9.0/5.0) + 32 } catch (ignore) { return null }
+      }
+      def fmt1 = { x ->
+        if (x == null) return '-'
+        try { return ((x as BigDecimal) * 10).round() / 10 } catch (ignore) { return '-' }
+      }
       def tempF = fmt1(toF(tempC))
       def setpF = fmt1(toF(setpC))
       def hvacMode = (atomicState?.thermostat1State?.mode ?: atomicState?.hvacCurrentMode ?: 'idle')
@@ -881,7 +897,10 @@ String getRoomDataForPanel() {
   }
   rooms.each { rid, list ->
     def v = list[0]
-    def toF = { c -> c != null ? (((c as BigDecimal) * 9.0/5.0) + 32) : null }
+    def toF = { c ->
+      if (c == null) return null
+      try { return ((c as BigDecimal) * 9.0/5.0) + 32 } catch (ignore) { return null }
+    }
     out << [
       id: rid,
       name: v.currentValue('room-name') ?: v.getLabel(),
@@ -1664,7 +1683,7 @@ def cacheRoomData(String roomId, Map roomData) {
 
   // Implement LRU cache with max size
   if (roomCache.size() >= MAX_CACHE_SIZE) {
-    // Remove least recently used entry (oldest access time)
+    // Remove oldest entry (earliest write time)
     def lruKey = null
     def oldestAccessTime = Long.MAX_VALUE
     roomCacheTimestamps.each { key, timestamp ->
@@ -1701,9 +1720,8 @@ def getCachedRoomData(String roomId) {
     return null
   }
 
-  // Update access time for LRU tracking when item is accessed
-  roomCacheTimestamps[roomId] = getCurrentTime()
-
+  // NOTE: Do NOT update timestamp on read - it must expire based on WRITE time
+  // otherwise cached data is served forever and never refreshed from the API
   return roomCache[roomId]
 }
 
@@ -1775,7 +1793,7 @@ def cacheDeviceReading(String deviceKey, Map deviceData) {
 
   // Implement LRU cache with max size
   if (deviceCache.size() >= MAX_CACHE_SIZE) {
-    // Remove least recently used entry (oldest access time)
+    // Remove oldest entry (earliest write time)
     def lruKey = null
     def oldestAccessTime = Long.MAX_VALUE
     deviceCacheTimestamps.each { key, timestamp ->
@@ -1812,9 +1830,8 @@ def getCachedDeviceReading(String deviceKey) {
     return null
   }
 
-  // Update access time for LRU tracking when item is accessed
-  deviceCacheTimestamps[deviceKey] = getCurrentTime()
-
+  // NOTE: Do NOT update timestamp on read - it must expire based on WRITE time
+  // otherwise cached data is served forever and never refreshed from the API
   return deviceCache[deviceKey]
 }
 
@@ -6372,8 +6389,14 @@ def quickControlsPage() {
         def active = v.currentValue('room-active')
         def upd = v.currentValue('updated-at') ?: ''
         def batt = v.currentValue('battery') ?: ''
-        def toF = { c -> c != null ? (((c as BigDecimal) * 9.0/5.0) + 32) : null }
-        def fmt1 = { x -> x != null ? (((x as BigDecimal) * 10).round() / 10) : '-' }
+        def toF = { c ->
+          if (c == null) return null
+          try { return ((c as BigDecimal) * 9.0/5.0) + 32 } catch (ignore) { return null }
+        }
+        def fmt1 = { x ->
+          if (x == null) return '-'
+          try { return ((x as BigDecimal) * 10).round() / 10 } catch (ignore) { return '-' }
+        }
         def tempF = fmt1(toF(tempC))
         def setpF = fmt1(toF(setpC))
         def vidKey = vid.replaceAll('[^A-Za-z0-9_]', '_')
